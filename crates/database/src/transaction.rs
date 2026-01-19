@@ -906,6 +906,7 @@ impl<RT: Runtime> Transaction<RT> {
             order: Order::Asc,
             // Request 2 to best-effort verify uniqueness of by_id index.
             max_size: 2,
+            selected_fields: None,
         };
 
         let [result] = self
@@ -1154,6 +1155,7 @@ pub struct IndexRangeRequest {
     pub order: Order,
     pub max_rows: usize,
     pub version: Option<Version>,
+    pub selected_fields: Option<Vec<value::FieldPath>>,
 }
 
 /// FinalTransaction is a finalized Transaction.

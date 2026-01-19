@@ -594,6 +594,7 @@ impl<RT: Runtime> TableIteratorInner<RT> {
                 &cursor.interval(),
                 Order::Asc,
                 self.page_size,
+                None,
             );
             let documents_in_page: Vec<_> = match stream.take(self.page_size).try_collect().await {
                 Ok(docs) => docs,

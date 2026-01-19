@@ -83,6 +83,7 @@ use imbl::{
 use itertools::Itertools;
 use value::{
     InternalId,
+    FieldPath,
     TableMapping,
     TableName,
     TabletId,
@@ -258,6 +259,7 @@ impl BackendInMemoryIndexes {
                 &Interval::all(),
                 Order::Asc,
                 usize::MAX,
+                None,
             )
             .try_collect()
             .await?;
@@ -719,6 +721,7 @@ impl DatabaseIndexSnapshot {
                         index_id,
                         cache_results,
                     }) => {
+                        let should_cache = range_request.selected_fields.is_none();
                         let any_misses = cache_results.iter().any(|result| {
                             matches!(result, DatabaseIndexSnapshotCacheResult::CacheMiss(_))
                         });
@@ -743,7 +746,12 @@ impl DatabaseIndexSnapshot {
                             Err(e) => (Err(e), None),
                             Ok((fetch_result_vec, cache_miss_results, cursor)) => (
                                 Ok((fetch_result_vec, cursor.clone())),
-                                Some((*range_request, index_id, cache_miss_results, cursor)),
+                                should_cache.then_some((
+                                    *range_request,
+                                    index_id,
+                                    cache_miss_results,
+                                    cursor,
+                                )),
                             ),
                         }
                     },
@@ -797,6 +805,7 @@ impl DatabaseIndexSnapshot {
         let mut results = vec![];
         let mut cache_miss_results = vec![];
         let mut traced = false;
+        let should_cache = range_request.selected_fields.is_none();
         for cache_result in cache_results {
             match cache_result {
                 DatabaseIndexSnapshotCacheResult::Document(index_key, ts, document) => {
@@ -819,11 +828,14 @@ impl DatabaseIndexSnapshot {
                         &interval,
                         range_request.order,
                         range_request.max_size,
+                        range_request.selected_fields.clone(),
                     );
                     while let Some((key, rev)) =
                         instrument!(b"Persistence::try_next", stream.try_next()).await?
                     {
-                        cache_miss_results.push((rev.ts, PackedDocument::pack(&rev.value)));
+                        if should_cache {
+                            cache_miss_results.push((rev.ts, PackedDocument::pack(&rev.value)));
+                        }
                         results.push((key, rev.ts, rev.value.into()));
                         if results.len() >= range_request.max_size {
                             break;
@@ -1243,6 +1255,7 @@ pub struct RangeRequest {
     pub interval: Interval,
     pub order: Order,
     pub max_size: usize,
+    pub selected_fields: Option<Vec<FieldPath>>,
 }
 
 pub enum LazyDocument {

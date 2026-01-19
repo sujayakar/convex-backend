@@ -427,6 +427,7 @@ impl<RT: Runtime> DeveloperQuery<RT> {
                 maximum_bytes_read,
                 should_compute_split_cursor,
                 version,
+                selected_fields.clone(),
             )),
             QuerySource::IndexRange(index_range) => {
                 let order = index_range.order;
@@ -443,6 +444,7 @@ impl<RT: Runtime> DeveloperQuery<RT> {
                     maximum_bytes_read,
                     should_compute_split_cursor,
                     version,
+                    selected_fields.clone(),
                 ))
             },
             QuerySource::Search(search) => QueryNode::Search(SearchQuery::new(

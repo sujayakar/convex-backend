@@ -45,8 +45,10 @@ use bytes::BytesMut;
 use cmd_util::env::env_config;
 use common::{
     document::{
+        CREATION_TIME_FIELD,
         InternalId,
         ResolvedDocument,
+        ID_FIELD,
     },
     errors::lease_lost_error,
     heap_size::HeapSize as _,
@@ -95,6 +97,7 @@ use common::{
     },
     value::{
         ConvexValue,
+        FieldPath,
         InternalDocumentId,
         TabletId,
     },
@@ -1102,6 +1105,7 @@ impl PostgresReader {
         interval: Interval,
         order: Order,
         size_hint: usize,
+        selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) {
         // We use the size_hint to determine the batch size. This means in the
@@ -1118,6 +1122,7 @@ impl PostgresReader {
                     interval,
                     order,
                     batch_size,
+                    selected_fields,
                     retention_validator,
                     tx,
                 )
@@ -1170,6 +1175,7 @@ impl PostgresReader {
         interval: Interval,
         order: Order,
         batch_size: usize,
+        selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
         tx: mpsc::Sender<IndexScanResult>,
     ) -> anyhow::Result<()> {
@@ -1177,6 +1183,9 @@ impl PostgresReader {
         let multitenant = self.multitenant;
         let instance_name = self.instance_name.clone();
         let (mut lower, mut upper) = to_sql_bounds(interval.clone());
+        let projection = selected_fields
+            .as_deref()
+            .map(build_projection_expression);
 
         let mut stats = QueryIndexStats::new();
 
@@ -1199,13 +1208,14 @@ impl PostgresReader {
                 upper.clone(),
                 order,
                 batch_size,
+                projection.as_deref(),
                 multitenant,
                 &instance_name,
             );
 
             let row_stream = assert_send(client.with_retry(async move |client| {
                 let prepare_timer = metrics::query_index_sql_prepare_timer();
-                let stmt = client.prepare_cached(query).await?;
+                let stmt = client.prepare_cached(&query).await?;
                 prepare_timer.finish();
                 let execute_timer = metrics::query_index_sql_execute_timer();
                 let row_stream = client.query_raw(&stmt, &params).await?;
@@ -1660,6 +1670,7 @@ impl PersistenceReader for PostgresReader {
         range: &Interval,
         order: Order,
         size_hint: usize,
+        selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) -> IndexStream<'_> {
         self._index_scan(
@@ -1669,6 +1680,7 @@ impl PersistenceReader for PostgresReader {
             range.clone(),
             order,
             size_hint,
+            selected_fields,
             retention_validator,
         )
         .boxed()
@@ -2053,6 +2065,29 @@ fn to_sql_bounds(interval: Interval) -> (Bound<SqlKey>, Bound<SqlKey>) {
     (lower, upper)
 }
 
+fn build_projection_expression(selected_fields: &[FieldPath]) -> String {
+    let mut field_names = vec![ID_FIELD.to_string(), CREATION_TIME_FIELD.to_string()];
+    for field in selected_fields {
+        if field.fields().len() != 1 {
+            continue;
+        }
+        let name = field.fields()[0].to_string();
+        if !field_names.contains(&name) {
+            field_names.push(name);
+        }
+    }
+    let keys_list = field_names
+        .iter()
+        .map(|name| format!("'{}'", name.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let jsonb_value = "convert_from(D.json_value, 'utf8')::jsonb";
+    format!(
+        "convert_to((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each({jsonb_value}) \
+         e WHERE e.key IN ({keys_list}))::text, 'utf8')"
+    )
+}
+
 fn index_query(
     index_id: IndexId,
     read_timestamp: Timestamp,
@@ -2060,9 +2095,10 @@ fn index_query(
     upper: Bound<SqlKey>,
     order: Order,
     batch_size: usize,
+    projection: Option<&str>,
     multitenant: bool,
     instance_name: &PgInstanceName,
-) -> (&'static str, Vec<Param>) {
+) -> (String, Vec<Param>) {
     let mut params: Vec<Param> = vec![
         internal_id_param(index_id),
         Param::Ts(read_timestamp.into()),
@@ -2093,9 +2129,13 @@ fn index_query(
         params.push(Param::Text(instance_name.to_string()));
     }
 
-    let query = sql::index_queries(multitenant)
+    let base_query = sql::index_queries(multitenant)
         .get(&(lt, ut, order))
         .unwrap();
+    let query = match projection {
+        Some(projection) => base_query.replace("D.json_value", projection),
+        None => base_query.clone(),
+    };
     (query, params)
 }
 

@@ -29,7 +29,10 @@ use common::{
     version::Version,
 };
 use tokio::task;
-use value::TableNamespace;
+use value::{
+    FieldPath,
+    TableNamespace,
+};
 
 use super::{
     query_scanned_too_many_documents_error,
@@ -91,6 +94,7 @@ pub struct IndexRange {
     soft_maximum_rows_read: usize,
     soft_maximum_bytes_read: usize,
     version: Option<Version>,
+    selected_fields: Option<Vec<FieldPath>>,
 }
 
 impl IndexRange {
@@ -106,6 +110,7 @@ impl IndexRange {
         maximum_bytes_read: Option<usize>,
         should_compute_split_cursor: bool,
         version: Option<Version>,
+        selected_fields: Option<Vec<FieldPath>>,
     ) -> Self {
         // unfetched_interval = intersection of interval with cursor_interval
         let unfetched_interval = match &cursor_interval.curr_exclusive {
@@ -156,6 +161,7 @@ impl IndexRange {
                     .min(*TRANSACTION_MAX_READ_SIZE_BYTES),
             ),
             version,
+            selected_fields,
         }
     }
 
@@ -272,6 +278,7 @@ impl IndexRange {
             order: self.order,
             max_rows,
             version: self.version.clone(),
+            selected_fields: self.selected_fields.clone(),
         }))
     }
 

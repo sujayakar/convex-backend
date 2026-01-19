@@ -177,6 +177,7 @@ async fn load_index(
             &Interval::all(),
             Order::Asc,
             usize::MAX,
+            None,
         )
         .map_ok(|(key, rev)| {
             let doc = PackedDocument::pack(&rev.value);
@@ -220,6 +221,7 @@ async fn load_unpacked_index(
             &Interval::all(),
             Order::Asc,
             usize::MAX,
+            None,
         )
         .map_ok(|(_, rev)| rev.value)
         .try_collect()
