@@ -387,8 +387,19 @@ export interface OrderedQuery<TableInfo extends GenericTableInfo> extends AsyncI
     filter(predicate: (q: FilterBuilder<TableInfo>) => ExpressionOrValue<boolean>): this;
     first(): Promise<DocumentByInfo<TableInfo> | null>;
     paginate(paginationOpts: PaginationOptions): Promise<PaginationResult<DocumentByInfo<TableInfo>>>;
+    select<Fields extends Exclude<FieldPaths<TableInfo>, `${string}.${string}`>>(fields: Fields[]): SelectedQuery<TableInfo, Fields>;
     take(n: number): Promise<Array<DocumentByInfo<TableInfo>>>;
     unique(): Promise<DocumentByInfo<TableInfo> | null>;
+}
+
+// @public
+export interface SelectedQuery<TableInfo extends GenericTableInfo, SelectedFields extends FieldPaths<TableInfo>> extends AsyncIterable<Pick<DocumentByInfo<TableInfo>, SelectedFields | "_id" | "_creationTime">> {
+    collect(): Promise<Array<Pick<DocumentByInfo<TableInfo>, SelectedFields | "_id" | "_creationTime">>>;
+    filter(predicate: (q: FilterBuilder<TableInfo>) => ExpressionOrValue<boolean>): this;
+    first(): Promise<Pick<DocumentByInfo<TableInfo>, SelectedFields | "_id" | "_creationTime"> | null>;
+    paginate(paginationOpts: PaginationOptions): Promise<PaginationResult<Pick<DocumentByInfo<TableInfo>, SelectedFields | "_id" | "_creationTime">>>;
+    take(n: number): Promise<Array<Pick<DocumentByInfo<TableInfo>, SelectedFields | "_id" | "_creationTime">>>;
+    unique(): Promise<Pick<DocumentByInfo<TableInfo>, SelectedFields | "_id" | "_creationTime"> | null>;
 }
 
 // @public
