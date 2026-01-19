@@ -16,7 +16,7 @@ use common::{
         ResolvedComponentFunctionPath,
         Resource,
     },
-    document::DeveloperDocument,
+    document::PackedDeveloperDocument,
     execution_context::ExecutionContext,
     knobs::{
         MAX_REACTOR_CALL_DEPTH,
@@ -1449,7 +1449,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
         mut query: DeveloperQuery<RT>,
         tx: &mut Transaction<RT>,
         page_size: usize,
-    ) -> anyhow::Result<(Vec<DeveloperDocument>, QueryPageMetadata)> {
+    ) -> anyhow::Result<(Vec<PackedDeveloperDocument>, QueryPageMetadata)> {
         let end_cursor = query.end_cursor();
         let has_end_cursor = end_cursor.is_some();
         let mut page = Vec::with_capacity(page_size);
@@ -1466,7 +1466,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
                 Some(page_size - page.len())
             };
 
-            let next_value = match query.next(tx, prefetch_hint).await {
+            let next_value = match query.next_packed(tx, prefetch_hint).await {
                 Ok(Some(v)) => v,
                 Ok(None) => {
                     break;
@@ -1599,7 +1599,10 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
                 table_filter,
             )?;
             let (page, metadata) = Self::read_page_from_query(query, tx, page_size).await?;
-            let page = page.into_iter().map(|doc| doc.to_internal_json()).collect();
+            let page = page
+                .into_iter()
+                .map(|doc| doc.value().to_internal_json())
+                .collect::<anyhow::Result<Vec<_>>>()?;
             (page, metadata)
         };
 
