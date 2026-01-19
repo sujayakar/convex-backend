@@ -13,6 +13,7 @@ use common::{
     },
     document::{
         DeveloperDocument,
+        PackedDeveloperDocument,
         ResolvedDocument,
     },
     errors::JsError,
@@ -125,6 +126,11 @@ trait QueryStream: Send {
 
 pub struct DeveloperIndexRangeResponse {
     pub page: Vec<(IndexKeyBytes, DeveloperDocument, WriteTimestamp)>,
+    pub cursor: CursorPosition,
+}
+
+pub struct DeveloperPackedIndexRangeResponse {
+    pub page: Vec<(IndexKeyBytes, PackedDeveloperDocument, WriteTimestamp)>,
     pub cursor: CursorPosition,
 }
 
@@ -528,6 +534,29 @@ impl<RT: Runtime> DeveloperQuery<RT> {
             .context("batch_key missing")?
     }
 
+    pub async fn next_packed(
+        &mut self,
+        tx: &mut Transaction<RT>,
+        prefetch_hint: Option<usize>,
+    ) -> anyhow::Result<Option<PackedDeveloperDocument>> {
+        match self.next_packed_with_ts(tx, prefetch_hint).await? {
+            None => Ok(None),
+            Some((document, _)) => Ok(Some(document)),
+        }
+    }
+
+    #[convex_macro::instrument_future]
+    pub async fn next_packed_with_ts(
+        &mut self,
+        tx: &mut Transaction<RT>,
+        prefetch_hint: Option<usize>,
+    ) -> anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>> {
+        query_batch_next_packed(btreemap! {0 => (self, prefetch_hint)}, tx)
+            .await
+            .remove(&0)
+            .context("batch_key missing")?
+    }
+
     pub fn printable_index_name(&self) -> &IndexName {
         self.root.printable_index_name()
     }
@@ -578,6 +607,28 @@ pub fn query_batch_next<'a, RT: Runtime>(
 ) -> BoxFuture<'a, BTreeMap<BatchKey, anyhow::Result<Option<(DeveloperDocument, WriteTimestamp)>>>>
 {
     query_batch_next_(batch, tx).boxed()
+}
+
+pub fn query_batch_next_packed<'a, RT: Runtime>(
+    batch: BTreeMap<BatchKey, (&'a mut DeveloperQuery<RT>, Option<usize>)>,
+    tx: &'a mut Transaction<RT>,
+) -> BoxFuture<
+    'a,
+    BTreeMap<BatchKey, anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>>>,
+> {
+    async move {
+        let results = query_batch_next_(batch, tx).await;
+        results
+            .into_iter()
+            .map(|(batch_key, result)| {
+                let packed_result = result.map(|maybe| {
+                    maybe.map(|(doc, ts)| (PackedDeveloperDocument::pack(&doc), ts))
+                });
+                (batch_key, packed_result)
+            })
+            .collect()
+    }
+    .boxed()
 }
 
 pub async fn query_batch_next_<RT: Runtime>(

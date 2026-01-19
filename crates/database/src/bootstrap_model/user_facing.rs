@@ -9,6 +9,7 @@ use common::{
     components::ComponentId,
     document::{
         DeveloperDocument,
+        PackedDeveloperDocument,
         ResolvedDocument,
     },
     query::CursorPosition,
@@ -40,6 +41,7 @@ use crate::{
     },
     query::{
         DeveloperIndexRangeResponse,
+        DeveloperPackedIndexRangeResponse,
         IndexRangeResponse,
     },
     transaction::{
@@ -436,4 +438,28 @@ pub async fn index_range_batch<RT: Runtime>(
     }
     assert_eq!(results.len(), batch_size);
     results
+}
+
+/// Packed variant of index_range_batch for zero-copy paths.
+#[fastrace::trace]
+#[convex_macro::instrument_future]
+pub async fn index_range_batch_packed<RT: Runtime>(
+    tx: &mut Transaction<RT>,
+    requests: BTreeMap<BatchKey, IndexRangeRequest>,
+) -> BTreeMap<BatchKey, anyhow::Result<DeveloperPackedIndexRangeResponse>> {
+    let results = index_range_batch(tx, requests).await;
+    results
+        .into_iter()
+        .map(|(batch_key, result)| {
+            let packed_result = result.map(|response| DeveloperPackedIndexRangeResponse {
+                cursor: response.cursor,
+                page: response
+                    .page
+                    .into_iter()
+                    .map(|(key, doc, ts)| (key, PackedDeveloperDocument::pack(&doc), ts))
+                    .collect(),
+            });
+            (batch_key, packed_result)
+        })
+        .collect()
 }
