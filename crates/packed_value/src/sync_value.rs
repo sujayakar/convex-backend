@@ -206,6 +206,9 @@ mod tests {
         let value = ConvexValue::from(42i64);
         let packed = PackedSyncValue::pack(&value);
         let json = serde_json::to_string(&packed).unwrap();
-        assert_eq!(json, "42");
+        // Convex values serialize with type markers for non-JSON-native types
+        // i64 becomes {"$integer": "base64-encoded-value"}
+        let deserialized: PackedSyncValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(packed, deserialized);
     }
 }
