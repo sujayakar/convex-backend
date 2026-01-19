@@ -97,6 +97,8 @@ use value::{
     serialized_args_ext::SerializedArgsExt,
     ConvexArray,
     ConvexObject,
+    FieldName,
+    FieldPath,
     TableName,
 };
 
@@ -1245,7 +1247,10 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
 
                 let done = maybe_next.is_none();
                 let value = match maybe_next {
-                    Some((doc, _)) => doc.into_value().0.into(),
+                    Some((doc, _)) => {
+                        let doc = apply_field_selection(doc, local_query.selected_fields())?;
+                        doc.into_value().0.into()
+                    },
                     None => ConvexValue::Null,
                 };
 
@@ -1438,6 +1443,41 @@ impl QueryPageStatus {
     }
 }
 
+fn apply_field_selection(
+    doc: DeveloperDocument,
+    selected_fields: &Option<Vec<FieldPath>>,
+) -> anyhow::Result<DeveloperDocument> {
+    let Some(fields) = selected_fields else {
+        return Ok(doc);
+    };
+    let doc_id = doc.id();
+    let creation_time = doc.creation_time();
+    let value = doc.into_value().0;
+    let mut new_fields = BTreeMap::new();
+    let id_field = FieldName::from(common::document::ID_FIELD.clone());
+    if let Some(id_value) = value.get(&id_field) {
+        new_fields.insert(id_field, id_value.clone());
+    }
+    let creation_time_field = FieldName::from(common::document::CREATION_TIME_FIELD.clone());
+    if let Some(creation_time_value) = value.get(&creation_time_field) {
+        new_fields.insert(creation_time_field, creation_time_value.clone());
+    }
+    for field_path in fields {
+        if field_path.fields().len() != 1 {
+            continue;
+        }
+        let field_name = FieldName::from(field_path.fields()[0].clone());
+        if let Some(field_value) = value.get(&field_name) {
+            new_fields.insert(field_name, field_value.clone());
+        }
+    }
+    Ok(DeveloperDocument::new(
+        doc_id,
+        creation_time,
+        ConvexObject::try_from(new_fields)?,
+    ))
+}
+
 struct QueryPageMetadata {
     cursor: Cursor,
     split_cursor: Option<Cursor>,
@@ -1454,6 +1494,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
         let has_end_cursor = end_cursor.is_some();
         let mut page = Vec::with_capacity(page_size);
         let mut page_status = None;
+        let selected_fields = query.selected_fields().clone();
         // If we don't have an end cursor, collect results until we hit our page size.
         // If we do have an end cursor, ignore the page size and collect everything
         while has_end_cursor || (page.len() < page_size) {
@@ -1487,6 +1528,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
                     anyhow::bail!(e);
                 },
             };
+            let next_value = apply_field_selection(next_value, &selected_fields)?;
             page.push(next_value)
         }
         if page_status.is_none()

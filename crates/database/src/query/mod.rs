@@ -143,6 +143,7 @@ pub struct DeveloperQuery<RT: Runtime> {
     root: QueryNode,
     query_fingerprint: Option<QueryFingerprint>,
     end_cursor: Option<Cursor>,
+    selected_fields: Option<Vec<value::FieldPath>>,
     _marker: PhantomData<RT>,
 }
 
@@ -303,6 +304,7 @@ impl<RT: Runtime> DeveloperQuery<RT> {
         version: Option<Version>,
         table_filter: TableFilter,
     ) -> anyhow::Result<Self> {
+        let selected_fields = query.selected_fields.clone();
         let index_name = match query.source {
             QuerySource::FullTableScan(ref full_table_scan) => {
                 let table_name = full_table_scan.table_name.clone();
@@ -467,6 +469,7 @@ impl<RT: Runtime> DeveloperQuery<RT> {
             root: cur_node,
             query_fingerprint: fingerprint,
             end_cursor,
+            selected_fields,
             _marker: PhantomData,
         })
     }
@@ -503,6 +506,10 @@ impl<RT: Runtime> DeveloperQuery<RT> {
 
     pub fn is_approaching_data_limit(&self) -> bool {
         self.root.is_approaching_data_limit()
+    }
+
+    pub fn selected_fields(&self) -> &Option<Vec<value::FieldPath>> {
+        &self.selected_fields
     }
 
     pub async fn next(
