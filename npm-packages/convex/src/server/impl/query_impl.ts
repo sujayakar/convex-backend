@@ -39,6 +39,7 @@ type Source =
 type SerializedQuery = {
   source: Source;
   operators: Array<QueryOperator>;
+  selectedFields?: string[];
 };
 
 export class QueryInitializerImpl
@@ -121,6 +122,10 @@ export class QueryInitializerImpl
 
   limit(n: number) {
     return this.fullTableScan().limit(n);
+  }
+
+  select(fields: string[]) {
+    return this.fullTableScan().select(fields);
   }
 
   collect(): Promise<any[]> {
@@ -246,6 +251,29 @@ export class QueryImpl implements Query<GenericTableInfo> {
     validateArg(n, 1, "limit", "n");
     const query = this.takeQuery();
     query.operators.push({ limit: n });
+    return new QueryImpl(query);
+  }
+
+  select(fields: string[]): any {
+    validateArg(fields, 1, "select", "fields");
+    if (!Array.isArray(fields)) {
+      throw new Error("`select` expects an array of field names.");
+    }
+    const query = this.takeQuery();
+    if (query.selectedFields !== undefined) {
+      throw new Error("Queries may only specify field selection once.");
+    }
+    for (const field of fields) {
+      if (typeof field !== "string") {
+        throw new Error(`Field name must be a string, got ${typeof field}`);
+      }
+      if (field.includes(".")) {
+        throw new Error(
+          "Field selection only supports top-level fields for now.",
+        );
+      }
+    }
+    query.selectedFields = fields;
     return new QueryImpl(query);
   }
 

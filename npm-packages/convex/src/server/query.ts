@@ -1,5 +1,6 @@
 import {
   DocumentByInfo,
+  FieldPaths,
   GenericTableInfo,
   IndexNames,
   NamedIndex,
@@ -10,6 +11,52 @@ import { ExpressionOrValue, FilterBuilder } from "./filter_builder.js";
 import { IndexRange, IndexRangeBuilder } from "./index_range_builder.js";
 import { PaginationResult, PaginationOptions } from "./pagination.js";
 import { SearchFilter, SearchFilterBuilder } from "./search_filter_builder.js";
+
+type TopLevelFieldPaths<TableInfo extends GenericTableInfo> = Exclude<
+  FieldPaths<TableInfo>,
+  `${string}.${string}`
+>;
+
+type SelectedDocument<
+  TableInfo extends GenericTableInfo,
+  SelectedFields extends FieldPaths<TableInfo>,
+> = Pick<
+  DocumentByInfo<TableInfo>,
+  SelectedFields | "_id" | "_creationTime"
+>;
+
+/**
+ * A {@link OrderedQuery} that has selected a subset of fields to return.
+ *
+ * @public
+ */
+export interface SelectedQuery<
+  TableInfo extends GenericTableInfo,
+  SelectedFields extends FieldPaths<TableInfo>,
+> extends AsyncIterable<SelectedDocument<TableInfo, SelectedFields>> {
+  filter(
+    predicate: (q: FilterBuilder<TableInfo>) => ExpressionOrValue<boolean>,
+  ): this;
+
+  /**
+   * Take only the first `n` results from the pipeline so far.
+   *
+   * @internal
+   */
+  limit(n: number): this;
+
+  paginate(
+    paginationOpts: PaginationOptions,
+  ): Promise<PaginationResult<SelectedDocument<TableInfo, SelectedFields>>>;
+
+  collect(): Promise<Array<SelectedDocument<TableInfo, SelectedFields>>>;
+
+  take(n: number): Promise<Array<SelectedDocument<TableInfo, SelectedFields>>>;
+
+  first(): Promise<SelectedDocument<TableInfo, SelectedFields> | null>;
+
+  unique(): Promise<SelectedDocument<TableInfo, SelectedFields> | null>;
+}
 
 /**
  * The {@link QueryInitializer} interface is the entry point for building a {@link Query}
@@ -228,4 +275,15 @@ export interface OrderedQuery<TableInfo extends GenericTableInfo>
    * @throws  Will throw an error if the query returns more than one result.
    */
   unique(): Promise<DocumentByInfo<TableInfo> | null>;
+
+  /**
+   * Select only specific top-level fields to return from the query.
+   * System fields (`_id`, `_creationTime`) are always included.
+   *
+   * @param fields - An array of field names to include in the result.
+   * @returns - A query that returns only the selected fields.
+   */
+  select<Fields extends TopLevelFieldPaths<TableInfo>>(
+    fields: Fields[],
+  ): SelectedQuery<TableInfo, Fields>;
 }
