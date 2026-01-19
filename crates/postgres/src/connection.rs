@@ -221,7 +221,7 @@ fn handle_error(poisoned: &AtomicBool, e: impl Into<anyhow::Error>) -> anyhow::E
 pub(crate) type QueryStream = impl Stream<Item = anyhow::Result<Row>>;
 
 impl PostgresConnection<'_> {
-    fn substitute_db_name(&self, query: &'static str) -> String {
+    fn substitute_db_name(&self, query: &str) -> String {
         query
             .replace("@db_name", &self.schema.escaped)
             .replace("@instance_name", &self.instance_name.escaped)
@@ -297,7 +297,7 @@ impl PostgresConnection<'_> {
         Ok(row)
     }
 
-    pub async fn prepare_cached(&self, query: &'static str) -> anyhow::Result<Statement> {
+    pub async fn prepare_cached(&self, query: &str) -> anyhow::Result<Statement> {
         let conn = self.conn();
         with_timeout(prepare_cached(
             &conn.client,
@@ -407,13 +407,13 @@ pub struct PostgresTransaction<'a> {
 }
 
 impl PostgresTransaction<'_> {
-    fn substitute_db_name(&self, query: &'static str) -> String {
+    fn substitute_db_name(&self, query: &str) -> String {
         query
             .replace("@db_name", &self.schema.escaped)
             .replace("@instance_name", &self.instance_name.escaped)
     }
 
-    pub async fn prepare_cached(&self, query: &'static str) -> anyhow::Result<Statement> {
+    pub async fn prepare_cached(&self, query: &str) -> anyhow::Result<Statement> {
         with_timeout(prepare_cached(
             self.inner.client(),
             self.statement_cache,

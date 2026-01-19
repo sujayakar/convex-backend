@@ -51,7 +51,10 @@ use common::{
         Timestamp,
     },
     value::{
+        ConvexObject,
         ConvexValue,
+        FieldName,
+        FieldPath,
         InternalDocumentId,
         TabletId,
     },
@@ -74,11 +77,6 @@ use serde::Deserialize as _;
 use serde_json::{
     Number as JsonNumber,
     Value as JsonValue,
-};
-use value::{
-    ConvexObject,
-    FieldName,
-    FieldPath,
 };
 
 // We only have a single Sqlite connection which does not allow async calls, so
@@ -248,8 +246,8 @@ ORDER BY B.key {order}
                                 Self::sqlite_json_value_to_convex(&field_type, field_value)?;
                             let field_name = FieldName::from(field.fields()[0].clone());
                             field_values.insert(field_name, value);
-                        } else if *field.fields()[0] == *ID_FIELD
-                            || *field.fields()[0] == *CREATION_TIME_FIELD
+                        } else if field.fields()[0] == *ID_FIELD
+                            || field.fields()[0] == *CREATION_TIME_FIELD
                         {
                             anyhow::bail!(
                                 "Index reference to deleted document {:?} {:?}",

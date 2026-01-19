@@ -1237,6 +1237,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
         }
 
         for (batch_key, (query_id, local_query)) in queries_to_fetch {
+            let selected_fields = local_query.selected_fields().clone();
             let result: anyhow::Result<_> = try {
                 if let Some(query_id) = query_id {
                     provider.insert_query(query_id, local_query);
@@ -1248,7 +1249,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
                 let done = maybe_next.is_none();
                 let value = match maybe_next {
                     Some((doc, _)) => {
-                        let doc = apply_field_selection(doc, local_query.selected_fields())?;
+                        let doc = apply_field_selection(doc, &selected_fields)?;
                         doc.into_value().0.into()
                     },
                     None => ConvexValue::Null,

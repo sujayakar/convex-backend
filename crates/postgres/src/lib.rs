@@ -1213,6 +1213,8 @@ impl PostgresReader {
                 &instance_name,
             );
 
+            let query = query.clone();
+            let params = params.clone();
             let row_stream = assert_send(client.with_retry(async move |client| {
                 let prepare_timer = metrics::query_index_sql_prepare_timer();
                 let stmt = client.prepare_cached(&query).await?;

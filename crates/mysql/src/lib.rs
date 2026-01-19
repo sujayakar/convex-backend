@@ -978,7 +978,7 @@ impl<RT: Runtime> MySqlReader<RT> {
                 let execute_timer =
                     metrics::query_index_sql_execute_timer(self.read_pool.cluster_name());
                 let row_stream = match client
-                    .query_stream(query, params, batch_size as usize)
+                    .query_stream(&query, params, batch_size as usize)
                     .await
                 {
                     Ok(stream) => Ok(stream),
@@ -1161,9 +1161,8 @@ impl<RT: Runtime> MySqlReader<RT> {
         let projection = selected_fields
             .as_deref()
             .map(build_projection_expression);
-        let maybe_row = client
-            .query_optional(index_point_query(self.multitenant, projection.as_deref()), params)
-            .await?;
+        let query = index_point_query(self.multitenant, projection.as_deref());
+        let maybe_row = client.query_optional(&query, params).await?;
         execute_timer.finish();
 
         let retention_validate_timer =
