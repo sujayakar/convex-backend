@@ -48,10 +48,10 @@ use common::{
         FunctionCaller,
         UdfType,
     },
-    value::JsonPackedValue,
     version::ClientVersion,
     RequestId,
 };
+use packed_value::PackedSyncValue;
 use errors::{
     ErrorMetadata,
     ErrorMetadataAnyhowExt,
@@ -259,7 +259,7 @@ pub struct SyncWorker<RT: Runtime> {
 
 enum QueryResult {
     Rerun {
-        result: Result<JsonPackedValue, RedactedJsError>,
+        result: Result<PackedSyncValue, RedactedJsError>,
         log_lines: RedactedLogLines,
         journal: SerializedQueryJournal,
     },
@@ -271,7 +271,7 @@ enum QueryResult {
 
 struct TransitionState {
     udf_results: Vec<(QueryId, QueryResult, Box<dyn SubscriptionTrait>)>,
-    state_modifications: BTreeMap<QueryId, StateModification<JsonPackedValue>>,
+    state_modifications: BTreeMap<QueryId, StateModification<PackedSyncValue>>,
     current_version: StateVersion,
     new_version: StateVersion,
     timer: StatusTimer,
@@ -610,7 +610,8 @@ impl<RT: Runtime> SyncWorker<RT> {
                         let response = match result {
                             Ok(udf_return) => ServerMessage::MutationResponse {
                                 request_id,
-                                result: Ok(udf_return.value),
+                                result: Ok(PackedSyncValue::from_json_packed(&udf_return.value)
+                                    .expect("Failed to convert mutation result")),
                                 ts: Some(udf_return.ts),
                                 log_lines: udf_return.log_lines.into(),
                             },
@@ -698,7 +699,8 @@ impl<RT: Runtime> SyncWorker<RT> {
                     let response = match result {
                         Ok(udf_return) => ServerMessage::ActionResponse {
                             request_id,
-                            result: Ok(udf_return.value),
+                            result: Ok(PackedSyncValue::from_json_packed(&udf_return.value)
+                                .expect("Failed to convert action result")),
                             log_lines: udf_return.log_lines.into(),
                         },
                         Err(RedactedActionError { error, log_lines }) => {
@@ -941,9 +943,14 @@ impl<RT: Runtime> SyncWorker<RT> {
                                         let subscription = subscriptions_client
                                             .subscribe(udf_return.token)
                                             .await?;
+                                        // Convert JsonPackedValue to PackedSyncValue for zero-copy
+                                        let result = udf_return.result.map(|json_packed| {
+                                            PackedSyncValue::from_json_packed(&json_packed)
+                                                .expect("Failed to convert JsonPackedValue")
+                                        });
                                         (
                                             QueryResult::Rerun {
-                                                result: udf_return.result,
+                                                result,
                                                 log_lines: udf_return.log_lines,
                                                 journal: udf_return.journal,
                                             },

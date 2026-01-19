@@ -28,14 +28,18 @@ mod buffer;
 mod debug;
 mod flexbuilder;
 mod json;
+mod sync_value;
 mod walk;
 
 #[cfg(test)]
 mod tests;
 
-pub use self::buffer::{
-    ByteBuffer,
-    StringBuffer,
+pub use self::{
+    buffer::{
+        ByteBuffer,
+        StringBuffer,
+    },
+    sync_value::PackedSyncValue,
 };
 use self::flexbuilder::FlexBuilder;
 
@@ -78,6 +82,11 @@ where
 
     pub fn size(&self) -> usize {
         self.buf.len()
+    }
+
+    /// Get the underlying buffer as a byte slice (zero-copy)
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buf
     }
 
     /// Get a shared reference to the PackedValue, so it can be opened multiple

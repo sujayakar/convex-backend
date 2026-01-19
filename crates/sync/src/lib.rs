@@ -14,4 +14,5 @@ pub use worker::{
 #[cfg(test)]
 mod tests;
 
-pub type ServerMessage = sync_types::ServerMessage<common::value::JsonPackedValue>;
+/// ServerMessage using PackedSyncValue for zero-copy transfer
+pub type ServerMessage = sync_types::ServerMessage<packed_value::PackedSyncValue>;
