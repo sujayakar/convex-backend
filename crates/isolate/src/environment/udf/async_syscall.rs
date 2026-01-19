@@ -99,8 +99,16 @@ use value::{
     ConvexObject,
     TableName,
 };
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 
 use super::DatabaseUdfEnvironment;
+use super::syscall_result::{
+    SyscallResult,
+    SyscallValue,
+};
 use crate::{
     client::EnvironmentData,
     environment::{
@@ -112,6 +120,7 @@ use crate::{
             with_argument_error,
             ArgName,
         },
+        IsolateEnvironment,
     },
     helpers::UdfArgsJson,
     isolate2::client::QueryId,
@@ -281,6 +290,10 @@ pub trait AsyncSyscallProvider<RT: Runtime> {
     fn tx(&mut self) -> anyhow::Result<&mut Transaction<RT>>;
     fn key_broker(&self) -> &FunctionRunnerKeyBroker;
     fn context(&self) -> &ExecutionContext;
+    fn register_packed_value(
+        &mut self,
+        value: PackedValue<ByteBuffer>,
+    ) -> anyhow::Result<crate::packed_values::PackedValueHandle>;
 
     fn observe_identity(&mut self) -> anyhow::Result<()>;
 
@@ -354,6 +367,13 @@ impl<RT: Runtime> AsyncSyscallProvider<RT> for DatabaseUdfEnvironment<RT> {
 
     fn context(&self) -> &ExecutionContext {
         &self.context
+    }
+
+    fn register_packed_value(
+        &mut self,
+        value: PackedValue<ByteBuffer>,
+    ) -> anyhow::Result<crate::packed_values::PackedValueHandle> {
+        IsolateEnvironment::register_packed_value(self, value)
     }
 
     fn observe_identity(&mut self) -> anyhow::Result<()> {
@@ -674,7 +694,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
     pub async fn run_async_syscall_batch(
         provider: &mut P,
         batch: AsyncSyscallBatch,
-    ) -> Vec<anyhow::Result<String>> {
+    ) -> Vec<anyhow::Result<SyscallResult>> {
         let start = provider.rt().monotonic_now();
         let batch_name = batch.name().to_string();
         let timer = async_syscall_timer(&batch_name);
@@ -683,49 +703,76 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
         // errors.
         let results = match batch {
             AsyncSyscallBatch::Reads(batch_args) => Self::query_batch(provider, batch_args).await,
-            AsyncSyscallBatch::StorageGetUrls(batch_args) => {
-                Self::storage_get_url_batch(provider, batch_args).await
-            },
+            AsyncSyscallBatch::StorageGetUrls(batch_args) => Self::storage_get_url_batch(
+                provider,
+                batch_args,
+            )
+            .await
+            .into_iter()
+            .map(|result| result.map(SyscallResult::Json))
+            .collect(),
             AsyncSyscallBatch::Unbatched { name, args } => {
                 let result = match &name[..] {
                     // Database
-                    "1.0/count" => Box::pin(Self::count(provider, args)).await,
-                    "1.0/insert" => Box::pin(Self::insert(provider, args)).await,
-                    "1.0/shallowMerge" => Box::pin(Self::shallow_merge(provider, args)).await,
-                    "1.0/replace" => Box::pin(Self::replace(provider, args)).await,
-                    "1.0/remove" => Box::pin(Self::remove(provider, args)).await,
+                    "1.0/count" => Box::pin(Self::count(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
+                    "1.0/insert" => Box::pin(Self::insert(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
+                    "1.0/shallowMerge" => Box::pin(Self::shallow_merge(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
+                    "1.0/replace" => Box::pin(Self::replace(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
+                    "1.0/remove" => Box::pin(Self::remove(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
                     "1.0/queryPage" => Box::pin(Self::query_page(provider, args)).await,
                     // Auth
-                    "1.0/getUserIdentity" => {
-                        Box::pin(Self::get_user_identity(provider, args)).await
-                    },
+                    "1.0/getUserIdentity" => Box::pin(Self::get_user_identity(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
                     // Storage
-                    "1.0/storageDelete" => Box::pin(Self::storage_delete(provider, args)).await,
-                    "1.0/storageGetMetadata" => {
-                        Box::pin(Self::storage_get_metadata(provider, args)).await
-                    },
+                    "1.0/storageDelete" => Box::pin(Self::storage_delete(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
+                    "1.0/storageGetMetadata" => Box::pin(Self::storage_get_metadata(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
                     "1.0/storageGenerateUploadUrl" => {
-                        Box::pin(Self::storage_generate_upload_url(provider, args)).await
+                        Box::pin(Self::storage_generate_upload_url(provider, args))
+                            .await
+                            .map(SyscallResult::Json)
                     },
                     // Scheduling
-                    "1.0/schedule" => Box::pin(Self::schedule(provider, args)).await,
-                    "1.0/cancel_job" => Box::pin(Self::cancel_job(provider, args)).await,
+                    "1.0/schedule" => Box::pin(Self::schedule(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
+                    "1.0/cancel_job" => Box::pin(Self::cancel_job(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
 
                     // Components
-                    "1.0/runUdf" => Box::pin(Self::run_udf(provider, args)).await,
+                    "1.0/runUdf" => Box::pin(Self::run_udf(provider, args))
+                        .await
+                        .map(SyscallResult::Json),
                     "1.0/createFunctionHandle" => {
-                        Box::pin(Self::create_function_handle(provider, args)).await
+                        Box::pin(Self::create_function_handle(provider, args))
+                            .await
+                            .map(SyscallResult::Json)
                     },
 
                     #[cfg(test)]
                     "slowSyscall" => {
                         std::thread::sleep(std::time::Duration::from_secs(1));
-                        Ok(JsonValue::Number(1017.into()))
+                        Ok(SyscallResult::Json(JsonValue::Number(1017.into())))
                     },
                     #[cfg(test)]
                     "reallySlowSyscall" => {
                         std::thread::sleep(std::time::Duration::from_secs(3));
-                        Ok(JsonValue::Number(1017.into()))
+                        Ok(SyscallResult::Json(JsonValue::Number(1017.into())))
                     },
                     _ => Err(ErrorMetadata::bad_request(
                         "UnknownAsyncOperation",
@@ -743,9 +790,6 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
         );
         timer.finish();
         results
-            .into_iter()
-            .map(|result| anyhow::Ok(serde_json::to_string(&result?)?))
-            .collect()
     }
 
     #[convex_macro::instrument_future]
@@ -1092,7 +1136,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
     async fn query_batch(
         provider: &mut P,
         batch_args: Vec<AsyncRead>,
-    ) -> Vec<anyhow::Result<JsonValue>> {
+    ) -> Vec<anyhow::Result<SyscallResult>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct GetArgs {
@@ -1207,7 +1251,9 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
                         .is_none());
                 },
                 Ok(None) => {
-                    assert!(results.insert(idx, Ok(JsonValue::Null)).is_none());
+                    assert!(results
+                        .insert(idx, Ok(SyscallResult::Json(JsonValue::Null)))
+                        .is_none());
                 },
             }
         }
@@ -1228,12 +1274,6 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
         )
         .await;
 
-        #[derive(Serialize)]
-        struct QueryStreamNextResult {
-            value: JsonValue,
-            done: bool,
-        }
-
         for (batch_key, (query_id, local_query)) in queries_to_fetch {
             let result: anyhow::Result<_> = try {
                 if let Some(query_id) = query_id {
@@ -1244,21 +1284,25 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
                     .context("batch_key missing")??;
 
                 let done = maybe_next.is_none();
-                let value = match maybe_next {
-                    Some((doc, _)) => doc.value().to_internal_json()?,
-                    None => JsonValue::Null,
+                let value_handle = match maybe_next {
+                    Some((doc, _)) => {
+                        Some(provider.register_packed_value(doc.value().clone())?)
+                    },
+                    None => None,
                 };
 
                 if let Some(query_id) = query_id {
                     if done {
                         provider.cleanup_query(query_id);
                     }
-                    serde_json::to_value(QueryStreamNextResult {
-                        value,
+                    SyscallResult::Value(SyscallValue::QueryStreamNext {
+                        value: value_handle,
                         done,
-                    })?
+                    })
+                } else if let Some(handle) = value_handle {
+                    SyscallResult::Value(SyscallValue::PackedDoc { handle })
                 } else {
-                    value
+                    SyscallResult::Json(JsonValue::Null)
                 }
             };
             results.insert(batch_key, result);
@@ -1269,7 +1313,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
 
     #[fastrace::trace]
     #[convex_macro::instrument_future]
-    async fn query_page(provider: &mut P, args: JsonValue) -> anyhow::Result<JsonValue> {
+    async fn query_page(provider: &mut P, args: JsonValue) -> anyhow::Result<SyscallResult> {
         DatabaseSyscallsShared::query_page(provider, args).await
     }
 
@@ -1508,7 +1552,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
     }
 
     #[fastrace::trace]
-    async fn query_page(provider: &mut P, args: JsonValue) -> anyhow::Result<JsonValue> {
+    async fn query_page(provider: &mut P, args: JsonValue) -> anyhow::Result<SyscallResult> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct QueryPageArgs {
@@ -1601,7 +1645,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
             let (page, metadata) = Self::read_page_from_query(query, tx, page_size).await?;
             let page = page
                 .into_iter()
-                .map(|doc| doc.value().to_internal_json())
+                .map(|doc| provider.register_packed_value(doc.value().clone()))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             (page, metadata)
         };
@@ -1637,22 +1681,13 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
         );
         provider.next_journal().end_cursor = Some(cursor);
 
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct QueryPageResult {
-            page: Vec<JsonValue>,
-            is_done: bool,
-            continue_cursor: String,
-            split_cursor: Option<String>,
-            page_status: Option<&'static str>,
-        }
-        let result = QueryPageResult {
+        let result = SyscallValue::QueryPage {
             page,
             is_done,
             continue_cursor,
             split_cursor,
             page_status,
         };
-        Ok(serde_json::to_value(result)?)
+        Ok(SyscallResult::Value(result))
     }
 }

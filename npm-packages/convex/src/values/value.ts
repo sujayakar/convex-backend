@@ -16,6 +16,12 @@ const ZERO = BigInt("0");
 const EIGHT = BigInt("8");
 const TWOFIFTYSIX = BigInt("256");
 
+const packedValueSymbol = Symbol.for("convex.packed");
+
+function isPackedValue(value: unknown): boolean {
+  return typeof value === "object" && value !== null && (value as any)[packedValueSymbol];
+}
+
 /**
  * The type of JavaScript values serializable to JSON.
  *
@@ -185,6 +191,9 @@ function validateObjectField(k: string) {
  * @public
  */
 export function jsonToConvex(value: JSONValue): Value {
+  if (isPackedValue(value)) {
+    return value as Value;
+  }
   if (value === null) {
     return value;
   }

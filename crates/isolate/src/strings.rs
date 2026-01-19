@@ -56,6 +56,7 @@ macro_rules! declare_strings {
 // $string` syntax.
 declare_strings!(
     __frameData,
+    __convexInternal,
     _handler,
     _onInitCallbacks,
     Convex,
@@ -85,6 +86,7 @@ declare_strings!(
     path,
     runRequest,
     setup,
+    createPackedValue,
     stack,
     syscall,
 

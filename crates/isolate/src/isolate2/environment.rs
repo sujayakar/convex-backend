@@ -9,9 +9,15 @@ use common::{
         EnvVarValue,
     },
 };
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use rand_chacha::ChaCha12Rng;
 use serde_json::Value as JsonValue;
 use value::NamespacedTableMapping;
+
+use crate::packed_values::PackedValueHandle;
 
 #[derive(Debug)]
 pub struct EnvironmentOutcome {
@@ -36,6 +42,11 @@ pub trait Environment {
 
     fn get_environment_variable(&mut self, name: EnvVarName)
         -> anyhow::Result<Option<EnvVarValue>>;
+
+    fn get_packed_value(
+        &self,
+        handle: PackedValueHandle,
+    ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>>;
 
     // Signal that we've finished the import phase and are ready to start execution.
     fn start_execution(&mut self) -> anyhow::Result<()>;

@@ -9,7 +9,6 @@ use common::{
     types::UdfType,
 };
 use deno_core::{
-    serde_v8,
     v8::{
         self,
         scope,
@@ -35,6 +34,7 @@ use super::{
     session::HeapContext,
 };
 use crate::{
+    convert_v8::ToV8 as _,
     deserialize_udf_result,
     environment::helpers::{
         module_loader::module_specifier_from_path,
@@ -424,7 +424,7 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
         for (resolver, result) in async_syscalls {
             scope!(let scope, self.scope);
             let result_v8 = match result {
-                Ok(v) => Ok(serde_v8::to_v8(scope, v)?),
+                Ok(v) => Ok(v.to_v8(scope)?),
                 Err(e) => Err(e),
             };
             resolve_promise(scope, resolver, result_v8)?;

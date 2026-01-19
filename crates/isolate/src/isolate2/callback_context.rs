@@ -477,6 +477,10 @@ mod op_provider {
         heap_size::WithHeapSize,
         NamespacedTableMapping,
     };
+    use packed_value::{
+        ByteBuffer,
+        PackedValue,
+    };
 
     use super::CallbackContext;
     use crate::{
@@ -596,6 +600,13 @@ mod op_provider {
 
         fn get_all_table_mappings(&mut self) -> anyhow::Result<NamespacedTableMapping> {
             self.context_state()?.environment.get_all_table_mappings()
+        }
+
+        fn get_packed_value(
+            &mut self,
+            handle: crate::packed_values::PackedValueHandle,
+        ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>> {
+            self.context_state()?.environment.get_packed_value(handle)
         }
 
         fn create_text_decoder(&mut self, decoder: TextDecoderResource) -> anyhow::Result<Uuid> {

@@ -35,9 +35,13 @@ pub mod async_syscall;
 
 mod phase;
 pub mod syscall;
+pub mod syscall_result;
 use std::{
     cmp::Ordering,
-    collections::VecDeque,
+    collections::{
+        BTreeMap,
+        VecDeque,
+    },
     sync::Arc,
 };
 
@@ -77,19 +81,20 @@ use common::{
         ConvexValue,
     },
 };
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use database::{
     BiggestDocumentWrites,
     FunctionExecutionSize,
     Transaction,
     OVER_LIMIT_HELP,
 };
-use deno_core::{
-    serde_v8,
-    v8::{
-        self,
-        scope,
-        scope_with_context,
-    },
+use deno_core::v8::{
+    self,
+    scope,
+    scope_with_context,
 };
 use errors::ErrorMetadata;
 use file_storage::TransactionalFileStorage;
@@ -133,6 +138,7 @@ use crate::{
         UdfCallback,
         UdfRequest,
     },
+    convert_v8::ToV8 as _,
     environment::{
         helpers::{
             module_loader::module_specifier_from_path,
@@ -199,6 +205,9 @@ pub struct DatabaseUdfEnvironment<RT: Runtime> {
 
     context: ExecutionContext,
 
+    packed_values: BTreeMap<crate::packed_values::PackedValueHandle, PackedValue<ByteBuffer>>,
+    next_packed_value_id: crate::packed_values::PackedValueHandle,
+
     reactor_depth: usize,
     udf_callback: Box<dyn UdfCallback<RT>>,
 }
@@ -248,6 +257,23 @@ impl<RT: Runtime> IsolateEnvironment<RT> for DatabaseUdfEnvironment<RT> {
         let namespace = self.phase.component()?.into();
         let tx = self.phase.tx()?;
         Ok(tx.table_mapping().namespace(namespace))
+    }
+
+    fn register_packed_value(
+        &mut self,
+        value: PackedValue<ByteBuffer>,
+    ) -> anyhow::Result<crate::packed_values::PackedValueHandle> {
+        let handle = self.next_packed_value_id;
+        self.next_packed_value_id += 1;
+        self.packed_values.insert(handle, value);
+        Ok(handle)
+    }
+
+    fn get_packed_value(
+        &self,
+        handle: crate::packed_values::PackedValueHandle,
+    ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>> {
+        Ok(self.packed_values.get(&handle).cloned())
     }
 
     async fn lookup_source(
@@ -362,6 +388,8 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
             syscall_trace: SyscallTrace::new(),
             heap_stats,
             context,
+            packed_values: BTreeMap::new(),
+            next_packed_value_id: 0,
 
             reactor_depth,
             udf_callback,
@@ -754,7 +782,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
             for (resolver, result) in resolvers.into_iter().zip(results.into_iter()) {
                 scope!(let result_scope, &mut *scope);
                 let result_v8 = match result {
-                    Ok(v) => Ok(serde_v8::to_v8(result_scope, v)?),
+                    Ok(v) => Ok(v.to_v8(result_scope)?),
                     Err(e) => Err(e),
                 };
                 resolve_promise(result_scope, resolver, result_v8)?;

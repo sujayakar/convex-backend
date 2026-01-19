@@ -51,7 +51,10 @@ export async function performAsyncSyscall(
     }
     throw new Error(e.message);
   }
-  return JSON.parse(resultStr);
+  if (typeof resultStr === "string") {
+    return JSON.parse(resultStr);
+  }
+  return resultStr;
 }
 
 /**

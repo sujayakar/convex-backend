@@ -40,7 +40,10 @@ export async function performAsyncSyscall(
     // doesn't have a stack trace associated with it.
     throw new Error(e.message);
   }
-  return JSON.parse(resultStr);
+  if (typeof resultStr === "string") {
+    return JSON.parse(resultStr);
+  }
+  return resultStr;
 }
 
 /**

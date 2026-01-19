@@ -10,6 +10,7 @@ mod database;
 mod environment_variables;
 mod errors;
 mod http;
+mod packed_value;
 mod random;
 mod storage;
 mod stream;
@@ -49,6 +50,10 @@ use value::{
     heap_size::WithHeapSize,
     NamespacedTableMapping,
 };
+use ::packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 
 use self::{
     blob::{
@@ -82,6 +87,12 @@ use self::{
         op_url_get_url_search_param_pairs,
         op_url_stringify_url_search_params,
         op_url_update_url_info,
+    },
+    packed_value::{
+        op_packed_value_has,
+        op_packed_value_keys,
+        op_packed_value_length,
+        op_packed_value_read,
     },
     random::op_random,
     storage::{
@@ -171,6 +182,11 @@ pub trait OpProvider<'b> {
         -> anyhow::Result<Option<EnvVarValue>>;
 
     fn get_all_table_mappings(&mut self) -> anyhow::Result<NamespacedTableMapping>;
+
+    fn get_packed_value(
+        &mut self,
+        handle: crate::packed_values::PackedValueHandle,
+    ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>>;
 }
 
 impl<'a, 's: 'a, 'i, RT: Runtime, E: IsolateEnvironment<RT>> OpProvider<'i>
@@ -320,6 +336,14 @@ impl<'a, 's: 'a, 'i, RT: Runtime, E: IsolateEnvironment<RT>> OpProvider<'i>
         let state = self.state_mut()?;
         state.environment.get_all_table_mappings()
     }
+
+    fn get_packed_value(
+        &mut self,
+        handle: crate::packed_values::PackedValueHandle,
+    ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>> {
+        let state = self.state_mut()?;
+        state.environment.get_packed_value(handle)
+    }
 }
 
 pub fn run_op<'b, P: OpProvider<'b>>(
@@ -370,6 +394,10 @@ pub fn run_op<'b, P: OpProvider<'b>>(
         "structuredClone" => op_structured_clone(provider, args.get(1), rv)?,
         "environmentVariables/get" => op_environment_variables_get(provider, args, rv)?,
         "getTableMapping" => op_get_table_mapping(provider, args, rv)?,
+        "packedValue/read" => op_packed_value_read(provider, args, rv)?,
+        "packedValue/keys" => op_packed_value_keys(provider, args, rv)?,
+        "packedValue/length" => op_packed_value_length(provider, args, rv)?,
+        "packedValue/has" => op_packed_value_has(provider, args, rv)?,
         "validateArgs" => op_validate_args(provider, args, rv)?,
         "validateReturns" => op_validate_returns(provider, args, rv)?,
 

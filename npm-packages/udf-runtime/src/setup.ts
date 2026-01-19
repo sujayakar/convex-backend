@@ -18,6 +18,7 @@ import { throwUncatchableDeveloperError } from "./helpers.js";
 import { getBlob, getResponse, storeBlob, storeRequest } from "./storage.js";
 import { performOp } from "udf-syscall-ffi";
 import { setupStructuredClone } from "./02_structured_clone.js";
+import { setupPackedValues } from "./packed_value.js";
 
 /**
  * Set up the global object for a UDF context with deterministic Convex APIs.
@@ -51,6 +52,7 @@ export function setup(global: any) {
   setupRequest(global);
   setupResponse(global);
   setupFetch(global);
+  setupPackedValues(global);
 
   global.Convex.jsSyscall = (op: string, args: Record<string, any>) => {
     switch (op) {

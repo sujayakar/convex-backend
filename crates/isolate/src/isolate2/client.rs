@@ -111,7 +111,7 @@ pub struct PendingAsyncSyscall {
 #[derive(Debug)]
 pub struct AsyncSyscallCompletion {
     pub promise_id: PromiseId,
-    pub result: anyhow::Result<String>,
+    pub result: anyhow::Result<crate::environment::udf::syscall_result::SyscallResult>,
 }
 
 #[derive(Debug)]
