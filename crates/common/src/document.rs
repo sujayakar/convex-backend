@@ -860,6 +860,58 @@ impl PackedDocument {
     }
 }
 
+/// Packed representation of a developer-facing document.
+#[derive(Clone, Debug)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq))]
+pub struct PackedDeveloperDocument(PackedValue<ByteBuffer>, DeveloperDocumentId);
+
+impl PackedDeveloperDocument {
+    pub fn pack(document: &DeveloperDocument) -> Self {
+        let document_id = document.id();
+        let value = document.value();
+        Self(PackedValue::pack_object(value), document_id)
+    }
+
+    pub fn unpack(&self) -> anyhow::Result<DeveloperDocument> {
+        let value = ConvexValue::try_from(self.0.as_ref())?;
+        let object: ConvexObject = value.try_into()?;
+        let id = match object.get(&FieldName::from(ID_FIELD.clone())) {
+            Some(ConvexValue::String(s)) => DeveloperDocumentId::decode(s)?,
+            _ => anyhow::bail!("Object {object} missing _id field"),
+        };
+        let creation_time = match object.get(&FieldName::from(CREATION_TIME_FIELD.clone())) {
+            Some(ConvexValue::Float64(ts)) => (*ts).try_into()?,
+            None => anyhow::bail!("Object {object} missing _creationTime field"),
+            _ => anyhow::bail!("Object {object} has invalid _creationTime field"),
+        };
+        anyhow::ensure!(
+            id == self.1,
+            "PackedDeveloperDocument id mismatch: {} != {}",
+            id,
+            self.1
+        );
+        Ok(DeveloperDocument {
+            id,
+            creation_time,
+            value: PII(object),
+        })
+    }
+
+    pub fn id(&self) -> DeveloperDocumentId {
+        self.1
+    }
+
+    pub fn value(&self) -> &PackedValue<ByteBuffer> {
+        &self.0
+    }
+}
+
+impl HeapSize for PackedDeveloperDocument {
+    fn heap_size(&self) -> usize {
+        self.0.heap_size() + self.1.heap_size()
+    }
+}
+
 /// A reusable allocation for use by `PackedDocument::index_key`
 pub struct IndexKeyBuffer(IndexKeyBytes);
 impl IndexKeyBuffer {

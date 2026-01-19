@@ -79,8 +79,7 @@ impl PackedSyncValue {
 
     /// Get or create JSON representation (for WebSocket compatibility)
     pub fn to_json(&self) -> anyhow::Result<JsonValue> {
-        let value = self.unpack()?;
-        Ok(value.into())
+        self.packed.to_internal_json()
     }
 
     /// Get the underlying PackedValue for direct access
@@ -126,10 +125,12 @@ impl Serialize for PackedSyncValue {
     where
         S: Serializer,
     {
-        // Unpack and serialize as JSON
-        let value = self.unpack().map_err(serde::ser::Error::custom)?;
-        let json_value: JsonValue = value.into();
-        json_value.serialize(serializer)
+        let opened = self
+            .packed
+            .as_ref()
+            .open()
+            .map_err(serde::ser::Error::custom)?;
+        crate::json::JsonOpenedValue(&opened).serialize(serializer)
     }
 }
 

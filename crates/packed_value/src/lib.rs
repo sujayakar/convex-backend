@@ -95,6 +95,18 @@ where
         PackedValue::new(&self.buf)
     }
 
+    /// Serialize this packed value into a JSON value without fully unpacking.
+    pub fn to_internal_json(&self) -> anyhow::Result<serde_json::Value> {
+        let opened = self.as_ref().open()?;
+        Ok(serde_json::to_value(crate::json::JsonOpenedValue(&opened))?)
+    }
+
+    /// Serialize this packed value into a JSON string without fully unpacking.
+    pub fn json_serialize(&self) -> anyhow::Result<String> {
+        let opened = self.as_ref().open()?;
+        Ok(serde_json::to_string(&crate::json::JsonOpenedValue(&opened))?)
+    }
+
     pub fn open_path(self, field_path: &FieldPath) -> Option<OpenedValue<B>> {
         field_path.fields().first()?; // return None if empty path
         let mut v = self.open().expect("failed to open packed value");

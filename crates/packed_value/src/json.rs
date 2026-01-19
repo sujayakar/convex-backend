@@ -17,8 +17,7 @@ use value::numeric::is_negative_zero;
 
 use crate::OpenedValue;
 
-#[allow(dead_code)] // TODO: remove
-struct JsonOpenedValue<'a, B: Buffer>(&'a OpenedValue<B>)
+pub(crate) struct JsonOpenedValue<'a, B: Buffer>(pub &'a OpenedValue<B>)
 where
     B::BufferString: Clone;
 
