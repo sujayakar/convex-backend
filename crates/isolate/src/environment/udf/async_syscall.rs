@@ -43,7 +43,7 @@ use common::{
 };
 use database::{
     query::{
-        query_batch_next,
+        query_batch_next_packed,
         PaginationOptions,
         TableFilter,
     },
@@ -1219,7 +1219,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
             },
         };
 
-        let mut fetch_results = query_batch_next(
+        let mut fetch_results = query_batch_next_packed(
             queries_to_fetch
                 .iter_mut()
                 .map(|(idx, (_, local_query))| (*idx, (local_query, None)))
@@ -1245,8 +1245,8 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
 
                 let done = maybe_next.is_none();
                 let value = match maybe_next {
-                    Some((doc, _)) => doc.into_value().0.into(),
-                    None => ConvexValue::Null,
+                    Some((doc, _)) => doc.value().to_internal_json()?,
+                    None => JsonValue::Null,
                 };
 
                 if let Some(query_id) = query_id {
@@ -1254,11 +1254,11 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
                         provider.cleanup_query(query_id);
                     }
                     serde_json::to_value(QueryStreamNextResult {
-                        value: value.into(),
+                        value,
                         done,
                     })?
                 } else {
-                    value.into()
+                    value
                 }
             };
             results.insert(batch_key, result);
