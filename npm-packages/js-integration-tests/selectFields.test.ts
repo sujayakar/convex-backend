@@ -13,6 +13,12 @@ describe("Field selection", () => {
     await client.mutation(api.cleanUp.default);
   });
 
+  test("select on empty table", async () => {
+    const results = await client.query(api.selectFields.selectNameOnly, {});
+
+    expect(results).toHaveLength(0);
+  });
+
   test("select single field", async () => {
     await client.mutation(api.selectFields.insertUser, {
       name: "Alice",
@@ -135,5 +141,35 @@ describe("Field selection", () => {
 
     expect(page2.page).toHaveLength(3);
     expect(page2.isDone).toBe(true);
+  });
+
+  test("projection reduces payload size", async () => {
+    const bio = "x".repeat(5000);
+    for (let i = 0; i < 10; i++) {
+      await client.mutation(api.selectFields.insertUser, {
+        name: `User${i}`,
+        bio,
+      });
+    }
+
+    const full = await client.query(api.selectFields.getAllUsers, {});
+    const projected = await client.query(api.selectFields.selectNameOnly, {});
+
+    expect(full).toHaveLength(10);
+    expect(projected).toHaveLength(10);
+    expect(JSON.stringify(full).length).toBeGreaterThan(
+      JSON.stringify(projected).length,
+    );
+  });
+
+  test("select works after mutation insert", async () => {
+    const result = await client.mutation(api.selectFields.insertAndSelect, {
+      name: "Inserted",
+      email: "inserted@test.com",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result).toHaveProperty("name", "Inserted");
+    expect(result).not.toHaveProperty("email");
   });
 });

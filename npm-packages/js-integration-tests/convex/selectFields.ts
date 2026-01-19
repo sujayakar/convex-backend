@@ -21,6 +21,13 @@ export const selectNameOnly = query({
   },
 });
 
+export const getAllUsers = query({
+  args: {},
+  handler: async ({ db }) => {
+    return await db.query("users").collect();
+  },
+});
+
 export const selectMultipleFields = query({
   args: {},
   handler: async ({ db }) => {
@@ -71,6 +78,21 @@ export const selectWithPagination = query({
     { paginationOpts }: { paginationOpts: PaginationOptions },
   ) => {
     return await db.query("users").select(["name"]).paginate(paginationOpts);
+  },
+});
+
+export const insertAndSelect = mutation({
+  args: {
+    name: v.string(),
+    email: v.optional(v.string()),
+  },
+  handler: async ({ db }, args) => {
+    const id = await db.insert("users", args);
+    return await db
+      .query("users")
+      .filter((q) => q.eq(q.field("_id"), id))
+      .select(["name"])
+      .unique();
   },
 });
 
