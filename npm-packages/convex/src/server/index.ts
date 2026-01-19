@@ -105,7 +105,7 @@ export {
 } from "./impl/registration_impl.js";
 export type { IndexRange, IndexRangeBuilder } from "./index_range_builder.js";
 export * from "./pagination.js";
-export type { OrderedQuery, Query, QueryInitializer } from "./query.js";
+export type { OrderedQuery, Query, QueryInitializer, SelectedQuery } from "./query.js";
 export type {
   ArgsArray,
   DefaultFunctionArgs,
