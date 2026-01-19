@@ -909,7 +909,11 @@ mod proptest {
                 any::<QuerySource>(),
                 prop::collection::vec(any::<QueryOperator>(), 0..4),
             )
-                .prop_map(|(source, operators)| Query { source, operators })
+                .prop_map(|(source, operators)| Query {
+                    source,
+                    operators,
+                    selected_fields: None,
+                })
         }
     }
 }
@@ -1103,6 +1107,8 @@ pub struct Query {
     pub source: QuerySource,
     /// The list of operators to apply in order.
     pub operators: Vec<QueryOperator>,
+    /// Optional list of fields to select for projection.
+    pub selected_fields: Option<Vec<FieldPath>>,
 }
 
 impl Query {
@@ -1111,6 +1117,7 @@ impl Query {
         Self {
             source: QuerySource::FullTableScan(FullTableScan { table_name, order }),
             operators: vec![],
+            selected_fields: None,
         }
     }
 
@@ -1119,6 +1126,7 @@ impl Query {
         Self {
             source: QuerySource::IndexRange(index_range),
             operators: vec![],
+            selected_fields: None,
         }
     }
 
@@ -1137,6 +1145,7 @@ impl Query {
         Self {
             source: QuerySource::Search(search),
             operators: vec![],
+            selected_fields: None,
         }
     }
 

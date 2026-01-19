@@ -210,6 +210,8 @@ impl From<SearchFilterExpression> for JsonSearchFilterExpression {
 struct JsonQuery {
     pub source: JsonQuerySource,
     pub operators: Vec<JsonQueryOperator>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_fields: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -304,6 +306,23 @@ impl TryFrom<JsonValue> for Query {
             "Query has too many operators: {}",
             json_query.operators.len()
         );
+        let selected_fields = json_query
+            .selected_fields
+            .map(|fields| {
+                fields
+                    .into_iter()
+                    .map(|field| {
+                        let field_path = FieldPath::from_str(&field)?;
+                        anyhow::ensure!(
+                            field_path.fields().len() == 1,
+                            "Field selection only supports top-level fields"
+                        );
+                        Ok(field_path)
+                    })
+                    .collect::<Result<Vec<FieldPath>>>()
+            })
+            .transpose()?;
+
         Ok(Query {
             source: json_query.source.try_into()?,
             operators: json_query
@@ -318,6 +337,7 @@ impl TryFrom<JsonValue> for Query {
                     })
                 })
                 .collect::<Result<Vec<QueryOperator>>>()?,
+            selected_fields,
         })
     }
 }
@@ -338,6 +358,9 @@ impl TryFrom<Query> for JsonValue {
                     QueryOperator::Limit(n) => JsonQueryOperator::Limit(n),
                 })
                 .collect(),
+            selected_fields: query.selected_fields.map(|fields| {
+                fields.into_iter().map(String::from).collect::<Vec<_>>()
+            }),
         };
         Ok(serde_json::to_value(json_query)?)
     }
