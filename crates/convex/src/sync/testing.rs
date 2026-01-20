@@ -84,7 +84,7 @@ impl SyncProtocol for TestProtocolManager {
                 last_close_reason: "InitialConnect".to_string(),
                 max_observed_timestamp: None,
                 client_ts: None,
-                supports_binary: None,
+                supports_binary: Some(true),
             })
             .await?;
 

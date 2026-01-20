@@ -2244,6 +2244,7 @@ dependencies = [
  "colored 3.0.0",
  "convex_sync_types",
  "dotenvy",
+ "flexbuffers",
  "futures",
  "imbl",
  "maplit",

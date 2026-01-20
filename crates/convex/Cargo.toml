@@ -29,6 +29,7 @@ async-trait = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 convex_sync_types = { path = "./sync_types", version = "=0.10.2" }
+flexbuffers = { workspace = true }
 futures = { workspace = true }
 imbl = { workspace = true }
 parking_lot = { workspace = true, optional = true }
