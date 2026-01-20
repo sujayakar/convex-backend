@@ -97,6 +97,38 @@ struct BinaryChunkBuffer {
     total_parts: u32,
     chunks: Vec<Vec<u8>>,
 }
+
+impl BinaryChunkBuffer {
+    fn new(message_id: u32, total_parts: u32) -> Self {
+        Self {
+            message_id,
+            total_parts,
+            chunks: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, frame: BinaryChunkFrame) -> anyhow::Result<Option<Vec<u8>>> {
+        anyhow::ensure!(
+            self.message_id == frame.message_id && self.total_parts == frame.total_parts,
+            "Invalid binary chunk sequence"
+        );
+        anyhow::ensure!(
+            frame.part_number == self.chunks.len() as u32,
+            "Out of order binary chunk"
+        );
+        self.chunks.push(frame.payload);
+        if self.chunks.len() == self.total_parts as usize {
+            let total_len: usize = self.chunks.iter().map(|chunk| chunk.len()).sum();
+            let mut combined = Vec::with_capacity(total_len);
+            for chunk in self.chunks.drain(..) {
+                combined.extend_from_slice(&chunk);
+            }
+            Ok(Some(combined))
+        } else {
+            Ok(None)
+        }
+    }
+}
 struct WebSocketWorker {
     ws_url: Url,
     on_response: mpsc::Sender<ProtocolResponse>,
@@ -290,31 +322,17 @@ impl WebSocketWorker {
                                     Some(payload)
                                 },
                                 BinaryFrame::Chunk(frame) => {
-                                    let buffer = binary_chunk_buffer.get_or_insert_with(|| BinaryChunkBuffer {
-                                        message_id: frame.message_id,
-                                        total_parts: frame.total_parts,
-                                        chunks: Vec::new(),
+                                    let buffer = binary_chunk_buffer.get_or_insert_with(|| {
+                                        BinaryChunkBuffer::new(
+                                            frame.message_id,
+                                            frame.total_parts,
+                                        )
                                     });
-                                    if buffer.message_id != frame.message_id
-                                        || buffer.total_parts != frame.total_parts
-                                    {
-                                        anyhow::bail!("Invalid binary chunk sequence");
-                                    }
-                                    if frame.part_number != buffer.chunks.len() as u32 {
-                                        anyhow::bail!("Out of order binary chunk");
-                                    }
-                                    buffer.chunks.push(frame.payload);
-                                    if buffer.chunks.len() == buffer.total_parts as usize {
-                                        let total_len: usize = buffer.chunks.iter().map(|chunk| chunk.len()).sum();
-                                        let mut combined = Vec::with_capacity(total_len);
-                                        for chunk in buffer.chunks.drain(..) {
-                                            combined.extend_from_slice(&chunk);
-                                        }
+                                    let combined = buffer.push(frame)?;
+                                    if combined.is_some() {
                                         binary_chunk_buffer = None;
-                                        Some(combined)
-                                    } else {
-                                        None
                                     }
+                                    combined
                                 },
                             };
 
@@ -593,6 +611,35 @@ mod tests {
             },
             other => anyhow::bail!("Unexpected server message {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn binary_chunk_buffer_reassembles_payload() -> anyhow::Result<()> {
+        let mut buffer = BinaryChunkBuffer::new(3, 3);
+        let chunk0 = BinaryChunkFrame {
+            message_id: 3,
+            part_number: 0,
+            total_parts: 3,
+            payload: vec![1, 2],
+        };
+        let chunk1 = BinaryChunkFrame {
+            message_id: 3,
+            part_number: 1,
+            total_parts: 3,
+            payload: vec![3, 4],
+        };
+        let chunk2 = BinaryChunkFrame {
+            message_id: 3,
+            part_number: 2,
+            total_parts: 3,
+            payload: vec![5],
+        };
+
+        assert!(buffer.push(chunk0)?.is_none());
+        assert!(buffer.push(chunk1)?.is_none());
+        let combined = buffer.push(chunk2)?.expect("Expected full payload");
+        assert_eq!(combined, vec![1, 2, 3, 4, 5]);
         Ok(())
     }
 }
