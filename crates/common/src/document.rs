@@ -872,6 +872,11 @@ impl PackedDeveloperDocument {
         Self(PackedValue::pack_object(value), document_id)
     }
 
+    /// Create directly from a packed resolved document without unpacking.
+    pub fn from_packed(document: PackedDocument) -> Self {
+        Self(document.value().clone(), document.developer_id())
+    }
+
     pub fn unpack(&self) -> anyhow::Result<DeveloperDocument> {
         let value = ConvexValue::try_from(self.0.as_ref())?;
         let object: ConvexObject = value.try_into()?;

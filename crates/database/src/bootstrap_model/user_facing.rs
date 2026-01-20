@@ -43,6 +43,7 @@ use crate::{
         DeveloperIndexRangeResponse,
         DeveloperPackedIndexRangeResponse,
         IndexRangeResponse,
+        PackedIndexRangeResponse,
     },
     transaction::{
         IndexRangeRequest,
@@ -447,19 +448,67 @@ pub async fn index_range_batch_packed<RT: Runtime>(
     tx: &mut Transaction<RT>,
     requests: BTreeMap<BatchKey, IndexRangeRequest>,
 ) -> BTreeMap<BatchKey, anyhow::Result<DeveloperPackedIndexRangeResponse>> {
-    let results = index_range_batch(tx, requests).await;
-    results
-        .into_iter()
-        .map(|(batch_key, result)| {
-            let packed_result = result.map(|response| DeveloperPackedIndexRangeResponse {
-                cursor: response.cursor,
-                page: response
-                    .page
+    let batch_size = requests.len();
+    let mut results = BTreeMap::new();
+    let mut fetch_requests = BTreeMap::new();
+    let mut virtual_table_versions = BTreeMap::new();
+    for (batch_key, request) in requests {
+        if matches!(request.stable_index_name, StableIndexName::Virtual(_, _)) {
+            virtual_table_versions.insert(batch_key, request.version.clone());
+        }
+        match start_index_range(tx, request) {
+            Err(e) => {
+                results.insert(batch_key, Err(e));
+            },
+            Ok(Ok(result)) => {
+                let packed = DeveloperPackedIndexRangeResponse {
+                    cursor: result.cursor,
+                    page: result
+                        .page
+                        .into_iter()
+                        .map(|(key, doc, ts)| (key, PackedDeveloperDocument::pack(&doc), ts))
+                        .collect(),
+                };
+                results.insert(batch_key, Ok(packed));
+            },
+            Ok(Err(request)) => {
+                fetch_requests.insert(batch_key, request);
+            },
+        }
+    }
+
+    let fetch_results = tx
+        .index
+        .range_batch_packed(&fetch_requests.values().collect_vec())
+        .await;
+
+    for (&batch_key, fetch_result) in fetch_requests.keys().zip(fetch_results) {
+        let virtual_table_version = virtual_table_versions.get(&batch_key).cloned();
+        let result = try {
+            let PackedIndexRangeResponse { page, cursor } = fetch_result?;
+            let developer_results = match virtual_table_version {
+                Some(version) => {
+                    let mut converted_documents = vec![];
+                    for (key, doc, ts) in page {
+                        let doc = VirtualTable::new(tx)
+                            .system_to_virtual_doc(doc.unpack(), version.clone())
+                            .await?;
+                        converted_documents.push((key, PackedDeveloperDocument::pack(&doc), ts));
+                    }
+                    converted_documents
+                },
+                None => page
                     .into_iter()
-                    .map(|(key, doc, ts)| (key, PackedDeveloperDocument::pack(&doc), ts))
+                    .map(|(key, doc, ts)| (key, PackedDeveloperDocument::from_packed(doc), ts))
                     .collect(),
-            });
-            (batch_key, packed_result)
-        })
-        .collect()
+            };
+            DeveloperPackedIndexRangeResponse {
+                page: developer_results,
+                cursor,
+            }
+        };
+        results.insert(batch_key, result);
+    }
+    assert_eq!(results.len(), batch_size);
+    results
 }
