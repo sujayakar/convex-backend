@@ -31,7 +31,9 @@ test("BaseConvexClient protocol in node", async () => {
       { webSocketConstructor: nodeWebSocket, unsavedChangesWarning: false },
     );
 
-    expect((await receive()).type).toEqual("Connect");
+    const connect = await receive();
+    expect(connect.type).toEqual("Connect");
+    expect(connect.supportsBinary).toBe(true);
     expect((await receive()).type).toEqual("ModifyQuerySet");
 
     await client.close();
