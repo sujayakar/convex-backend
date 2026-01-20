@@ -67,9 +67,9 @@ use value::{
     heap_size::HeapSize,
     ConvexArray,
     ConvexValue,
-    JsonPackedValue,
     NamespacedTableMapping,
 };
+use packed_value::PackedSyncValue;
 
 use crate::{
     helpers::{
@@ -832,7 +832,7 @@ pub struct ValidatedUdfOutcome {
 
     // QueryUdfOutcomes are stored in the Udf level cache, which is why we would like
     // them to have more compact representation.
-    pub result: Result<JsonPackedValue, JsError>,
+    pub result: Result<PackedSyncValue, JsError>,
 
     pub syscall_trace: SyscallTrace,
 
@@ -911,7 +911,7 @@ impl ValidatedUdfOutcome {
 
         // TODO(CX-6318) Don't pack json value until it's been validated.
         let returns: ConvexValue = match &validated.result {
-            Ok(json_packed_value) => match json_packed_value.unpack() {
+            Ok(packed_value) => match packed_value.unpack() {
                 Ok(v) => v,
                 Err(mut e) => {
                     report_error_sync(&mut e);
@@ -939,7 +939,7 @@ pub struct ValidatedActionOutcome {
 
     pub unix_timestamp: UnixTimestamp,
 
-    pub result: Result<JsonPackedValue, JsError>,
+    pub result: Result<PackedSyncValue, JsError>,
     pub syscall_trace: SyscallTrace,
 
     pub udf_server_version: Option<semver::Version>,
@@ -966,8 +966,8 @@ impl ValidatedActionOutcome {
             user_execution_time: outcome.user_execution_time,
         };
 
-        if let Ok(json_packed_value) = &validated.result {
-            match json_packed_value.unpack() {
+        if let Ok(packed_value) = &validated.result {
+            match packed_value.unpack() {
                 Ok(output) => {
                     if let Some(js_err) = returns_validator.check_output(
                         &output,

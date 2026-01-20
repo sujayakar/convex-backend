@@ -589,9 +589,9 @@ mod tests {
     use sync_types::SessionId;
     use value::{
         ConvexValue,
-        JsonPackedValue,
         TableNamespace,
     };
+    use packed_value::PackedSyncValue;
 
     use crate::system_table_cleanup::{
         CreationTimeInterval,
@@ -620,7 +620,7 @@ mod tests {
                         session_id: SessionId::new(rt.new_uuid_v4()),
                         request_id: 0,
                         outcome: SessionRequestOutcome::Mutation {
-                            result: JsonPackedValue::pack(ConvexValue::Null),
+                            result: PackedSyncValue::pack(&ConvexValue::Null),
                             log_lines: vec![].into(),
                         },
                         identity: InertIdentity::System,

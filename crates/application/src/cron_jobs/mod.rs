@@ -75,10 +75,10 @@ use sync_types::Timestamp;
 use tokio::sync::mpsc;
 use usage_tracking::FunctionUsageTracker;
 use value::{
-    JsonPackedValue,
     ResolvedDocumentId,
     TableNamespace,
 };
+use packed_value::PackedSyncValue;
 
 use crate::{
     application_function_runner::ApplicationFunctionRunner,
@@ -361,7 +361,7 @@ impl<RT: Runtime> CronJobContext<RT> {
         Ok(job_id)
     }
 
-    fn truncate_result(&self, result: JsonPackedValue) -> anyhow::Result<CronJobResult> {
+    fn truncate_result(&self, result: PackedSyncValue) -> anyhow::Result<CronJobResult> {
         let value = result.unpack()?;
         let mut value_str = value.to_string();
         if value_str.len() <= CRON_LOG_MAX_RESULT_LENGTH {

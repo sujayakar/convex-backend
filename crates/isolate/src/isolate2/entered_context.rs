@@ -1,4 +1,7 @@
-use anyhow::anyhow;
+use anyhow::{
+    anyhow,
+    Context as _,
+};
 use common::{
     components::{
         ComponentId,
@@ -21,7 +24,11 @@ use model::modules::user_error::{
     ModuleNotFoundError,
 };
 use sync_types::CanonicalizedUdfPath;
-use value::ConvexArray;
+use value::{
+    ConvexArray,
+    ConvexValue,
+};
+use packed_value::PackedSyncValue;
 
 use super::{
     client::{
@@ -46,6 +53,10 @@ use crate::{
         pump_message_loop,
         source_map_from_slice,
         to_rust_string,
+    },
+    packed_values::{
+        extract_packed_meta,
+        open_at_path,
     },
     isolate2::{
         callback_context::CallbackContext,
@@ -468,9 +479,41 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
                 anyhow::bail!(self.format_traceback(e)?);
             },
             v8::PromiseState::Fulfilled if pending.is_empty() => {
-                let v8_result: v8::Local<v8::String> = promise.result(self.scope).try_into()?;
-                let result_str = helpers::to_rust_string(self.scope, &v8_result)?;
-                let result = deserialize_udf_result(path, &result_str)??;
+                let promise_result_v8 = promise.result(self.scope);
+                let result = if let Ok(v8_result) = v8::Local::<v8::String>::try_from(
+                    promise_result_v8,
+                ) {
+                    let result_str = helpers::to_rust_string(self.scope, &v8_result)?;
+                    deserialize_udf_result(path, &result_str)?
+                } else {
+                    let Some(meta) =
+                        extract_packed_meta(self.scope, promise_result_v8)?
+                    else {
+                        anyhow::bail!("Function returned non-string non-packed value");
+                    };
+                    debug_assert!(matches!(
+                        meta.kind,
+                        crate::packed_values::PackedValueKind::Object
+                            | crate::packed_values::PackedValueKind::Array
+                    ));
+                    let packed = {
+                        let state = self.context_state_mut()?;
+                        state
+                            .environment
+                            .get_packed_value(meta.handle)?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Packed value handle {} missing", meta.handle)
+                            })?
+                    };
+                    if meta.path.is_empty() {
+                        Ok(PackedSyncValue::from_packed(packed))
+                    } else {
+                        let opened = open_at_path(&packed, &meta.path)?
+                            .context("Packed value path missing")?;
+                        let value = ConvexValue::try_from(opened)?;
+                        Ok(PackedSyncValue::pack(&value))
+                    }
+                }?;
                 Ok(EvaluateResult::Ready(result))
             },
             v8::PromiseState::Pending | v8::PromiseState::Fulfilled => {

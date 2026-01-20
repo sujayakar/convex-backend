@@ -87,7 +87,6 @@ use value::{
     ConvexArray,
     ConvexObject,
     ConvexValue,
-    JsonPackedValue,
     NamespacedTableMapping,
     TableMapping,
     TableName,
@@ -708,7 +707,7 @@ async fn run_request<RT: Runtime>(
         observed_time: outcome.observed_time,
         log_lines: log_lines.into(),
         journal: provider.next_journal,
-        result: result.map(JsonPackedValue::pack),
+        result,
         syscall_trace: provider.syscall_trace,
         udf_server_version,
         memory_in_mb: (*ISOLATE_MAX_USER_HEAP_SIZE / (1 << 20))

@@ -610,8 +610,7 @@ impl<RT: Runtime> SyncWorker<RT> {
                         let response = match result {
                             Ok(udf_return) => ServerMessage::MutationResponse {
                                 request_id,
-                                result: Ok(PackedSyncValue::from_json_packed(&udf_return.value)
-                                    .expect("Failed to convert mutation result")),
+                                result: Ok(udf_return.value),
                                 ts: Some(udf_return.ts),
                                 log_lines: udf_return.log_lines.into(),
                             },
@@ -699,8 +698,7 @@ impl<RT: Runtime> SyncWorker<RT> {
                     let response = match result {
                         Ok(udf_return) => ServerMessage::ActionResponse {
                             request_id,
-                            result: Ok(PackedSyncValue::from_json_packed(&udf_return.value)
-                                .expect("Failed to convert action result")),
+                            result: Ok(udf_return.value),
                             log_lines: udf_return.log_lines.into(),
                         },
                         Err(RedactedActionError { error, log_lines }) => {
@@ -943,11 +941,7 @@ impl<RT: Runtime> SyncWorker<RT> {
                                         let subscription = subscriptions_client
                                             .subscribe(udf_return.token)
                                             .await?;
-                                        // Convert JsonPackedValue to PackedSyncValue for zero-copy
-                                        let result = udf_return.result.map(|json_packed| {
-                                            PackedSyncValue::from_json_packed(&json_packed)
-                                                .expect("Failed to convert JsonPackedValue")
-                                        });
+                                        let result = udf_return.result;
                                         (
                                             QueryResult::Rerun {
                                                 result,

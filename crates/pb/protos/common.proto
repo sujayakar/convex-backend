@@ -60,7 +60,7 @@ message TabletIdAndTableNumber {
 
 message FunctionResult {
   oneof result {
-    string json_packed_value = 1;
+    bytes packed_value = 1;
     JsError js_error = 2;
   }
 }

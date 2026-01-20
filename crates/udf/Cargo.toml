@@ -10,6 +10,7 @@ testing = [
     "dep:proptest",
     "dep:proptest-derive",
     "dep:proptest-http",
+    "packed_value/testing",
     "value/testing",
     "sync_types/testing",
     "database/testing",
@@ -32,6 +33,7 @@ humansize = { workspace = true }
 keybroker = { workspace = true }
 mime = { workspace = true }
 model = { workspace = true }
+packed_value = { workspace = true }
 pb = { workspace = true }
 proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }

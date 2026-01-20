@@ -365,12 +365,12 @@ use usage_tracking::{
 use value::{
     id_v6::DeveloperDocumentId,
     sha256::Sha256Digest,
-    JsonPackedValue,
     Namespace,
     ResolvedDocumentId,
     TableNamespace,
     TabletId,
 };
+use packed_value::PackedSyncValue;
 use vector::{
     PublicVectorSearchQueryResult,
     VectorSearch,
@@ -448,7 +448,7 @@ pub struct ApplyConfigArgs {
 
 #[derive(Debug)]
 pub struct QueryReturn {
-    pub result: Result<JsonPackedValue, JsError>,
+    pub result: Result<PackedSyncValue, JsError>,
     pub log_lines: LogLines,
     pub token: Token,
     pub journal: QueryJournal,
@@ -456,7 +456,7 @@ pub struct QueryReturn {
 
 #[derive(Debug)]
 pub struct RedactedQueryReturn {
-    pub result: Result<JsonPackedValue, RedactedJsError>,
+    pub result: Result<PackedSyncValue, RedactedJsError>,
     pub log_lines: RedactedLogLines,
     pub token: Token,
     pub journal: SerializedQueryJournal,
@@ -464,14 +464,14 @@ pub struct RedactedQueryReturn {
 
 #[derive(Debug)]
 pub struct MutationReturn {
-    pub value: JsonPackedValue,
+    pub value: PackedSyncValue,
     pub log_lines: LogLines,
     pub ts: Timestamp,
 }
 
 #[derive(Debug)]
 pub struct RedactedMutationReturn {
-    pub value: JsonPackedValue,
+    pub value: PackedSyncValue,
     pub log_lines: RedactedLogLines,
     pub ts: Timestamp,
 }
@@ -492,13 +492,13 @@ pub struct RedactedMutationError {
 
 #[derive(Debug)]
 pub struct ActionReturn {
-    pub value: JsonPackedValue,
+    pub value: PackedSyncValue,
     pub log_lines: LogLines,
 }
 
 #[derive(Debug)]
 pub struct RedactedActionReturn {
-    pub value: JsonPackedValue,
+    pub value: PackedSyncValue,
     pub log_lines: RedactedLogLines,
 }
 
@@ -518,7 +518,7 @@ pub struct RedactedActionError {
 
 #[derive(Debug)]
 pub struct FunctionReturn {
-    pub value: JsonPackedValue,
+    pub value: PackedSyncValue,
     pub log_lines: RedactedLogLines,
 }
 

@@ -9,7 +9,8 @@ use pb::common::{
     function_result::Result as FunctionResultTypeProto,
     FunctionResult as FunctionResultProto,
 };
-use value::JsonPackedValue;
+use packed_value::PackedSyncValue;
+use bytes::Bytes;
 
 pub type EvaluateAppDefinitionsResult =
     BTreeMap<ComponentDefinitionPath, ComponentDefinitionMetadata>;
@@ -20,7 +21,7 @@ pub type EvaluateAppDefinitionsResult =
     derive(proptest_derive::Arbitrary, PartialEq)
 )]
 pub struct FunctionResult {
-    pub result: Result<JsonPackedValue, JsError>,
+    pub result: Result<PackedSyncValue, JsError>,
 }
 
 impl TryFrom<FunctionResultProto> for FunctionResult {
@@ -28,9 +29,9 @@ impl TryFrom<FunctionResultProto> for FunctionResult {
 
     fn try_from(result: FunctionResultProto) -> anyhow::Result<Self> {
         let result = match result.result {
-            Some(FunctionResultTypeProto::JsonPackedValue(value)) => {
-                Ok(JsonPackedValue::from_network(value)?)
-            },
+            Some(FunctionResultTypeProto::PackedValue(value)) => {
+                Ok(PackedSyncValue::from_bytes(Bytes::from(value))?)
+            }
             Some(FunctionResultTypeProto::JsError(js_error)) => Err(js_error.try_into()?),
             None => anyhow::bail!("Missing result"),
         };
@@ -43,7 +44,7 @@ impl TryFrom<FunctionResult> for FunctionResultProto {
 
     fn try_from(result: FunctionResult) -> anyhow::Result<Self> {
         let result = match result.result {
-            Ok(value) => FunctionResultTypeProto::JsonPackedValue(value.as_str().to_owned()),
+            Ok(value) => FunctionResultTypeProto::PackedValue(value.as_bytes().to_vec()),
             Err(js_error) => FunctionResultTypeProto::JsError(js_error.try_into()?),
         };
         Ok(FunctionResultProto {

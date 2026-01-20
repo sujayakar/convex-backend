@@ -3,20 +3,15 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use value::ConvexValue;
 
-use crate::{
-    packed_values::{
-        PackedPathSegment,
-        PackedValueHandle,
-        PackedValueKind,
-    },
+use crate::packed_values::{
+    open_at_path,
+    PackedPathSegment,
+    PackedValueHandle,
+    PackedValueKind,
 };
 
 use super::OpProvider;
-use packed_value::{
-    ByteBuffer,
-    OpenedValue,
-    PackedValue,
-};
+use packed_value::OpenedValue;
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -31,35 +26,7 @@ enum PackedReadResult {
     },
 }
 
-fn open_at_path(
-    packed: &PackedValue<ByteBuffer>,
-    path: &[PackedPathSegment],
-) -> anyhow::Result<Option<OpenedValue<ByteBuffer>>> {
-    let mut current = packed.clone().open()?;
-    for segment in path {
-        match segment {
-            PackedPathSegment::Field(field) => match current {
-                OpenedValue::Object(object) => {
-                    match object.get(field)? {
-                        Some(next) => current = next,
-                        None => return Ok(None),
-                    }
-                },
-                _ => return Ok(None),
-            },
-            PackedPathSegment::Index(index) => match current {
-                OpenedValue::Array(array) => {
-                    if *index >= array.len() {
-                        return Ok(None);
-                    }
-                    current = array.index(*index)?;
-                },
-                _ => return Ok(None),
-            },
-        }
-    }
-    Ok(Some(current))
-}
+// use shared open_at_path from packed_values
 
 #[convex_macro::v8_op]
 pub fn op_packed_value_read<'b, P: OpProvider<'b>>(
