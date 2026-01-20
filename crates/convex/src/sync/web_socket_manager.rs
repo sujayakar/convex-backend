@@ -522,6 +522,12 @@ fn decode_flex_value(reader: Reader<&[u8]>) -> anyhow::Result<crate::value::Valu
         FlexBufferType::Int | FlexBufferType::IndirectInt => {
             crate::value::Value::Int64(reader.get_i64()?)
         },
+        FlexBufferType::UInt | FlexBufferType::IndirectUInt => {
+            let value = reader.get_u64()?;
+            let signed = i64::try_from(value)
+                .map_err(|_| anyhow::anyhow!("Unsigned value {value} exceeds i64::MAX"))?;
+            crate::value::Value::Int64(signed)
+        },
         FlexBufferType::Float | FlexBufferType::IndirectFloat => {
             crate::value::Value::Float64(reader.get_f64()?)
         },
@@ -640,6 +646,33 @@ mod tests {
         assert!(buffer.push(chunk1)?.is_none());
         let combined = buffer.push(chunk2)?.expect("Expected full payload");
         assert_eq!(combined, vec![1, 2, 3, 4, 5]);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_binary_server_message_accepts_uints() -> anyhow::Result<()> {
+        let packed = flexbuffers::singleton(7u64);
+        let header = serde_json::json!({
+            "type": "MutationResponse",
+            "requestId": 1,
+            "success": true,
+            "result": { "$packed": 0 },
+            "logLines": [],
+        });
+        let header_bytes = serde_json::to_vec(&header)?;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&header_bytes);
+        payload.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&packed);
+
+        let message = parse_binary_server_message(&payload)?;
+        match message {
+            ServerMessage::MutationResponse { result: Ok(value), .. } => {
+                assert_eq!(value, crate::value::Value::Int64(7));
+            },
+            other => anyhow::bail!("Unexpected server message {other:?}"),
+        }
         Ok(())
     }
 }
