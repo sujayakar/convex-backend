@@ -930,3 +930,63 @@ test("TransitionChunk messages are assembled into a Transition", async () => {
     await client.close();
   });
 });
+
+test("Binary chunk frames are assembled into a Transition", async () => {
+  await withInMemoryWebSocket(async ({ address, receive, socket }) => {
+    const client = new BaseConvexClient(address, () => null, {
+      webSocketConstructor: nodeWebSocket,
+      unsavedChangesWarning: false,
+    });
+    expect((await receive()).type).toEqual("Connect");
+    expect((await receive()).type).toEqual("ModifyQuerySet");
+
+    const transitionHeader = {
+      type: "Transition",
+      startVersion: {
+        querySet: 0,
+        ts: longToU64(Long.fromNumber(0)),
+        identity: 0,
+      },
+      endVersion: {
+        querySet: 1,
+        ts: longToU64(Long.fromNumber(1000)),
+        identity: 0,
+      },
+      modifications: [],
+    };
+    const headerBytes = new TextEncoder().encode(
+      JSON.stringify(transitionHeader),
+    );
+    const payload = new Uint8Array(4 + headerBytes.length);
+    const view = new DataView(payload.buffer);
+    view.setUint32(0, headerBytes.length, true);
+    payload.set(headerBytes, 4);
+
+    const midpoint = Math.floor(payload.length / 2);
+    const chunks = [payload.slice(0, midpoint), payload.slice(midpoint)];
+    const messageId = 9;
+    const totalParts = chunks.length;
+
+    for (let idx = 0; idx < chunks.length; idx++) {
+      const chunk = chunks[idx];
+      const frame = new Uint8Array(13 + chunk.length);
+      const frameView = new DataView(frame.buffer);
+      frame[0] = 1;
+      frameView.setUint32(1, messageId, true);
+      frameView.setUint32(5, idx, true);
+      frameView.setUint32(9, totalParts, true);
+      frame.set(chunk, 13);
+      socket().send(Buffer.from(frame));
+    }
+
+    for (let i = 0; i < 10; i++) {
+      if (client.getMaxObservedTimestamp()) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(client.getMaxObservedTimestamp()).toEqual(Long.fromNumber(1000));
+
+    await client.close();
+  });
+});
