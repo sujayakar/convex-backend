@@ -16,7 +16,10 @@ use common::{
         ResolvedComponentFunctionPath,
         Resource,
     },
-    document::PackedDeveloperDocument,
+    document::{
+        PackedDeveloperDocument,
+        PackedDocument,
+    },
     execution_context::ExecutionContext,
     knobs::{
         MAX_REACTOR_CALL_DEPTH,
@@ -37,6 +40,7 @@ use common::{
         AllowedVisibility,
         PersistenceVersion,
         UdfType,
+        WriteTimestamp,
     },
     value::ConvexValue,
     version::Version,
@@ -1159,6 +1163,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
         let mut results = BTreeMap::new();
         let batch_size = batch_args.len();
         for (idx, args) in batch_args.into_iter().enumerate() {
+            let mut direct_result: Option<SyscallResult> = None;
             let result: anyhow::Result<_> = try {
                 match args {
                     AsyncRead::QueryStreamNext(args) => {
@@ -1190,7 +1195,6 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
                     },
                     AsyncRead::Get(args) => {
                         let component = provider.component()?;
-                        let tx = provider.tx()?;
 
                         let args = with_argument_error("db.get", || {
                             Ok(serde_json::from_value::<GetArgs>(args)?)
@@ -1207,40 +1211,70 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
                             let version = parse_version(args.version)?;
                             Ok((id, args.is_system, version))
                         })?;
-                        let name: Result<TableName, anyhow::Error> = tx
-                            .all_tables_number_to_name(component.into(), table_filter)(
-                            id.table()
-                        );
-                        if name.is_ok() {
-                            system_table_guard(&name?, is_system)?;
+                        enum GetResult<RT: Runtime> {
+                            Direct(Option<(PackedDocument, WriteTimestamp)>),
+                            Query(DeveloperQuery<RT>),
+                            Missing,
                         }
-                        match tx.resolve_idv6(id, component.into(), table_filter) {
-                            Ok(table_name) => {
-                                with_argument_error(method_name, || {
-                                    check_table_name(&args.table, &table_name)
-                                })?;
 
-                                let query = Query::get(table_name, id);
-                                Some((
-                                    None,
-                                    DeveloperQuery::new_with_version(
-                                        tx,
-                                        component.into(),
-                                        query,
-                                        version,
-                                        table_filter,
-                                    )?,
-                                ))
-                            },
-                            Err(_) => {
-                                // Get on a non-existent table should return
-                                // null.
+                        let get_result: anyhow::Result<GetResult<RT>> = try {
+                            let tx = provider.tx()?;
+                            let name: Result<TableName, anyhow::Error> = tx
+                                .all_tables_number_to_name(component.into(), table_filter)(
+                                id.table()
+                            );
+                            if name.is_ok() {
+                                system_table_guard(&name?, is_system)?;
+                            }
+                            match tx.resolve_idv6(id, component.into(), table_filter) {
+                                Ok(table_name) => {
+                                    with_argument_error(method_name, || {
+                                        check_table_name(&args.table, &table_name)
+                                    })?;
+
+                                    if !tx.virtual_system_mapping().is_virtual_table(&table_name) {
+                                        let resolved_id =
+                                            tx.resolve_developer_id(&id, component.into())?;
+                                        let packed = tx.get_with_ts_packed(resolved_id).await?;
+                                        GetResult::Direct(packed)
+                                    } else {
+                                        let query = Query::get(table_name, id);
+                                        GetResult::Query(DeveloperQuery::new_with_version(
+                                            tx,
+                                            component.into(),
+                                            query,
+                                            version,
+                                            table_filter,
+                                        )?)
+                                    }
+                                },
+                                Err(_) => GetResult::Missing,
+                            }
+                        };
+
+                        match get_result? {
+                            GetResult::Direct(packed) => {
+                                let syscall_result = match packed {
+                                    Some((doc, _)) => {
+                                        let handle =
+                                            provider.register_packed_value(doc.value().clone())?;
+                                        SyscallResult::Value(SyscallValue::PackedDoc { handle })
+                                    },
+                                    None => SyscallResult::Json(JsonValue::Null),
+                                };
+                                direct_result = Some(syscall_result);
                                 None
                             },
+                            GetResult::Query(query) => Some((None, query)),
+                            GetResult::Missing => None,
                         }
                     },
                 }
             };
+            if let Some(syscall_result) = direct_result {
+                assert!(results.insert(idx, Ok(syscall_result)).is_none());
+                continue;
+            }
             match result {
                 Err(e) => {
                     assert!(results.insert(idx, Err(e)).is_none());

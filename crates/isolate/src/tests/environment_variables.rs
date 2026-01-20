@@ -118,7 +118,7 @@ async fn test_environment_variable_reads_recorded(
                 None,
             )
             .await?;
-        assert_eq!(outcome.result.unwrap().json_value(), json!(null));
+        assert_eq!(outcome.result.unwrap().to_json()?, json!(null));
 
         let mut tx = t.database.begin_system().await?;
         let unrelated_variable =
@@ -153,7 +153,7 @@ async fn test_environment_variable_reads_recorded(
                 None,
             )
             .await?;
-        assert_eq!(outcome.result.unwrap().json_value(), json!("TEST_VALUE"));
+        assert_eq!(outcome.result.unwrap().to_json()?, json!("TEST_VALUE"));
         let mut tx = t.database.begin_system().await?;
         related_variable.value = "TEST_VALUE_2".parse()?;
         EnvironmentVariablesModel::new(&mut tx)

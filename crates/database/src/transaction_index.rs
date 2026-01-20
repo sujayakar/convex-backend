@@ -71,7 +71,10 @@ use value::{
 
 use crate::{
     preloaded::PreloadedIndexRange,
-    query::IndexRangeResponse,
+    query::{
+        IndexRangeResponse,
+        PackedIndexRangeResponse,
+    },
     reads::TransactionReadSet,
     writes::PendingWrites,
     DEFAULT_PAGE_SIZE,
@@ -351,6 +354,62 @@ impl TransactionIndex {
                     ))?;
                 }
                 IndexRangeResponse { page: out, cursor }
+            };
+            results.push(result);
+        }
+        assert_eq!(results.len(), batch_size);
+        results
+    }
+
+    /// Packed variant of `range_batch` that avoids unpacking documents.
+    pub async fn range_batch_packed(
+        &mut self,
+        ranges: &[&RangeRequest],
+    ) -> Vec<anyhow::Result<PackedIndexRangeResponse>> {
+        let batch_size = ranges.len();
+        let mut results = Vec::with_capacity(batch_size);
+
+        let fetch_results = self.range_no_deps(ranges).await;
+
+        for (
+            RangeRequest {
+                interval,
+                max_size,
+                ..
+            },
+            fetch_result,
+        ) in ranges.iter().zip(fetch_results)
+        {
+            let result: anyhow::Result<_> = try {
+                let (documents, fetch_cursor) = fetch_result?;
+                let mut total_bytes = 0;
+                let mut within_bytes_limit = true;
+                let out: Vec<_> = documents
+                    .into_iter()
+                    .map(|(key, doc, ts)| (key, doc.into_packed(), ts))
+                    .take(*max_size)
+                    .take_while(|(_, document, _)| {
+                        within_bytes_limit = total_bytes < *TRANSACTION_MAX_READ_SIZE_BYTES;
+                        // Allow the query to exceed the limit by one document so the query
+                        // is guaranteed to make progress and probably fail.
+                        total_bytes += document.value().size();
+                        within_bytes_limit
+                    })
+                    .collect();
+
+                let cursor = if let Some((last_key, ..)) = out.last()
+                    && (out.len() >= *max_size || !within_bytes_limit)
+                {
+                    CursorPosition::After(last_key.clone())
+                } else {
+                    fetch_cursor
+                };
+                if !interval.contains_cursor(&cursor) {
+                    Err(anyhow::anyhow!(
+                        "query for {interval:?} not making progress"
+                    ))?;
+                }
+                PackedIndexRangeResponse { page: out, cursor }
             };
             results.push(result);
         }

@@ -13,6 +13,7 @@ use common::{
     },
     document::{
         DeveloperDocument,
+        PackedDocument,
         PackedDeveloperDocument,
         ResolvedDocument,
     },
@@ -136,6 +137,11 @@ pub struct DeveloperPackedIndexRangeResponse {
 
 pub struct IndexRangeResponse {
     pub page: Vec<(IndexKeyBytes, ResolvedDocument, WriteTimestamp)>,
+    pub cursor: CursorPosition,
+}
+
+pub struct PackedIndexRangeResponse {
+    pub page: Vec<(IndexKeyBytes, PackedDocument, WriteTimestamp)>,
     pub cursor: CursorPosition,
 }
 
