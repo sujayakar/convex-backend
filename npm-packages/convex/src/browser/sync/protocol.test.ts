@@ -84,4 +84,14 @@ test("Binary frame decoding", async () => {
   expect(() => decodeBinaryFrame(invalidFrame.buffer)).toThrow(
     "part out of range",
   );
+
+  const zeroPartsFrame = new Uint8Array(13);
+  const zeroView = new DataView(zeroPartsFrame.buffer);
+  zeroPartsFrame[0] = 1;
+  zeroView.setUint32(1, 1, true);
+  zeroView.setUint32(5, 0, true);
+  zeroView.setUint32(9, 0, true);
+  expect(() => decodeBinaryFrame(zeroPartsFrame.buffer)).toThrow(
+    "zero parts",
+  );
 });
