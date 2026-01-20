@@ -76,6 +76,7 @@ enum WebSocketRequest {
     Reconnect(ReconnectRequest),
 }
 
+#[derive(Debug)]
 struct BinaryChunkFrame {
     message_id: u32,
     part_number: u32,
@@ -83,6 +84,7 @@ struct BinaryChunkFrame {
     payload: Vec<u8>,
 }
 
+#[derive(Debug)]
 enum BinaryFrame {
     Full(Vec<u8>),
     Chunk(BinaryChunkFrame),
@@ -472,6 +474,7 @@ fn decode_binary_frame(payload: &[u8]) -> anyhow::Result<BinaryFrame> {
             let message_id = u32::from_le_bytes(payload[1..5].try_into()?);
             let part_number = u32::from_le_bytes(payload[5..9].try_into()?);
             let total_parts = u32::from_le_bytes(payload[9..13].try_into()?);
+            anyhow::ensure!(total_parts > 0, "Binary chunk frame has zero parts");
             Ok(BinaryFrame::Chunk(BinaryChunkFrame {
                 message_id,
                 part_number,
@@ -674,5 +677,16 @@ mod tests {
             other => anyhow::bail!("Unexpected server message {other:?}"),
         }
         Ok(())
+    }
+
+    #[test]
+    fn decode_binary_frame_rejects_zero_parts() {
+        let mut frame = vec![BINARY_FRAME_TYPE_CHUNK];
+        frame.extend_from_slice(&1u32.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&[1, 2, 3]);
+        let err = decode_binary_frame(&frame).expect_err("expected error");
+        assert!(err.to_string().contains("zero parts"));
     }
 }
