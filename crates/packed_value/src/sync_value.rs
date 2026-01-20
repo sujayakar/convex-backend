@@ -1,7 +1,7 @@
 //! PackedSyncValue - A zero-copy value type for the sync protocol
 //!
-//! This replaces JsonPackedValue with a FlexBuffer-based representation
-//! that can be passed through the sync worker without copying.
+//! This replaces the JSON-packed sync representation with a FlexBuffer-based
+//! representation that can be passed through the sync worker without copying.
 
 use std::sync::Arc;
 
@@ -173,14 +173,6 @@ impl From<&PackedSyncValue> for JsonValue {
         value
             .to_json()
             .expect("PackedSyncValue JSON conversion failed")
-    }
-}
-
-impl PackedSyncValue {
-    /// Convert from a JsonPackedValue (for gradual migration)
-    pub fn from_json_packed(json_packed: &value::JsonPackedValue) -> anyhow::Result<Self> {
-        let value = json_packed.unpack()?;
-        Ok(Self::pack(&value))
     }
 }
 
