@@ -93,6 +93,9 @@ const packedValueHandler: ProxyHandler<any> = {
   },
   has(target, prop) {
     const meta: PackedMeta = target[packedValueSymbol];
+    if (prop === packedValueSymbol) {
+      return true;
+    }
     if (meta.materialized !== undefined) {
       return Reflect.has(meta.materialized, prop);
     }
