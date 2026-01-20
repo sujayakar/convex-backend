@@ -23,6 +23,7 @@ use futures::{
 };
 use serde_json::Value as JsonValue;
 use value::{
+    FieldPath,
     InternalDocumentId,
     TabletId,
 };
@@ -490,6 +491,7 @@ pub trait PersistenceReader: Send + Sync + 'static {
         range: &Interval,
         order: Order,
         size_hint: usize,
+        selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) -> IndexStream<'_>;
 
@@ -514,6 +516,7 @@ pub trait PersistenceReader: Send + Sync + 'static {
             &Interval::prefix(key.to_bytes().into()),
             Order::Asc,
             2,
+            None,
             retention_validator,
         );
         match stream.try_next().await? {
@@ -747,6 +750,7 @@ impl PersistenceSnapshot {
         interval: &Interval,
         order: Order,
         size_hint: usize,
+        selected_fields: Option<Vec<FieldPath>>,
     ) -> IndexStream<'_> {
         self.reader
             .index_scan(
@@ -756,6 +760,7 @@ impl PersistenceSnapshot {
                 interval,
                 order,
                 size_hint,
+                selected_fields,
                 self.retention_validator.clone(),
             )
             .boxed()

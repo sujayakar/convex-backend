@@ -827,8 +827,8 @@ pub fn index_queries(multitenant: bool) -> &'static HashMap<(BoundType, BoundTyp
     &INDEX_QUERIES[multitenant as usize]
 }
 
-pub fn index_point_query(multitenant: bool) -> &'static str {
-    tableify!(
+pub fn index_point_query(multitenant: bool, projection: Option<&str>) -> String {
+    let base_query = tableify!(
         multitenant,
         formatcp!(
             r#"
@@ -859,7 +859,11 @@ WHERE I.deleted = false
                 ""
             }
         )
-    )
+    );
+    match projection {
+        Some(projection) => base_query.replace("D.json_value", projection),
+        None => base_query.to_string(),
+    }
 }
 
 // Multitenant variants of the index queries. Filters by instance_name and
@@ -1013,9 +1017,10 @@ pub fn index_query(
     upper: std::ops::Bound<SqlKey>,
     order: Order,
     batch_size: usize,
+    projection: Option<&str>,
     multitenant: bool,
     instance_name: &MySqlInstanceName,
-) -> (&'static str, Vec<mysql_async::Value>) {
+) -> (String, Vec<mysql_async::Value>) {
     use std::ops::Bound;
 
     let mut params = vec![];
@@ -1045,7 +1050,11 @@ pub fn index_query(
     let lt = map_bound(lower);
     let ut = map_bound(upper);
 
-    let query = index_queries(multitenant).get(&(lt, ut, order)).unwrap();
+    let base_query = index_queries(multitenant).get(&(lt, ut, order)).unwrap();
+    let query = match projection {
+        Some(projection) => base_query.replace("D.json_value", projection),
+        None => base_query.clone(),
+    };
     // Substitutions are {where_clause}, ts, {where_clause}, ts, limit.
     let mut all_params = vec![];
     if multitenant {

@@ -19,13 +19,6 @@ use common::{
     },
     runtime::Runtime,
 };
-use dynfmt::{
-    ArgumentSpec,
-    Error,
-    Format,
-    FormatArgs,
-    Position,
-};
 use errors::ErrorMetadata;
 use fastrace::func_path;
 use futures::{
@@ -111,116 +104,69 @@ where
     }
 }
 
-struct MySQLFormatArguments {
-    escaped_db_name: String,
-    params: Vec<String>,
-}
-
-impl FormatArgs for MySQLFormatArguments {
-    fn get_index(&self, index: usize) -> Result<Option<dynfmt::Argument<'_>>, ()> {
-        self.params.get_index(index)
-    }
-
-    fn get_key(&self, key: &str) -> Result<Option<dynfmt::Argument<'_>>, ()> {
-        match key {
-            "db_name" => Ok(Some(&self.escaped_db_name)),
-            _ => panic!("Unexpected named argument {key}"),
-        }
-    }
-}
-
 const DB_NAME_ARGUMENT_PATTERN: &str = "@db_name";
-
-// Formats @db_name and ?
-struct MySQLRawStatementFormat;
-
-impl<'f> Format<'f> for MySQLRawStatementFormat {
-    type Iter = impl Iterator<Item = Result<ArgumentSpec<'f>, Error<'f>>>;
-
-    fn iter_args(&self, format: &'f str) -> Result<Self::Iter, Error<'f>> {
-        let db_name_iter = format
-            .match_indices(DB_NAME_ARGUMENT_PATTERN)
-            .map(|(index, _)| {
-                Ok(
-                    ArgumentSpec::new(index, index + DB_NAME_ARGUMENT_PATTERN.len())
-                        .with_position(Position::Key("db_name")),
-                )
-            });
-        let args_iter = format
-            .match_indices('?')
-            .map(|(index, _)| Ok(ArgumentSpec::new(index, index + 1)));
-        // The resulting iterator should be sorted.
-        let mut args: Vec<_> = db_name_iter.chain(args_iter).collect();
-        args.sort_by_key(|arg| match arg {
-            Ok(arg) => arg.start(),
-            Err(_) => 0,
-        });
-        Ok::<Self::Iter, _>(args.into_iter())
-    }
-}
 
 // Formats a MySQL query with position parameters into a string, so it can be
 // used with the text protocol.
 fn format_mysql_text_protocol(
     db_name: &str,
-    statement: &'static str,
+    statement: &str,
     params: Vec<MySqlValue>,
     labels: &[StaticMetricLabel],
 ) -> anyhow::Result<String> {
-    let args = MySQLFormatArguments {
-        escaped_db_name: format!("`{db_name}`"),
-        params: params
-            .into_iter()
-            .map(|p| match p {
+    let escaped_db_name = format!("`{db_name}`");
+    let mut params_iter = params.into_iter();
+    let mut result = String::with_capacity(statement.len());
+    let mut index = 0;
+    while index < statement.len() {
+        let remaining = &statement[index..];
+        if remaining.starts_with(DB_NAME_ARGUMENT_PATTERN) {
+            result.push_str(&escaped_db_name);
+            index += DB_NAME_ARGUMENT_PATTERN.len();
+            continue;
+        }
+        if remaining.as_bytes()[0] == b'?' {
+            let param = params_iter
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Missing MySQL parameter"))?;
+            let formatted = match param {
                 MySqlValue::NULL => "NULL".to_owned(),
                 MySqlValue::Bytes(bytes) => format!("x'{}'", hex::encode(bytes)),
                 MySqlValue::Int(i) => format!("{i}"),
                 MySqlValue::UInt(u) => format!("{u}"),
                 // We don't use the following and I don't want to deal with escaping them.
-                MySqlValue::Float(_) => panic!("Float MySQL argument not supported"),
-                MySqlValue::Double(_) => panic!("Double MySQL argument not supported"),
-                MySqlValue::Date(..) => panic!("Date MySQL argument not supported"),
-                MySqlValue::Time(..) => panic!("Time MySQL argument not supported"),
-            })
-            .collect(),
-    };
-    let result = MySQLRawStatementFormat.format(statement, args)?.to_string();
+                MySqlValue::Float(_) => {
+                    anyhow::bail!("Float MySQL argument not supported")
+                },
+                MySqlValue::Double(_) => {
+                    anyhow::bail!("Double MySQL argument not supported")
+                },
+                MySqlValue::Date(..) => anyhow::bail!("Date MySQL argument not supported"),
+                MySqlValue::Time(..) => anyhow::bail!("Time MySQL argument not supported"),
+            };
+            result.push_str(&formatted);
+            index += 1;
+            continue;
+        }
+        let ch = remaining
+            .chars()
+            .next()
+            .expect("remaining string should be non-empty");
+        result.push(ch);
+        index += ch.len_utf8();
+    }
     if result.len() > LARGE_STATEMENT_THRESHOLD {
         log_large_statement(labels.to_vec());
     }
     Ok(result)
 }
 
-// Formats @db_name
-struct MySQLPreparedStatementFormat;
-
-impl<'f> Format<'f> for MySQLPreparedStatementFormat {
-    type Iter = impl Iterator<Item = Result<ArgumentSpec<'f>, Error<'f>>>;
-
-    fn iter_args(&self, format: &'f str) -> Result<Self::Iter, Error<'f>> {
-        Ok::<Self::Iter, _>(
-            format
-                .match_indices(DB_NAME_ARGUMENT_PATTERN)
-                .map(|(index, _)| {
-                    Ok(
-                        ArgumentSpec::new(index, index + DB_NAME_ARGUMENT_PATTERN.len())
-                            .with_position(Position::Key("db_name")),
-                    )
-                }),
-        )
-    }
-}
 
 // Formats a MySQL query by only replacing the @db_name but leaves positional
 // arguments alone. To be used with MySQL binary protocol.
-fn format_mysql_binary_protocol(db_name: &str, statement: &'static str) -> anyhow::Result<String> {
-    let args = MySQLFormatArguments {
-        escaped_db_name: format!("`{db_name}`"),
-        params: vec![], // No positional arguments.
-    };
-    Ok(MySQLPreparedStatementFormat
-        .format(statement, args)?
-        .to_string())
+fn format_mysql_binary_protocol(db_name: &str, statement: &str) -> anyhow::Result<String> {
+    let escaped_db_name = format!("`{db_name}`");
+    Ok(statement.replace(DB_NAME_ARGUMENT_PATTERN, &escaped_db_name))
 }
 
 pub(crate) struct MySqlConnection<'a> {
@@ -235,7 +181,7 @@ pub(crate) struct MySqlConnection<'a> {
 impl MySqlConnection<'_> {
     /// Executes multiple statements, separated by semicolons.
     #[fastrace::trace]
-    pub async fn execute_many(&mut self, query: &'static str) -> anyhow::Result<()> {
+    pub async fn execute_many(&mut self, query: &str) -> anyhow::Result<()> {
         log_execute(self.labels.clone());
         let statement = format_mysql_text_protocol(self.db_name, query, vec![], &self.labels)?;
         with_timeout(self.conn.query_iter(statement)).await?;
@@ -246,7 +192,7 @@ impl MySqlConnection<'_> {
     #[fastrace::trace]
     pub async fn query_optional(
         &mut self,
-        statement: &'static str,
+        statement: &str,
         params: Vec<MySqlValue>,
     ) -> anyhow::Result<Option<Row>> {
         log_query(self.labels.clone());
@@ -269,7 +215,7 @@ impl MySqlConnection<'_> {
     #[fastrace::trace]
     pub async fn query_stream(
         &mut self,
-        statement: &'static str,
+        statement: &str,
         params: Vec<MySqlValue>,
         size_hint: usize,
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<Row>> + use<'_>> {
@@ -323,7 +269,7 @@ impl MySqlConnection<'_> {
     #[fastrace::trace]
     pub async fn exec_iter(
         &mut self,
-        statement: &'static str,
+        statement: &str,
         params: Vec<MySqlValue>,
     ) -> anyhow::Result<u64> {
         log_execute(self.labels.clone());
@@ -372,7 +318,7 @@ impl MySqlTransaction<'_> {
     /// result set.
     pub async fn exec_first(
         &mut self,
-        statement: &'static str,
+        statement: &str,
         params: Vec<MySqlValue>,
     ) -> anyhow::Result<Option<Row>> {
         let future = if self.use_prepared_statements {
@@ -389,7 +335,7 @@ impl MySqlTransaction<'_> {
     /// Executes the given statement and drops the result.
     pub async fn exec_drop(
         &mut self,
-        statement: &'static str,
+        statement: &str,
         params: Vec<MySqlValue>,
     ) -> anyhow::Result<()> {
         let future = if self.use_prepared_statements {
@@ -406,7 +352,7 @@ impl MySqlTransaction<'_> {
     /// Execute a SQL statement, returning the number of rows affected.
     pub async fn exec_iter(
         &mut self,
-        statement: &'static str,
+        statement: &str,
         params: Vec<MySqlValue>,
     ) -> anyhow::Result<u64> {
         let affected_rows = if self.use_prepared_statements {

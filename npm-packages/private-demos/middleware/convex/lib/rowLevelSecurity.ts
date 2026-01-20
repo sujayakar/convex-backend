@@ -5,6 +5,7 @@ import {
   DocumentByName,
   Expression,
   FilterBuilder,
+  FieldPaths,
   GenericDataModel,
   GenericTableInfo,
   IndexRange,
@@ -149,30 +150,62 @@ class WrapQuery<T extends GenericTableInfo> implements Query<T> {
   q: Query<T>;
   p: AuthPredicate<T>;
   iterator?: AsyncIterator<any>;
+  selectedFields?: string[];
   constructor(q: Query<T> | OrderedQuery<T>, p: AuthPredicate<T>) {
     this.q = q as Query<T>;
     this.p = p;
   }
+  private project(doc: DocumentByInfo<T>): DocumentByInfo<T> {
+    if (!this.selectedFields) {
+      return doc;
+    }
+    const projected: Record<string, unknown> = {
+      _id: (doc as any)._id,
+      _creationTime: (doc as any)._creationTime,
+    };
+    for (const field of this.selectedFields) {
+      if (field in (doc as any)) {
+        projected[field] = (doc as any)[field];
+      }
+    }
+    return projected as DocumentByInfo<T>;
+  }
   // internal
   limit(n: number): this {
-    return new WrapQuery(this.q.limit(n), this.p) as this;
+    const query = new WrapQuery(this.q.limit(n), this.p) as this;
+    query.selectedFields = this.selectedFields;
+    return query;
   }
   filter(predicate: (q: FilterBuilder<T>) => Expression<boolean>): this {
-    return new WrapQuery(this.q.filter(predicate), this.p) as this;
+    const query = new WrapQuery(this.q.filter(predicate), this.p) as this;
+    query.selectedFields = this.selectedFields;
+    return query;
   }
   order(order: "asc" | "desc"): WrapQuery<T> {
-    return new WrapQuery(this.q.order(order), this.p);
+    const query = new WrapQuery(this.q.order(order), this.p);
+    query.selectedFields = this.selectedFields;
+    return query;
+  }
+  select<Fields extends FieldPaths<T>>(fields: Fields[]): any {
+    if (this.selectedFields) {
+      throw new Error("select() may only be called once");
+    }
+    const query = new WrapQuery(this.q, this.p);
+    query.selectedFields = fields as string[];
+    return query as any;
   }
   async paginate(
     paginationOpts: PaginationOptions,
   ): Promise<PaginationResult<DocumentByInfo<T>>> {
     const result = await this.q.paginate(paginationOpts);
-    result.page = await asyncFilter(result.page, this.p);
+    result.page = (await asyncFilter(result.page, this.p)).map((doc) =>
+      this.project(doc),
+    );
     return result;
   }
   async collect(): Promise<DocumentByInfo<T>[]> {
     const results = await this.q.collect();
-    return await asyncFilter(results, this.p);
+    return (await asyncFilter(results, this.p)).map((doc) => this.project(doc));
   }
   async take(n: number): Promise<DocumentByInfo<T>[]> {
     const results = [];
@@ -209,7 +242,7 @@ class WrapQuery<T extends GenericTableInfo> implements Query<T> {
     for (;;) {
       const { value, done } = await this.iterator!.next();
       if (value && (await this.p(value))) {
-        return { value, done };
+        return { value: this.project(value), done };
       }
       if (done) {
         return { value: null, done: true };
@@ -237,6 +270,9 @@ class WrapQueryInitializer<T extends GenericTableInfo>
   // internal
   limit(n: number): this {
     return this.fullTableScan().limit(n) as this;
+  }
+  select<Fields extends FieldPaths<T>>(fields: Fields[]): any {
+    return this.fullTableScan().select(fields);
   }
   fullTableScan(): Query<T> {
     return new WrapQuery(this.q.fullTableScan(), this.p);

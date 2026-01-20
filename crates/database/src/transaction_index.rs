@@ -965,7 +965,7 @@ mod tests {
                     interval: Interval::all(),
                     order: Order::Asc,
                     max_size: 100,
-                })
+                    })
                 .await;
             assert!(result.is_err());
             match result {
@@ -996,6 +996,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Asc,
                 max_size: 100,
+                selected_fields: None,
             })
             .await;
         assert!(result.is_err());
@@ -1065,6 +1066,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Asc,
                 max_size: 100,
+                selected_fields: None,
             })
             .await?;
         assert!(matches!(cursor, CursorPosition::End));
@@ -1079,7 +1081,7 @@ mod tests {
                     interval: Interval::all(),
                     order: Order::Asc,
                     max_size: 100,
-                })
+                    })
                 .await;
             assert!(result.is_err());
             match result {
@@ -1105,6 +1107,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Asc,
                 max_size: 100,
+                selected_fields: None,
             })
             .await?;
         assert!(matches!(cursor, CursorPosition::End));
@@ -1129,6 +1132,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Asc,
                 max_size: 100,
+                selected_fields: None,
             })
             .await?;
         assert_eq!(
@@ -1272,6 +1276,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Asc,
                 max_size: 100,
+                selected_fields: None,
             })
             .await?;
         assert!(matches!(cursor, CursorPosition::End));
@@ -1306,6 +1311,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Asc,
                 max_size: 100,
+                selected_fields: None,
             })
             .await?;
         assert!(matches!(cursor, CursorPosition::End));
@@ -1341,6 +1347,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Asc,
                 max_size: 2,
+                selected_fields: None,
             })
             .await?;
         assert_eq!(
@@ -1374,6 +1381,7 @@ mod tests {
                 interval: Interval::all(),
                 order: Order::Desc,
                 max_size: 100,
+                selected_fields: None,
             })
             .await?;
         assert!(matches!(cursor, CursorPosition::End));

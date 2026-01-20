@@ -346,6 +346,7 @@ impl<RT: Runtime> LeaderRetentionWorkerSeed<RT> {
                 &Interval::all(),
                 Order::Asc,
                 usize::MAX,
+                None,
                 self.retention_manager.clone(),
             );
             let mut indexes = BTreeMap::new();
@@ -2087,8 +2088,14 @@ mod tests {
         let snapshot_reader = reader.read_snapshot(repeatable_ts)?;
 
         // All documents are still visible at snapshot ts=8.
-        let stream =
-            snapshot_reader.index_scan(by_val_index_id, table_id, &Interval::all(), Order::Asc, 1);
+        let stream = snapshot_reader.index_scan(
+            by_val_index_id,
+            table_id,
+            &Interval::all(),
+            Order::Asc,
+            1,
+            None,
+        );
         let results: Vec<_> = stream
             .try_collect::<Vec<_>>()
             .await?
@@ -2099,8 +2106,14 @@ mod tests {
 
         // Old versions of documents at snapshot ts=2 are not visible.
         let snapshot_reader = reader.read_snapshot(unchecked_repeatable_ts(Timestamp::must(2)))?;
-        let stream =
-            snapshot_reader.index_scan(by_val_index_id, table_id, &Interval::all(), Order::Asc, 1);
+        let stream = snapshot_reader.index_scan(
+            by_val_index_id,
+            table_id,
+            &Interval::all(),
+            Order::Asc,
+            1,
+            None,
+        );
         let results: Vec<_> = stream.try_collect::<Vec<_>>().await?;
         assert_eq!(results, vec![]);
 

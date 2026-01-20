@@ -50,6 +50,7 @@ use common::{
     },
     value::{
         ConvexValue,
+        FieldPath,
         InternalDocumentId,
         TabletId,
     },
@@ -63,12 +64,16 @@ use parking_lot::Mutex;
 use rusqlite::{
     params,
     types::Null,
+    types::Value as SqlValue,
     Connection,
     Row,
     ToSql,
 };
 use serde::Deserialize as _;
-use serde_json::Value as JsonValue;
+use serde_json::{
+    Number as JsonNumber,
+    Value as JsonValue,
+};
 
 // We only have a single Sqlite connection which does not allow async calls, so
 // we can't really make queries concurrent.
@@ -124,7 +129,10 @@ impl SqlitePersistence {
         read_timestamp: Timestamp,
         interval: &Interval,
         order: Order,
+        _selected_fields: Option<Vec<FieldPath>>,
     ) -> anyhow::Result<Vec<anyhow::Result<(IndexKeyBytes, LatestDocument)>>> {
+        // Note: selected_fields is ignored here - projection happens in the query layer
+        // to ensure consistent behavior with caching and filtering.
         let interval = interval.clone();
         let index_id = &index_id[..];
         let read_timestamp: u64 = read_timestamp.into();
@@ -153,6 +161,7 @@ impl SqlitePersistence {
             Order::Asc => "ASC",
             Order::Desc => "DESC",
         };
+
         let query = format!(
             r#"
 SELECT B.key, B.ts, B.document_id, C.table_id, C.json_value, C.prev_ts
@@ -177,32 +186,30 @@ ORDER BY B.key {order}
 
         let connection = &self.inner.lock().connection;
         let mut stmt = connection.prepare(&query)?;
-        let row_iter = stmt.query_map(&params[..], |row| {
+        let mut triples = vec![];
+        let mut rows = stmt.query(&params[..])?;
+        while let Some(row) = rows.next()? {
             let key = IndexKeyBytes(row.get::<_, Vec<u8>>(0)?);
             let ts = Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds");
             let document_id = row.get::<_, Vec<u8>>(2)?;
             let table: Option<Vec<u8>> = row.get(3)?;
-            let json_value: Option<String> = row.get(4)?;
-            let prev_ts: Option<Timestamp> = row
-                .get::<_, Option<u64>>(5)?
-                .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
-
-            Ok((key, ts, document_id, table, json_value, prev_ts))
-        })?;
-        let mut triples = vec![];
-        for row in row_iter {
-            let (key, ts, document_id, table, json_value, prev_ts) = row?;
             let table = table.ok_or_else(|| {
                 anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
             })?;
             let table = TabletId(table.try_into()?);
             let _document_id = InternalDocumentId::new(table, InternalId::try_from(document_id)?);
+
+            let json_value: Option<String> = row.get(4)?;
+            let prev_ts = row
+                .get::<_, Option<u64>>(5)?
+                .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
             let json_value = json_value.ok_or_else(|| {
                 anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
             })?;
             let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
             let value: ConvexValue = json_value.try_into()?;
             let document = ResolvedDocument::from_database(tablet_id, value)?;
+
             triples.push(Ok((
                 key,
                 LatestDocument {
@@ -213,6 +220,77 @@ ORDER BY B.key {order}
             )));
         }
         Ok(triples)
+    }
+
+    #[allow(dead_code)]
+    fn sqlite_json_value_to_convex(
+        field_type: &str,
+        field_value: Option<SqlValue>,
+    ) -> anyhow::Result<ConvexValue> {
+        let json_value = match field_type {
+            "null" => JsonValue::Null,
+            "true" => JsonValue::Bool(true),
+            "false" => JsonValue::Bool(false),
+            "integer" => {
+                let value = match field_value {
+                    Some(SqlValue::Integer(value)) => value,
+                    Some(SqlValue::Real(value)) => value as i64,
+                    Some(SqlValue::Text(value)) => value.parse::<i64>()?,
+                    Some(SqlValue::Blob(value)) => {
+                        String::from_utf8(value)?.parse::<i64>()?
+                    },
+                    Some(SqlValue::Null) | None => {
+                        anyhow::bail!("Missing integer value for json field")
+                    },
+                };
+                JsonValue::Number(JsonNumber::from(value))
+            },
+            "real" => {
+                let value = match field_value {
+                    Some(SqlValue::Real(value)) => value,
+                    Some(SqlValue::Integer(value)) => value as f64,
+                    Some(SqlValue::Text(value)) => value.parse::<f64>()?,
+                    Some(SqlValue::Blob(value)) => String::from_utf8(value)?.parse::<f64>()?,
+                    Some(SqlValue::Null) | None => {
+                        anyhow::bail!("Missing real value for json field")
+                    },
+                };
+                JsonValue::Number(
+                    JsonNumber::from_f64(value)
+                        .ok_or_else(|| anyhow::anyhow!("Invalid float value {value}"))?,
+                )
+            },
+            "text" => {
+                let value = match field_value {
+                    Some(SqlValue::Text(value)) => value,
+                    Some(SqlValue::Blob(value)) => String::from_utf8(value)?,
+                    Some(SqlValue::Null) | None => {
+                        anyhow::bail!("Missing text value for json field")
+                    },
+                    Some(other) => {
+                        anyhow::bail!("Unexpected sqlite value for text field: {other:?}")
+                    },
+                };
+                JsonValue::String(value)
+            },
+            "array" | "object" => {
+                let value = match field_value {
+                    Some(SqlValue::Text(value)) => value,
+                    Some(SqlValue::Blob(value)) => String::from_utf8(value)?,
+                    Some(SqlValue::Null) | None => {
+                        anyhow::bail!("Missing JSON value for json field")
+                    },
+                    Some(other) => {
+                        anyhow::bail!("Unexpected sqlite value for json field: {other:?}")
+                    },
+                };
+                serde_json::from_str(&value)?
+            },
+            other => {
+                anyhow::bail!("Unexpected sqlite json type: {other}")
+            },
+        };
+        Ok(json_value.try_into()?)
     }
 
     fn _get_persistence_global(
@@ -562,9 +640,17 @@ impl PersistenceReader for SqlitePersistence {
         interval: &Interval,
         order: Order,
         _size_hint: usize,
+        selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) -> IndexStream<'_> {
-        let triples = self._index_scan_inner(index_id, tablet_id, read_timestamp, interval, order);
+        let triples = self._index_scan_inner(
+            index_id,
+            tablet_id,
+            read_timestamp,
+            interval,
+            order,
+            selected_fields,
+        );
         // index_scan isn't async so we have to validate snapshot as part of the stream.
         let validate = self.validate_snapshot(read_timestamp, retention_validator);
         match triples {

@@ -15,6 +15,9 @@ export default defineSchema({
 
   users: defineTable({
     name: v.string(),
+    email: v.optional(v.string()),
+    age: v.optional(v.number()),
+    bio: v.optional(v.string()),
   }),
 
   counters: defineTable({

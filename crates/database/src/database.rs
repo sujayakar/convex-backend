@@ -391,6 +391,7 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
                 &Interval::all(),
                 Order::Asc,
                 usize::MAX,
+                None,
             )
             .map(|row| {
                 let rev = row?.1;

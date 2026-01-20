@@ -42,6 +42,7 @@ import type * as nodeError from "../nodeError.js";
 import type * as references from "../references.js";
 import type * as removeObject from "../removeObject.js";
 import type * as scheduler from "../scheduler.js";
+import type * as selectFields from "../selectFields.js";
 import type * as secretSystemTables from "../secretSystemTables.js";
 import type * as sets from "../sets.js";
 import type * as stacktraceNode from "../stacktraceNode.js";
@@ -94,6 +95,7 @@ declare const fullApi: ApiFromModules<{
   references: typeof references;
   removeObject: typeof removeObject;
   scheduler: typeof scheduler;
+  selectFields: typeof selectFields;
   secretSystemTables: typeof secretSystemTables;
   sets: typeof sets;
   stacktraceNode: typeof stacktraceNode;

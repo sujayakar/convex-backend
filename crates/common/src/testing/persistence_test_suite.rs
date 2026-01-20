@@ -720,6 +720,7 @@ pub async fn overwrite_index<P: Persistence>(p: Arc<P>) -> anyhow::Result<()> {
             &Interval::all(),
             Order::Asc,
             1,
+            None,
             Arc::new(NoopRetentionValidator),
         )
         .map(|r| match r {
@@ -945,6 +946,7 @@ pub async fn same_internal_id_multiple_tables<P: Persistence>(p: Arc<P>) -> anyh
             &Interval::all(),
             Order::Asc,
             100,
+            None,
             Arc::new(NoopRetentionValidator),
         )
         .map(|r| match r {
@@ -966,6 +968,7 @@ pub async fn same_internal_id_multiple_tables<P: Persistence>(p: Arc<P>) -> anyh
             &Interval::all(),
             Order::Asc,
             100,
+            None,
             Arc::new(NoopRetentionValidator),
         )
         .map(|r| match r {
@@ -1045,6 +1048,7 @@ pub async fn query_index_at_ts<P: Persistence>(p: Arc<P>) -> anyhow::Result<()> 
                 &Interval::all(),
                 Order::Asc,
                 100,
+                None,
                 Arc::new(NoopRetentionValidator),
             )
             .map(|r| match r {
@@ -1136,6 +1140,7 @@ pub async fn query_index_range_with_prefix<P: Persistence>(
                         },
                         order,
                         100,
+                        None,
                         Arc::new(NoopRetentionValidator),
                     )
                     .map(|r| match r {
@@ -1245,6 +1250,7 @@ pub async fn query_multiple_indexes<P: Persistence>(p: Arc<P>) -> anyhow::Result
                 &Interval::all(),
                 Order::Asc,
                 100,
+                None,
                 Arc::new(NoopRetentionValidator),
             )
             .map(|r| match r {
@@ -1294,6 +1300,7 @@ pub async fn query_dangling_reference<P: Persistence>(p: Arc<P>) -> anyhow::Resu
             &Interval::all(),
             Order::Asc,
             100,
+            None,
             Arc::new(NoopRetentionValidator),
         )
         .collect()
@@ -1311,6 +1318,7 @@ pub async fn query_dangling_reference<P: Persistence>(p: Arc<P>) -> anyhow::Resu
             &Interval::singleton(index_key.into()),
             Order::Asc,
             1,
+            None,
             Arc::new(NoopRetentionValidator),
         )
         .try_collect()
@@ -1364,6 +1372,7 @@ pub async fn query_reference_deleted_doc<P: Persistence>(p: Arc<P>) -> anyhow::R
             &Interval::all(),
             Order::Asc,
             100,
+            None,
             Arc::new(NoopRetentionValidator),
         )
         .collect()
@@ -1382,6 +1391,7 @@ pub async fn query_reference_deleted_doc<P: Persistence>(p: Arc<P>) -> anyhow::R
             &Interval::singleton(index_key.into()),
             Order::Asc,
             1,
+            None,
             Arc::new(NoopRetentionValidator),
         )
         .try_collect()
@@ -1447,6 +1457,7 @@ pub async fn query_with_rows_estimate_with_prefix<P: Persistence>(
                 &Interval::all(),
                 Order::Asc,
                 rows_estimate,
+                None,
                 Arc::new(NoopRetentionValidator),
             )
             .try_collect::<Vec<_>>()
@@ -1742,6 +1753,7 @@ pub async fn persistence_enforce_retention<P: Persistence>(p: Arc<P>) -> anyhow:
         &Interval::all(),
         Order::Asc,
         1,
+        None,
         Arc::new(NoopRetentionValidator),
     );
     let results: Vec<_> = stream
@@ -1763,6 +1775,7 @@ pub async fn persistence_enforce_retention<P: Persistence>(p: Arc<P>) -> anyhow:
                     &Interval::singleton(key.to_bytes().into()),
                     Order::Asc,
                     1,
+                    None,
                     Arc::new(NoopRetentionValidator),
                 )
                 .try_collect::<Vec<_>>()
@@ -1788,6 +1801,7 @@ pub async fn persistence_enforce_retention<P: Persistence>(p: Arc<P>) -> anyhow:
         &Interval::all(),
         Order::Asc,
         1,
+        None,
         Arc::new(NoopRetentionValidator),
     );
     let results: Vec<_> = stream.try_collect::<Vec<_>>().await?;

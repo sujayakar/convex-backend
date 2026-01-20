@@ -3,6 +3,7 @@ import {
   DataModelFromSchemaDefinition,
   DocumentByInfo,
   DocumentByName,
+  FieldPaths,
   GenericDataModel,
   GenericDatabaseReader,
   IndexNames,
@@ -425,6 +426,13 @@ export class PaginatorQueryInitializer<
   fullTableScan(): PaginatorQuery<DataModel, T> {
     return this.withIndex("by_creation_time");
   }
+  select<Fields extends FieldPaths<NamedTableInfo<DataModel, T>>>(
+    _fields: Fields[],
+  ): any {
+    throw new Error(
+      ".select() not supported for `paginator`. Use .paginate() instead.",
+    );
+  }
   withIndex<IndexName extends IndexNames<NamedTableInfo<DataModel, T>>>(
     indexName: IndexName,
     indexRange?: (
@@ -510,6 +518,13 @@ export class PaginatorQuery<
   ) {}
   order(order: "asc" | "desc") {
     return new OrderedPaginatorQuery(this, order);
+  }
+  select<Fields extends FieldPaths<NamedTableInfo<DataModel, T>>>(
+    _fields: Fields[],
+  ): any {
+    throw new Error(
+      ".select() not supported for `paginator`. Use .paginate() instead.",
+    );
   }
   paginate(
     opts: PaginationOptions & { endCursor?: string | null },
@@ -639,6 +654,13 @@ export class OrderedPaginatorQuery<
       isDone,
       continueCursor,
     };
+  }
+  select<Fields extends FieldPaths<NamedTableInfo<DataModel, T>>>(
+    _fields: Fields[],
+  ): any {
+    throw new Error(
+      ".select() not supported for `paginator`. Use .paginate() instead.",
+    );
   }
   filter(_predicate: any): any {
     throw new Error(

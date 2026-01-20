@@ -287,6 +287,7 @@ pub async fn load_metadata_fast_forward_ts(
         &interval,
         Order::Asc,
         100,
+        None,
     );
     let mut results: Vec<_> = stream
         .try_collect::<Vec<_>>()

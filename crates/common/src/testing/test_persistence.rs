@@ -18,6 +18,7 @@ use itertools::Itertools;
 use parking_lot::Mutex;
 use serde_json::Value as JsonValue;
 use value::{
+    FieldPath,
     InternalDocumentId,
     TabletId,
 };
@@ -333,6 +334,7 @@ impl PersistenceReader for TestPersistence {
         interval: &Interval,
         order: Order,
         _size_hint: usize,
+        _selected_fields: Option<Vec<FieldPath>>,
         _retention_validator: Arc<dyn RetentionValidator>,
     ) -> IndexStream<'_> {
         let interval = interval.clone();

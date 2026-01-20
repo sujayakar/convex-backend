@@ -42,8 +42,10 @@ use async_trait::async_trait;
 use chunks::ApproxSize;
 use common::{
     document::{
+        CREATION_TIME_FIELD,
         InternalId,
         ResolvedDocument,
+        ID_FIELD,
     },
     errors::lease_lost_error,
     heap_size::HeapSize,
@@ -97,6 +99,7 @@ use common::{
     },
     value::{
         ConvexValue,
+        FieldPath,
         InternalDocumentId,
         TabletId,
     },
@@ -669,6 +672,32 @@ fn bytes_col(row: &Row, col: usize) -> anyhow::Result<&[u8]> {
     }
 }
 
+#[allow(dead_code)]
+fn build_projection_expression(selected_fields: &[FieldPath]) -> String {
+    let mut field_names = vec![ID_FIELD.to_string(), CREATION_TIME_FIELD.to_string()];
+    for field in selected_fields {
+        if field.fields().len() != 1 {
+            continue;
+        }
+        let name = field.fields()[0].to_string();
+        if !field_names.contains(&name) {
+            field_names.push(name);
+        }
+    }
+    let json_doc = "CAST(D.json_value AS JSON)";
+    let mut expression = "JSON_OBJECT()".to_string();
+    for field_name in field_names {
+        let escaped = field_name.replace('\'', "''");
+        let json_path = format!("$.\"{escaped}\"");
+        let extract = format!("JSON_EXTRACT({json_doc}, '{json_path}')");
+        let patch = format!(
+            "IF(JSON_TYPE({extract}) IS NULL, JSON_OBJECT(), JSON_OBJECT('{escaped}', {extract}))"
+        );
+        expression = format!("JSON_MERGE_PATCH({expression}, {patch})");
+    }
+    format!("CAST({expression} AS BLOB)")
+}
+
 impl<RT: Runtime> MySqlReader<RT> {
     fn initial_id_param(order: Order) -> Vec<u8> {
         match order {
@@ -848,6 +877,7 @@ impl<RT: Runtime> MySqlReader<RT> {
         interval: Interval,
         order: Order,
         size_hint: usize,
+        selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) {
         if let Some(key) = interval.is_singleton()
@@ -855,7 +885,7 @@ impl<RT: Runtime> MySqlReader<RT> {
         {
             // Fast path for looking up a single value
             if let Some(doc) = self
-                .index_point_query(index_id, key, read_timestamp, retention_validator)
+                .index_point_query(index_id, key, read_timestamp, selected_fields, retention_validator)
                 .await?
             {
                 anyhow::ensure!(doc.value.id().tablet_id == tablet_id);
@@ -869,6 +899,7 @@ impl<RT: Runtime> MySqlReader<RT> {
             interval,
             order,
             size_hint,
+            selected_fields,
             retention_validator,
         );
         pin_mut!(scan);
@@ -897,8 +928,11 @@ impl<RT: Runtime> MySqlReader<RT> {
         interval: Interval,
         order: Order,
         size_hint: usize,
+        _selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) {
+        // Note: selected_fields is ignored here - projection happens in the query layer
+        // to ensure consistent behavior with caching and filtering.
         let _timer = metrics::query_index_timer(self.read_pool.cluster_name());
         let (mut lower, mut upper) = sql::to_sql_bounds(interval.clone());
 
@@ -932,6 +966,7 @@ impl<RT: Runtime> MySqlReader<RT> {
                     upper.clone(),
                     order,
                     batch_size as usize,
+                    None,
                     self.multitenant,
                     &self.instance_name,
                 );
@@ -943,7 +978,7 @@ impl<RT: Runtime> MySqlReader<RT> {
                 let execute_timer =
                     metrics::query_index_sql_execute_timer(self.read_pool.cluster_name());
                 let row_stream = match client
-                    .query_stream(query, params, batch_size as usize)
+                    .query_stream(&query, params, batch_size as usize)
                     .await
                 {
                     Ok(stream) => Ok(stream),
@@ -1102,8 +1137,11 @@ impl<RT: Runtime> MySqlReader<RT> {
         index_id: IndexId,
         key: &BinaryKey,
         read_timestamp: Timestamp,
+        _selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) -> anyhow::Result<Option<LatestDocument>> {
+        // Note: selected_fields is ignored here - projection happens in the query layer
+        // to ensure consistent behavior with caching and filtering.
         let mut client = self
             .read_pool
             .acquire("index_lookup", &self.db_name)
@@ -1122,9 +1160,8 @@ impl<RT: Runtime> MySqlReader<RT> {
         if self.multitenant {
             params.push(self.instance_name.to_string().into());
         }
-        let maybe_row = client
-            .query_optional(index_point_query(self.multitenant), params)
-            .await?;
+        let query = index_point_query(self.multitenant, None);
+        let maybe_row = client.query_optional(&query, params).await?;
         execute_timer.finish();
 
         let retention_validate_timer =
@@ -1538,6 +1575,7 @@ impl<RT: Runtime> PersistenceReader for MySqlReader<RT> {
         range: &Interval,
         order: Order,
         size_hint: usize,
+        selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) -> IndexStream<'_> {
         self._index_scan(
@@ -1547,6 +1585,7 @@ impl<RT: Runtime> PersistenceReader for MySqlReader<RT> {
             range.clone(),
             order,
             size_hint,
+            selected_fields,
             retention_validator,
         )
         .boxed()

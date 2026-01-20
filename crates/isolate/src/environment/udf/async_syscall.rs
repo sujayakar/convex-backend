@@ -97,6 +97,7 @@ use value::{
     serialized_args_ext::SerializedArgsExt,
     ConvexArray,
     ConvexObject,
+    FieldName,
     TableName,
 };
 
@@ -1244,6 +1245,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
                     .context("batch_key missing")??;
 
                 let done = maybe_next.is_none();
+                // Documents are already projected by the Projection query node
                 let value = match maybe_next {
                     Some((doc, _)) => doc.into_value().0.into(),
                     None => ConvexValue::Null,
@@ -1466,6 +1468,7 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsShared<RT, P> {
                 Some(page_size - page.len())
             };
 
+            // Documents are already projected by the Projection query node
             let next_value = match query.next(tx, prefetch_hint).await {
                 Ok(Some(v)) => v,
                 Ok(None) => {

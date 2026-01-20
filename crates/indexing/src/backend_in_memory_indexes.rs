@@ -258,6 +258,7 @@ impl BackendInMemoryIndexes {
                 &Interval::all(),
                 Order::Asc,
                 usize::MAX,
+                None,
             )
             .try_collect()
             .await?;
@@ -743,7 +744,12 @@ impl DatabaseIndexSnapshot {
                             Err(e) => (Err(e), None),
                             Ok((fetch_result_vec, cache_miss_results, cursor)) => (
                                 Ok((fetch_result_vec, cursor.clone())),
-                                Some((*range_request, index_id, cache_miss_results, cursor)),
+                                Some((
+                                    *range_request,
+                                    index_id,
+                                    cache_miss_results,
+                                    cursor,
+                                )),
                             ),
                         }
                     },
@@ -819,6 +825,7 @@ impl DatabaseIndexSnapshot {
                         &interval,
                         range_request.order,
                         range_request.max_size,
+                        None,
                     );
                     while let Some((key, rev)) =
                         instrument!(b"Persistence::try_next", stream.try_next()).await?
