@@ -7,6 +7,7 @@ import { test, expect } from "vitest";
 import * as flexbuffers from "flatbuffers/js/flexbuffers.js";
 import { Long } from "../../vendor/long.js";
 import {
+  decodeBinaryFrame,
   longToU64,
   parseBinaryServerMessage,
   u64ToLong,
@@ -46,4 +47,31 @@ test("Binary server message parsing", async () => {
   } else {
     throw new Error("Unexpected server message");
   }
+});
+
+test("Binary frame decoding", async () => {
+  const payload = new Uint8Array([1, 2, 3]);
+  const fullFrame = new Uint8Array(1 + payload.length);
+  fullFrame[0] = 0;
+  fullFrame.set(payload, 1);
+  expect(decodeBinaryFrame(fullFrame.buffer)).toEqual({
+    type: "full",
+    payload,
+  });
+
+  const chunkPayload = new Uint8Array([9, 8]);
+  const chunkFrame = new Uint8Array(13 + chunkPayload.length);
+  const view = new DataView(chunkFrame.buffer);
+  chunkFrame[0] = 1;
+  view.setUint32(1, 7, true);
+  view.setUint32(5, 2, true);
+  view.setUint32(9, 4, true);
+  chunkFrame.set(chunkPayload, 13);
+  expect(decodeBinaryFrame(chunkFrame.buffer)).toEqual({
+    type: "chunk",
+    messageId: 7,
+    partNumber: 2,
+    totalParts: 4,
+    payload: chunkPayload,
+  });
 });
