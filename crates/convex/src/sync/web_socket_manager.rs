@@ -444,7 +444,7 @@ impl WebSocketInternal {
             last_close_reason,
             max_observed_timestamp,
             client_ts: Some(0),
-            supports_binary: Some(true),
+            supports_binary: true,
         };
         let msg = Message::Text(
             serde_json::Value::try_from(message)

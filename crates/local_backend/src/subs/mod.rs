@@ -201,7 +201,7 @@ async fn run_sync_socket(
                     } = &body
                     {
                         binary_enabled_recv
-                            .store(supports_binary.unwrap_or(false), Ordering::Release);
+                            .store(*supports_binary, Ordering::Release);
                     }
                     log_websocket_client_message_bytes(
                         client_message_size,

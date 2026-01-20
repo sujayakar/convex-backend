@@ -269,7 +269,7 @@ type Connect = {
   lastCloseReason: string | null;
   maxObservedTimestamp?: TS | undefined;
   clientTs: number;
-  supportsBinary?: boolean | undefined;
+  supportsBinary: boolean;
 };
 
 export type AddQuery = {

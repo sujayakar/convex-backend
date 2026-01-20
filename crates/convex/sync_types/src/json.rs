@@ -206,9 +206,7 @@ enum ClientMessageJsonInner {
         #[serde(skip_serializing_if = "Option::is_none")]
         client_ts: Option<i64>,
 
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        supports_binary: Option<bool>,
+        supports_binary: bool,
     },
     #[serde(rename_all = "camelCase")]
     ModifyQuerySet { base_version: u32, new_version: u32 },
