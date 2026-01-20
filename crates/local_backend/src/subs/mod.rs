@@ -348,8 +348,16 @@ async fn run_sync_socket(
             // Only do a best-effort send of the final application message.
             if let Some(final_message) = final_message {
                 let r: anyhow::Result<_> = try {
-                    let serialized = serde_json::to_string(&JsonValue::from(final_message))?;
-                    socket.send(Message::Text(serialized.into())).await?;
+                    if binary_enabled.load(Ordering::Acquire) {
+                        let encoded = encode_server_message_binary(&final_message)?;
+                        let mut message_id = 0;
+                        for frame in split_binary_message(encoded, &mut message_id) {
+                            socket.send(Message::Binary(frame.into())).await?;
+                        }
+                    } else {
+                        let serialized = serde_json::to_string(&JsonValue::from(final_message))?;
+                        socket.send(Message::Text(serialized.into())).await?;
+                    }
                 };
                 if let Err(mut e) = r {
                     if is_connection_closed_error(&*e) {
