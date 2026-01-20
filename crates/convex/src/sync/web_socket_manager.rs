@@ -475,6 +475,10 @@ fn decode_binary_frame(payload: &[u8]) -> anyhow::Result<BinaryFrame> {
             let part_number = u32::from_le_bytes(payload[5..9].try_into()?);
             let total_parts = u32::from_le_bytes(payload[9..13].try_into()?);
             anyhow::ensure!(total_parts > 0, "Binary chunk frame has zero parts");
+            anyhow::ensure!(
+                part_number < total_parts,
+                "Binary chunk frame part out of range"
+            );
             Ok(BinaryFrame::Chunk(BinaryChunkFrame {
                 message_id,
                 part_number,
@@ -688,5 +692,16 @@ mod tests {
         frame.extend_from_slice(&[1, 2, 3]);
         let err = decode_binary_frame(&frame).expect_err("expected error");
         assert!(err.to_string().contains("zero parts"));
+    }
+
+    #[test]
+    fn decode_binary_frame_rejects_out_of_range_part() {
+        let mut frame = vec![BINARY_FRAME_TYPE_CHUNK];
+        frame.extend_from_slice(&2u32.to_le_bytes());
+        frame.extend_from_slice(&5u32.to_le_bytes());
+        frame.extend_from_slice(&3u32.to_le_bytes());
+        frame.extend_from_slice(&[1, 2, 3]);
+        let err = decode_binary_frame(&frame).expect_err("expected error");
+        assert!(err.to_string().contains("part out of range"));
     }
 }

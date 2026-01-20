@@ -85,11 +85,20 @@ export function decodeBinaryFrame(data: ArrayBuffer): BinaryFrame {
     if (bytes.byteLength < 13) {
       throw new Error("Binary chunk frame too short");
     }
+    const messageId = view.getUint32(1, true);
+    const partNumber = view.getUint32(5, true);
+    const totalParts = view.getUint32(9, true);
+    if (totalParts === 0) {
+      throw new Error("Binary chunk frame has zero parts");
+    }
+    if (partNumber >= totalParts) {
+      throw new Error("Binary chunk frame part out of range");
+    }
     return {
       type: "chunk",
-      messageId: view.getUint32(1, true),
-      partNumber: view.getUint32(5, true),
-      totalParts: view.getUint32(9, true),
+      messageId,
+      partNumber,
+      totalParts,
       payload: bytes.subarray(13),
     };
   }
