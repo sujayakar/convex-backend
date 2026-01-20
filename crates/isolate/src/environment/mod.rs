@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::anyhow;
 use model::{
     environment_variables::types::{
         EnvVarName,
@@ -32,6 +33,10 @@ use common::{
     },
 };
 use deno_core::v8;
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use rand_chacha::ChaCha12Rng;
 use serde_json::Value as JsonValue;
 use value::NamespacedTableMapping;
@@ -39,6 +44,7 @@ use value::NamespacedTableMapping;
 pub use self::async_op::AsyncOpRequest;
 use crate::{
     isolate::IsolateHeapStats,
+    packed_values::PackedValueHandle,
     timeout::Timeout,
 };
 
@@ -84,6 +90,20 @@ pub trait IsolateEnvironment<RT: Runtime>: 'static {
         -> anyhow::Result<Option<EnvVarValue>>;
 
     fn get_all_table_mappings(&mut self) -> anyhow::Result<NamespacedTableMapping>;
+
+    fn register_packed_value(
+        &mut self,
+        _value: PackedValue<ByteBuffer>,
+    ) -> anyhow::Result<PackedValueHandle> {
+        Err(anyhow!("Packed values are not supported in this environment"))
+    }
+
+    fn get_packed_value(
+        &self,
+        _handle: PackedValueHandle,
+    ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>> {
+        Ok(None)
+    }
 
     fn start_async_op(
         &mut self,

@@ -724,6 +724,7 @@ pub mod tests {
                     last_close_reason: "InitialConnect".to_string(),
                     max_observed_timestamp: None,
                     client_ts: None,
+                    supports_binary: true,
                 },
                 ClientMessage::ModifyQuerySet {
                     base_version: 0,
@@ -892,6 +893,7 @@ pub mod tests {
                     last_close_reason: "InitialConnect".to_string(),
                     max_observed_timestamp: None,
                     client_ts: None,
+                    supports_binary: true,
                 },
                 ClientMessage::ModifyQuerySet {
                     base_version: 0,
@@ -953,6 +955,7 @@ pub mod tests {
                     last_close_reason: "InitialConnect".to_string(),
                     max_observed_timestamp: None,
                     client_ts: None,
+                    supports_binary: true,
                 },
                 ClientMessage::ModifyQuerySet {
                     base_version: 0,

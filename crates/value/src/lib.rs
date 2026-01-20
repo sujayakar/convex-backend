@@ -77,7 +77,6 @@ pub use crate::{
         float::JsonFloat,
         integer::JsonInteger,
         json_deserialize,
-        json_packed_value::JsonPackedValue,
         object as json_object,
         value as json_value,
     },

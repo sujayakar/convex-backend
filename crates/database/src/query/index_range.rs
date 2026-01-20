@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use common::{
     bootstrap_model::index::database_index::IndexedFields,
     components::ComponentId,
-    document::DeveloperDocument,
+    document::PackedDeveloperDocument,
     index::IndexKeyBytes,
     interval::Interval,
     knobs::{
@@ -66,7 +66,7 @@ pub struct IndexRange {
     /// `cursor_interval` must always be a subset of `interval`.
     cursor_interval: CursorInterval,
     intermediate_cursors: Option<Vec<CursorPosition>>,
-    page: VecDeque<(IndexKeyBytes, DeveloperDocument, WriteTimestamp)>,
+    page: VecDeque<(IndexKeyBytes, PackedDeveloperDocument, WriteTimestamp)>,
     /// The interval which we have yet to fetch.
     /// This starts as an intersection of the IndexRange's `interval` and
     /// `cursor_interval`, and gets smaller as results are fetched into `page`.
@@ -211,7 +211,7 @@ impl IndexRange {
                 used_interval,
             )?;
             UserFacingModel::new(tx, self.namespace)
-                .record_read_document(&v, self.printable_index_name.table())?;
+                .record_read_document_packed(&v, self.printable_index_name.table())?;
 
             // Database bandwidth for index reads
             let component_path = tx.must_component_path(ComponentId::from(self.namespace))?;
@@ -227,7 +227,7 @@ impl IndexRange {
                 index_bytes as u64,
                 self.printable_index_name.is_system_owned(),
             );
-            self.returned_bytes += v.size();
+            self.returned_bytes += v.value().size();
             return Ok(QueryStreamNext::Ready(Some((v, timestamp))));
         }
         if let Some(CursorPosition::End) = self.cursor_interval.curr_exclusive {
@@ -277,7 +277,7 @@ impl IndexRange {
 
     fn process_fetch(
         &mut self,
-        page: Vec<(IndexKeyBytes, DeveloperDocument, WriteTimestamp)>,
+        page: Vec<(IndexKeyBytes, PackedDeveloperDocument, WriteTimestamp)>,
         fetch_cursor: CursorPosition,
     ) -> anyhow::Result<()> {
         let (_, new_unfetched_interval) = self.unfetched_interval.split(fetch_cursor, self.order);

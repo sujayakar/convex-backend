@@ -45,7 +45,6 @@ use common::{
         HttpActionRoute,
         UdfType,
     },
-    value::ConvexValue,
 };
 use database::Transaction;
 use deno_core::v8::{
@@ -107,10 +106,10 @@ use udf::{
 use value::{
     heap_size::HeapSize,
     ConvexArray,
-    JsonPackedValue,
     NamespacedTableMapping,
     Size,
 };
+use packed_value::PackedSyncValue;
 
 pub use self::{
     async_syscall::parse_name_or_reference,
@@ -719,10 +718,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
             arguments,
             unix_timestamp: start_unix_timestamp,
             identity: self.identity.clone().into(),
-            result: match result? {
-                Ok(v) => Ok(JsonPackedValue::pack(v)),
-                Err(e) => Err(e),
-            },
+            result: result?,
             syscall_trace: self.syscall_trace.lock().clone(),
             udf_server_version,
             user_execution_time: Some(user_execution_time),
@@ -736,7 +732,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         timeout: &mut Timeout<RT>,
         request_params: ActionRequestParams,
         cancellation: BoxFuture<'_, ()>,
-    ) -> anyhow::Result<Result<ConvexValue, JsError>> {
+    ) -> anyhow::Result<Result<PackedSyncValue, JsError>> {
         let handle = isolate.handle();
         scope!(let v8_scope, isolate.scope());
         let mut scope = RequestScope::<RT, Self>::enter(v8_scope);
@@ -1197,7 +1193,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         &mut self,
         execution_time: FunctionExecutionTime,
         arguments: &ConvexArray,
-        result: Option<&ConvexValue>,
+        result: Option<&PackedSyncValue>,
     ) -> anyhow::Result<()> {
         if let Some(warning) = approaching_limit_warning(
             arguments.size(),

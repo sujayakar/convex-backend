@@ -4,6 +4,7 @@
 
 mod metrics;
 mod state;
+pub mod binary;
 pub mod worker;
 
 pub use worker::{
@@ -14,4 +15,5 @@ pub use worker::{
 #[cfg(test)]
 mod tests;
 
-pub type ServerMessage = sync_types::ServerMessage<common::value::JsonPackedValue>;
+/// ServerMessage using PackedSyncValue for zero-copy transfer
+pub type ServerMessage = sync_types::ServerMessage<packed_value::PackedSyncValue>;

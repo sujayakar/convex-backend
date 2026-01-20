@@ -1,6 +1,15 @@
-use std::time::{
-    Duration,
-    Instant,
+use std::{
+    sync::{
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+        Arc,
+    },
+    time::{
+        Duration,
+        Instant,
+    },
 };
 
 use ::errors::{
@@ -53,6 +62,11 @@ use runtime::prod::ProdRuntime;
 use sentry::SentryFutureExt;
 use serde_json::Value as JsonValue;
 use sync::{
+    binary::{
+        encode_server_message_binary,
+        BINARY_FRAME_TYPE_CHUNK,
+        BINARY_FRAME_TYPE_FULL,
+    },
     worker::measurable_unbounded_channel,
     ServerMessage,
     SyncWorker,
@@ -150,11 +164,13 @@ async fn run_sync_socket(
     let _drop_token = SyncSocketDropToken::new();
 
     let (mut tx, mut rx) = socket.split();
+    let binary_enabled = Arc::new(AtomicBool::new(false));
 
     let last_received = Mutex::new(Instant::now());
     let last_ping_sent = Mutex::new(Instant::now());
 
     let (client_tx, client_rx) = mpsc::unbounded_channel();
+    let binary_enabled_recv = Arc::clone(&binary_enabled);
     let receive_messages = async {
         let _receive_message_drop_token = DebugSyncSocketDropToken::new("receive_message");
         while let Some(message_r) = rx.next().await {
@@ -180,6 +196,13 @@ async fn run_sync_socket(
                                 format!("Received Invalid JSON on websocket: {e}"),
                             ))
                         })?;
+                    if let ClientMessage::Connect {
+                        supports_binary, ..
+                    } = &body
+                    {
+                        binary_enabled_recv
+                            .store(*supports_binary, Ordering::Release);
+                    }
                     log_websocket_client_message_bytes(
                         client_message_size,
                         body.as_ref().to_string(),
@@ -209,9 +232,11 @@ async fn run_sync_socket(
     };
 
     let (server_tx, mut server_rx) = measurable_unbounded_channel();
+    let binary_enabled_send = Arc::clone(&binary_enabled);
     let send_messages = async {
         let _send_message_drop_token = DebugSyncSocketDropToken::new("send_message");
         let mut ping_ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
+        let mut binary_message_id: u32 = 0;
         'top: loop {
             select_biased! {
                 _ = ping_ticker.tick().fuse() => {
@@ -233,14 +258,25 @@ async fn run_sync_socket(
                         None => break 'top,
                     };
                     message.inject_server_ts(st.runtime.generate_timestamp()?);
-                    let messages =
-                        maybe_split_transition(message, config.supports_transition_chunks)?;
-                    for msg in messages {
+                    if binary_enabled_send.load(Ordering::Acquire) {
                         let delay = st.runtime.monotonic_now() - send_time;
-                        log_websocket_message_out(&msg, delay);
-                        let serialized = serde_json::to_string(&JsonValue::from(msg))?;
-                        if tx.send(Message::Text(serialized.into())).await.is_err() {
-                            break 'top;
+                        log_websocket_message_out(&message, delay);
+                        let encoded = encode_server_message_binary(&message)?;
+                        for frame in split_binary_message(encoded, &mut binary_message_id) {
+                            if tx.send(Message::Binary(frame.into())).await.is_err() {
+                                break 'top;
+                            }
+                        }
+                    } else {
+                        let messages =
+                            maybe_split_transition(message, config.supports_transition_chunks)?;
+                        for msg in messages {
+                            let delay = st.runtime.monotonic_now() - send_time;
+                            log_websocket_message_out(&msg, delay);
+                            let serialized = serde_json::to_string(&JsonValue::from(msg))?;
+                            if tx.send(Message::Text(serialized.into())).await.is_err() {
+                                break 'top;
+                            }
                         }
                     }
                 },
@@ -312,8 +348,16 @@ async fn run_sync_socket(
             // Only do a best-effort send of the final application message.
             if let Some(final_message) = final_message {
                 let r: anyhow::Result<_> = try {
-                    let serialized = serde_json::to_string(&JsonValue::from(final_message))?;
-                    socket.send(Message::Text(serialized.into())).await?;
+                    if binary_enabled.load(Ordering::Acquire) {
+                        let encoded = encode_server_message_binary(&final_message)?;
+                        let mut message_id = 0;
+                        for frame in split_binary_message(encoded, &mut message_id) {
+                            socket.send(Message::Binary(frame.into())).await?;
+                        }
+                    } else {
+                        let serialized = serde_json::to_string(&JsonValue::from(final_message))?;
+                        socket.send(Message::Text(serialized.into())).await?;
+                    }
                 };
                 if let Err(mut e) = r {
                     if is_connection_closed_error(&*e) {
@@ -378,6 +422,7 @@ fn new_sync_worker_config(client_version: ClientVersion) -> anyhow::Result<SyncW
 
 // Maximum size of a single message before splitting into chunks (5MB)
 const MAX_MESSAGE_SIZE: usize = 5_000_000;
+const BINARY_CHUNK_HEADER_LEN: usize = 1 + 4 + 4 + 4;
 
 /// Split a large Transition message into TransitionChunk messages if needed.
 fn maybe_split_transition(
@@ -427,6 +472,40 @@ fn maybe_split_transition(
         .collect())
 }
 
+fn split_binary_message(payload: Vec<u8>, message_id: &mut u32) -> Vec<Vec<u8>> {
+    if payload.len() + 1 <= MAX_MESSAGE_SIZE {
+        return vec![wrap_binary_frame(payload)];
+    }
+
+    let id = *message_id;
+    *message_id = message_id.wrapping_add(1);
+    let chunk_size = MAX_MESSAGE_SIZE
+        .saturating_sub(BINARY_CHUNK_HEADER_LEN)
+        .max(1);
+    let total_parts = payload.len().div_ceil(chunk_size);
+    let total_parts_u32 = u32::try_from(total_parts).unwrap_or(u32::MAX);
+
+    let mut frames = Vec::with_capacity(total_parts);
+    for (part_number, chunk) in payload.chunks(chunk_size).enumerate() {
+        let mut frame = Vec::with_capacity(BINARY_CHUNK_HEADER_LEN + chunk.len());
+        frame.push(BINARY_FRAME_TYPE_CHUNK);
+        frame.extend_from_slice(&id.to_le_bytes());
+        frame.extend_from_slice(&(part_number as u32).to_le_bytes());
+        frame.extend_from_slice(&total_parts_u32.to_le_bytes());
+        frame.extend_from_slice(chunk);
+        frames.push(frame);
+    }
+
+    frames
+}
+
+fn wrap_binary_frame(payload: Vec<u8>) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(payload.len() + 1);
+    frame.push(BINARY_FRAME_TYPE_FULL);
+    frame.extend_from_slice(&payload);
+    frame
+}
+
 pub async fn sync_handler(
     st: RouterState,
     host: ResolvedHostname,
@@ -460,6 +539,8 @@ pub async fn sync(
 
 #[cfg(test)]
 mod tests {
+    use std::convert::TryInto;
+
     use axum::{
         extract::{
             ws::{
@@ -480,7 +561,14 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tungstenite::error::Error as TungsteniteError;
 
-    use super::is_connection_closed_error;
+    use super::{
+        is_connection_closed_error,
+        split_binary_message,
+        BINARY_CHUNK_HEADER_LEN,
+        BINARY_FRAME_TYPE_CHUNK,
+        BINARY_FRAME_TYPE_FULL,
+        MAX_MESSAGE_SIZE,
+    };
 
     /// Test that the axum tungstenite matches the tungstenite we're using in
     /// backend in `is_connection_closed_error` to work around axum sloppiness.
@@ -545,5 +633,42 @@ mod tests {
         shutdown_tx.send(()).unwrap();
         proxy_server.await??;
         Ok(())
+    }
+
+    #[test]
+    fn test_split_binary_message_full_frame() {
+        let payload = vec![1u8, 2, 3];
+        let mut message_id = 7;
+        let frames = split_binary_message(payload.clone(), &mut message_id);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(message_id, 7);
+        assert_eq!(frames[0][0], BINARY_FRAME_TYPE_FULL);
+        assert_eq!(&frames[0][1..], payload.as_slice());
+    }
+
+    #[test]
+    fn test_split_binary_message_chunked() {
+        let payload = vec![0u8; MAX_MESSAGE_SIZE + 10];
+        let mut message_id = 0;
+        let frames = split_binary_message(payload.clone(), &mut message_id);
+        assert!(frames.len() > 1);
+        assert_eq!(message_id, 1);
+
+        let mut reconstructed = Vec::with_capacity(payload.len());
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame[0], BINARY_FRAME_TYPE_CHUNK);
+            assert!(
+                frame.len() > BINARY_CHUNK_HEADER_LEN,
+                "Chunk frame missing payload"
+            );
+            let id = u32::from_le_bytes(frame[1..5].try_into().unwrap());
+            let part_number = u32::from_le_bytes(frame[5..9].try_into().unwrap());
+            let total_parts = u32::from_le_bytes(frame[9..13].try_into().unwrap());
+            assert_eq!(id, 0);
+            assert_eq!(part_number as usize, index);
+            assert_eq!(total_parts as usize, frames.len());
+            reconstructed.extend_from_slice(&frame[13..]);
+        }
+        assert_eq!(reconstructed, payload);
     }
 }

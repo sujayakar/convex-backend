@@ -62,6 +62,10 @@ use model::{
 use parking_lot::Mutex;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use serde_json::Value as JsonValue;
 use tokio::sync::{
     mpsc::{
@@ -83,7 +87,6 @@ use value::{
     ConvexArray,
     ConvexObject,
     ConvexValue,
-    JsonPackedValue,
     NamespacedTableMapping,
     TableMapping,
     TableName,
@@ -435,6 +438,13 @@ impl<RT: Runtime> Environment for UdfEnvironment<RT> {
         todo!()
     }
 
+    fn get_packed_value(
+        &self,
+        handle: crate::packed_values::PackedValueHandle,
+    ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>> {
+        Ok(self.shared.get_packed_value(handle))
+    }
+
     fn start_execution(&mut self) -> anyhow::Result<()> {
         let UdfPhase::Importing { .. } = self.phase else {
             anyhow::bail!("Phase was already {:?}", self.phase)
@@ -697,7 +707,7 @@ async fn run_request<RT: Runtime>(
         observed_time: outcome.observed_time,
         log_lines: log_lines.into(),
         journal: provider.next_journal,
-        result: result.map(JsonPackedValue::pack),
+        result,
         syscall_trace: provider.syscall_trace,
         udf_server_version,
         memory_in_mb: (*ISOLATE_MAX_USER_HEAP_SIZE / (1 << 20))
@@ -728,6 +738,8 @@ impl<RT: Runtime> UdfShared<RT> {
                 next_query_id: 0,
                 queries: BTreeMap::new(),
                 table_mapping,
+                packed_values: BTreeMap::new(),
+                next_packed_value_id: 0,
             })),
         }
     }
@@ -780,6 +792,25 @@ impl<RT: Runtime> UdfShared<RT> {
         inner.queries.remove(&query_id).is_some()
     }
 
+    fn register_packed_value(
+        &self,
+        value: PackedValue<ByteBuffer>,
+    ) -> crate::packed_values::PackedValueHandle {
+        let mut inner = self.inner.lock();
+        let handle = inner.next_packed_value_id;
+        inner.next_packed_value_id += 1;
+        inner.packed_values.insert(handle, value);
+        handle
+    }
+
+    fn get_packed_value(
+        &self,
+        handle: crate::packed_values::PackedValueHandle,
+    ) -> Option<PackedValue<ByteBuffer>> {
+        let inner = self.inner.lock();
+        inner.packed_values.get(&handle).cloned()
+    }
+
     fn get_all_table_mappings(&self) -> NamespacedTableMapping {
         let inner = self.inner.lock();
         inner
@@ -793,6 +824,9 @@ struct UdfSharedInner<RT: Runtime> {
     queries: BTreeMap<QueryId, ManagedQuery<RT>>,
 
     table_mapping: TableMapping,
+
+    packed_values: BTreeMap<crate::packed_values::PackedValueHandle, PackedValue<ByteBuffer>>,
+    next_packed_value_id: crate::packed_values::PackedValueHandle,
 }
 
 struct Isolate2SyscallProvider<'a, RT: Runtime> {
@@ -863,6 +897,13 @@ impl<RT: Runtime> AsyncSyscallProvider<RT> for Isolate2SyscallProvider<'_, RT> {
 
     fn context(&self) -> &ExecutionContext {
         &self.context
+    }
+
+    fn register_packed_value(
+        &mut self,
+        value: PackedValue<ByteBuffer>,
+    ) -> anyhow::Result<crate::packed_values::PackedValueHandle> {
+        Ok(self.shared.register_packed_value(value))
     }
 
     fn observe_identity(&mut self) -> anyhow::Result<()> {

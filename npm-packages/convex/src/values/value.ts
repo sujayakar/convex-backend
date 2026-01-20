@@ -16,6 +16,16 @@ const ZERO = BigInt("0");
 const EIGHT = BigInt("8");
 const TWOFIFTYSIX = BigInt("256");
 
+const packedValueSymbol = Symbol.for("convex.packed");
+
+function isPackedValue(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const meta = (value as any)[packedValueSymbol];
+  return !!meta && meta.materialized === undefined;
+}
+
 /**
  * The type of JavaScript values serializable to JSON.
  *
@@ -184,7 +194,22 @@ function validateObjectField(k: string) {
  *
  * @public
  */
-export function jsonToConvex(value: JSONValue): Value {
+export function jsonToConvex(value: JSONValue | Value): Value {
+  if (isPackedValue(value)) {
+    return value as Value;
+  }
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return value.buffer.slice(
+      value.byteOffset,
+      value.byteOffset + value.byteLength,
+    );
+  }
   if (value === null) {
     return value;
   }
@@ -246,10 +271,10 @@ export function jsonToConvex(value: JSONValue): Value {
       );
     }
   }
-  const out: { [key: string]: Value } = {};
+  const out: { [key: string]: Value | undefined } = {};
   for (const [k, v] of Object.entries(value)) {
     validateObjectField(k);
-    out[k] = jsonToConvex(v);
+    out[k] = v === undefined ? undefined : jsonToConvex(v);
   }
   return out;
 }

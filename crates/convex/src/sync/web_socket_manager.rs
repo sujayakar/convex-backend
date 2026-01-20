@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     convert::Infallible,
     time::Duration,
 };
@@ -22,6 +23,11 @@ use futures::{
     SinkExt,
     StreamExt,
 };
+use flexbuffers::{
+    FlexBufferType,
+    Reader,
+};
+use serde_json::Value as JsonValue;
 use tokio::{
     net::TcpStream,
     sync::{
@@ -59,6 +65,9 @@ use crate::sync::{
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(15);
+const BINARY_FRAME_TYPE_FULL: u8 = 0;
+const BINARY_FRAME_TYPE_CHUNK: u8 = 1;
+const PACKED_PLACEHOLDER_KEY: &str = "$packed";
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 #[derive(Debug)]
@@ -67,9 +76,60 @@ enum WebSocketRequest {
     Reconnect(ReconnectRequest),
 }
 
+#[derive(Debug)]
+struct BinaryChunkFrame {
+    message_id: u32,
+    part_number: u32,
+    total_parts: u32,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+enum BinaryFrame {
+    Full(Vec<u8>),
+    Chunk(BinaryChunkFrame),
+}
+
 struct WebSocketInternal {
     ws_stream: WsStream,
     last_server_response: Instant,
+}
+struct BinaryChunkBuffer {
+    message_id: u32,
+    total_parts: u32,
+    chunks: Vec<Vec<u8>>,
+}
+
+impl BinaryChunkBuffer {
+    fn new(message_id: u32, total_parts: u32) -> Self {
+        Self {
+            message_id,
+            total_parts,
+            chunks: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, frame: BinaryChunkFrame) -> anyhow::Result<Option<Vec<u8>>> {
+        anyhow::ensure!(
+            self.message_id == frame.message_id && self.total_parts == frame.total_parts,
+            "Invalid binary chunk sequence"
+        );
+        anyhow::ensure!(
+            frame.part_number == self.chunks.len() as u32,
+            "Out of order binary chunk"
+        );
+        self.chunks.push(frame.payload);
+        if self.chunks.len() == self.total_parts as usize {
+            let total_len: usize = self.chunks.iter().map(|chunk| chunk.len()).sum();
+            let mut combined = Vec::with_capacity(total_len);
+            for chunk in self.chunks.drain(..) {
+                combined.extend_from_slice(&chunk);
+            }
+            Ok(Some(combined))
+        } else {
+            Ok(None)
+        }
+    }
 }
 struct WebSocketWorker {
     ws_url: Url,
@@ -235,6 +295,7 @@ impl WebSocketWorker {
         if let Some(state_change_sender) = &self.on_state_change {
             let _ = state_change_sender.try_send(WebSocketState::Connected);
         }
+        let mut binary_chunk_buffer: Option<BinaryChunkBuffer> = None;
 
         loop {
             select_biased! {
@@ -253,7 +314,48 @@ impl WebSocketWorker {
                             tracing::debug!("Close frame {close_frame}");
                             anyhow::bail!("{}", close_frame.reason);
                         },
+                        Message::Binary(payload) => {
+                            let frame = decode_binary_frame(&payload)?;
+                            let combined = match frame {
+                                BinaryFrame::Full(payload) => {
+                                    if binary_chunk_buffer.take().is_some() {
+                                        tracing::warn!("Dropping buffered binary chunks due to full frame");
+                                    }
+                                    Some(payload)
+                                },
+                                BinaryFrame::Chunk(frame) => {
+                                    let buffer = binary_chunk_buffer.get_or_insert_with(|| {
+                                        BinaryChunkBuffer::new(
+                                            frame.message_id,
+                                            frame.total_parts,
+                                        )
+                                    });
+                                    let combined = buffer.push(frame)?;
+                                    if combined.is_some() {
+                                        binary_chunk_buffer = None;
+                                    }
+                                    combined
+                                },
+                            };
+
+                            if let Some(payload) = combined {
+                                let server_message = parse_binary_server_message(&payload)?;
+                                match server_message {
+                                    ServerMessage::Ping => tracing::trace!("received message {server_message:?}"),
+                                    _ => tracing::trace!("received message {server_message:?}"),
+                                };
+
+                                let resp = ProtocolResponse::ServerMessage(server_message);
+                                let _ = self.on_response.send(resp).await;
+                                self.backoff.reset();
+                            }
+                        },
                         Message::Text(t) => {
+                            if binary_chunk_buffer.take().is_some() {
+                                tracing::warn!(
+                                    "Dropping buffered binary chunks due to text message"
+                                );
+                            }
                             let json: serde_json::Value = serde_json::from_str(&t).context("JsonDeserializeError")?;
                             let server_message = json.try_into()?;
                             match server_message {
@@ -342,6 +444,7 @@ impl WebSocketInternal {
             last_close_reason,
             max_observed_timestamp,
             client_ts: Some(0),
+            supports_binary: true,
         };
         let msg = Message::Text(
             serde_json::Value::try_from(message)
@@ -359,5 +462,246 @@ impl WebSocketInternal {
             .send(message)
             .await
             .context("WebsocketClosedOnSend")
+    }
+}
+
+fn decode_binary_frame(payload: &[u8]) -> anyhow::Result<BinaryFrame> {
+    let frame_type = payload.first().context("Empty binary frame")?;
+    match *frame_type {
+        BINARY_FRAME_TYPE_FULL => Ok(BinaryFrame::Full(payload[1..].to_vec())),
+        BINARY_FRAME_TYPE_CHUNK => {
+            anyhow::ensure!(payload.len() >= 13, "Binary chunk frame too small");
+            let message_id = u32::from_le_bytes(payload[1..5].try_into()?);
+            let part_number = u32::from_le_bytes(payload[5..9].try_into()?);
+            let total_parts = u32::from_le_bytes(payload[9..13].try_into()?);
+            anyhow::ensure!(total_parts > 0, "Binary chunk frame has zero parts");
+            anyhow::ensure!(
+                part_number < total_parts,
+                "Binary chunk frame part out of range"
+            );
+            Ok(BinaryFrame::Chunk(BinaryChunkFrame {
+                message_id,
+                part_number,
+                total_parts,
+                payload: payload[13..].to_vec(),
+            }))
+        },
+        other => anyhow::bail!("Unknown binary frame type {other}"),
+    }
+}
+
+fn parse_binary_server_message(payload: &[u8]) -> anyhow::Result<ServerMessage> {
+    anyhow::ensure!(payload.len() >= 4, "Binary payload missing header length");
+    let header_len = u32::from_le_bytes(payload[0..4].try_into()?) as usize;
+    anyhow::ensure!(
+        payload.len() >= 4 + header_len,
+        "Binary payload header length out of range"
+    );
+    let header_bytes = &payload[4..4 + header_len];
+    let mut offset = 4 + header_len;
+    let mut packed_values = Vec::new();
+    while offset < payload.len() {
+        anyhow::ensure!(payload.len() >= offset + 4, "Packed value length missing");
+        let packed_len = u32::from_le_bytes(payload[offset..offset + 4].try_into()?) as usize;
+        offset += 4;
+        anyhow::ensure!(
+            payload.len() >= offset + packed_len,
+            "Packed value length out of range"
+        );
+        let packed_bytes = &payload[offset..offset + packed_len];
+        offset += packed_len;
+        packed_values.push(decode_packed_json(packed_bytes)?);
+    }
+    let header: JsonValue = serde_json::from_slice(header_bytes)?;
+    let hydrated = replace_packed_values(header, &packed_values)?;
+    Ok(hydrated.try_into()?)
+}
+
+fn decode_packed_json(bytes: &[u8]) -> anyhow::Result<JsonValue> {
+    let root = Reader::get_root(bytes)?;
+    let value = decode_flex_value(root)?;
+    Ok(JsonValue::from(value))
+}
+
+fn decode_flex_value(reader: Reader<&[u8]>) -> anyhow::Result<crate::value::Value> {
+    let result = match reader.flexbuffer_type() {
+        FlexBufferType::Null => crate::value::Value::Null,
+        FlexBufferType::Int | FlexBufferType::IndirectInt => {
+            crate::value::Value::Int64(reader.get_i64()?)
+        },
+        FlexBufferType::UInt | FlexBufferType::IndirectUInt => {
+            let value = reader.get_u64()?;
+            let signed = i64::try_from(value)
+                .map_err(|_| anyhow::anyhow!("Unsigned value {value} exceeds i64::MAX"))?;
+            crate::value::Value::Int64(signed)
+        },
+        FlexBufferType::Float | FlexBufferType::IndirectFloat => {
+            crate::value::Value::Float64(reader.get_f64()?)
+        },
+        FlexBufferType::Bool => crate::value::Value::Boolean(reader.get_bool()?),
+        FlexBufferType::String => crate::value::Value::String(reader.get_str()?.to_owned()),
+        FlexBufferType::Blob => crate::value::Value::Bytes(reader.get_blob()?.0.to_vec()),
+        FlexBufferType::Map => {
+            let map_reader = reader.get_map()?;
+            let mut out = BTreeMap::new();
+            for (key, value) in map_reader.iter_keys().zip(map_reader.iter_values()) {
+                out.insert(key.to_string(), decode_flex_value(value)?);
+            }
+            crate::value::Value::Object(out)
+        },
+        ty if ty.is_vector() => {
+            let vector = reader.get_vector()?;
+            let mut out = Vec::with_capacity(vector.len());
+            for idx in 0..vector.len() {
+                out.push(decode_flex_value(vector.index(idx)?)?);
+            }
+            crate::value::Value::Array(out)
+        },
+        ty => anyhow::bail!("Unexpected flexbuffer type {ty:?}"),
+    };
+    Ok(result)
+}
+
+fn replace_packed_values(
+    value: JsonValue,
+    packed_values: &[JsonValue],
+) -> anyhow::Result<JsonValue> {
+    match value {
+        JsonValue::Array(values) => {
+            let replaced = values
+                .into_iter()
+                .map(|entry| replace_packed_values(entry, packed_values))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            Ok(JsonValue::Array(replaced))
+        },
+        JsonValue::Object(mut map) => {
+            if map.len() == 1 {
+                if let Some(index_value) = map.remove(PACKED_PLACEHOLDER_KEY) {
+                    let index = index_value
+                        .as_u64()
+                        .context("Packed placeholder index must be a number")?;
+                    return packed_values
+                        .get(index as usize)
+                        .cloned()
+                        .context("Packed placeholder index out of range");
+                }
+            }
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (key, value) in map {
+                out.insert(key, replace_packed_values(value, packed_values)?);
+            }
+            Ok(JsonValue::Object(out))
+        },
+        other => Ok(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_binary_server_message_roundtrip() -> anyhow::Result<()> {
+        let packed = flexbuffers::singleton(42i64);
+        let header = serde_json::json!({
+            "type": "MutationResponse",
+            "requestId": 1,
+            "success": true,
+            "result": { "$packed": 0 },
+            "logLines": [],
+        });
+        let header_bytes = serde_json::to_vec(&header)?;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&header_bytes);
+        payload.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&packed);
+
+        let message = parse_binary_server_message(&payload)?;
+        match message {
+            ServerMessage::MutationResponse { result: Ok(value), .. } => {
+                assert_eq!(value, crate::value::Value::Int64(42));
+            },
+            other => anyhow::bail!("Unexpected server message {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn binary_chunk_buffer_reassembles_payload() -> anyhow::Result<()> {
+        let mut buffer = BinaryChunkBuffer::new(3, 3);
+        let chunk0 = BinaryChunkFrame {
+            message_id: 3,
+            part_number: 0,
+            total_parts: 3,
+            payload: vec![1, 2],
+        };
+        let chunk1 = BinaryChunkFrame {
+            message_id: 3,
+            part_number: 1,
+            total_parts: 3,
+            payload: vec![3, 4],
+        };
+        let chunk2 = BinaryChunkFrame {
+            message_id: 3,
+            part_number: 2,
+            total_parts: 3,
+            payload: vec![5],
+        };
+
+        assert!(buffer.push(chunk0)?.is_none());
+        assert!(buffer.push(chunk1)?.is_none());
+        let combined = buffer.push(chunk2)?.expect("Expected full payload");
+        assert_eq!(combined, vec![1, 2, 3, 4, 5]);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_binary_server_message_accepts_uints() -> anyhow::Result<()> {
+        let packed = flexbuffers::singleton(7u64);
+        let header = serde_json::json!({
+            "type": "MutationResponse",
+            "requestId": 1,
+            "success": true,
+            "result": { "$packed": 0 },
+            "logLines": [],
+        });
+        let header_bytes = serde_json::to_vec(&header)?;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&header_bytes);
+        payload.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&packed);
+
+        let message = parse_binary_server_message(&payload)?;
+        match message {
+            ServerMessage::MutationResponse { result: Ok(value), .. } => {
+                assert_eq!(value, crate::value::Value::Int64(7));
+            },
+            other => anyhow::bail!("Unexpected server message {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn decode_binary_frame_rejects_zero_parts() {
+        let mut frame = vec![BINARY_FRAME_TYPE_CHUNK];
+        frame.extend_from_slice(&1u32.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&[1, 2, 3]);
+        let err = decode_binary_frame(&frame).expect_err("expected error");
+        assert!(err.to_string().contains("zero parts"));
+    }
+
+    #[test]
+    fn decode_binary_frame_rejects_out_of_range_part() {
+        let mut frame = vec![BINARY_FRAME_TYPE_CHUNK];
+        frame.extend_from_slice(&2u32.to_le_bytes());
+        frame.extend_from_slice(&5u32.to_le_bytes());
+        frame.extend_from_slice(&3u32.to_le_bytes());
+        frame.extend_from_slice(&[1, 2, 3]);
+        let err = decode_binary_frame(&frame).expect_err("expected error");
+        assert!(err.to_string().contains("part out of range"));
     }
 }

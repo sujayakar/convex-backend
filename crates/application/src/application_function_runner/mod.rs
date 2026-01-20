@@ -189,9 +189,9 @@ use value::{
     id_v6::DeveloperDocumentId,
     identifier::Identifier,
     serialized_args_ext::SerializedArgsExt,
-    JsonPackedValue,
     TableNamespace,
 };
+use packed_value::PackedSyncValue;
 use vector::{
     PublicVectorSearchQueryResult,
     VectorSearch,
@@ -705,7 +705,7 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
         path: CanonicalizedComponentFunctionPath,
         arguments: ConvexArray,
         caller: FunctionCaller,
-    ) -> anyhow::Result<(Result<JsonPackedValue, JsError>, LogLines)> {
+    ) -> anyhow::Result<(Result<PackedSyncValue, JsError>, LogLines)> {
         if !(tx.identity().is_admin() || tx.identity().is_system()) {
             anyhow::bail!(unauthorized_error("query_without_caching"));
         }
@@ -1474,13 +1474,16 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
 
                 if let Ok(ref mut node_outcome) = node_outcome_result
                     && let Ok(ref output) = node_outcome.result
-                    && let Some(js_err) = returns_validator.check_output(
-                        output,
-                        &table_mapping,
-                        &virtual_system_mapping,
-                    )
                 {
-                    node_outcome.result = Err(js_err);
+                    if let Ok(unpacked) = output.unpack()
+                        && let Some(js_err) = returns_validator.check_output(
+                            &unpacked,
+                            &table_mapping,
+                            &virtual_system_mapping,
+                        )
+                    {
+                        node_outcome.result = Err(js_err);
+                    }
                 }
 
                 node_outcome_result.map(|node_outcome| {
@@ -1489,7 +1492,7 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                         arguments: arguments.clone(),
                         identity: tx.inert_identity(),
                         unix_timestamp,
-                        result: node_outcome.result.map(JsonPackedValue::pack),
+                        result: node_outcome.result,
                         syscall_trace: node_outcome.syscall_trace,
                         udf_server_version,
                         user_execution_time: None,

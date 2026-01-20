@@ -3,10 +3,12 @@ import child_process from "child_process";
 import { test, expect } from "vitest";
 import { Long } from "../../vendor/long.js";
 
+import * as flexbuffers from "flatbuffers/js/flexbuffers.js";
 import { BaseConvexClient } from "./client.js";
 import {
   ActionRequest,
   MutationRequest,
+  longToU64,
   parseServerMessage,
   RequestId,
   WireServerMessage,
@@ -29,7 +31,12 @@ test("BaseConvexClient protocol in node", async () => {
       { webSocketConstructor: nodeWebSocket, unsavedChangesWarning: false },
     );
 
-    expect((await receive()).type).toEqual("Connect");
+    const connect = await receive();
+    expect(connect.type).toEqual("Connect");
+    if (connect.type !== "Connect") {
+      throw new Error("Expected Connect message");
+    }
+    expect(connect.supportsBinary).toBe(true);
     expect((await receive()).type).toEqual("ModifyQuerySet");
 
     await client.close();
@@ -99,6 +106,80 @@ test("Actions can be called immediately", async () => {
 
     send(actionSuccess(requestId));
     expect(await actionP).toBe(42);
+    await client.close();
+  });
+});
+
+test("Binary mutation responses are parsed", async () => {
+  await withInMemoryWebSocket(async ({ address, receive, socket }) => {
+    const client = new BaseConvexClient(address, () => null, {
+      webSocketConstructor: nodeWebSocket,
+      unsavedChangesWarning: false,
+    });
+
+    const mutationP = client.mutation("myMutation", {});
+
+    await receive(); // Connect
+    await receive(); // ModifyQuerySet
+    const mutationRequest = await receive();
+    expect(mutationRequest.type).toEqual("Mutation");
+    const requestId = (mutationRequest as MutationRequest).requestId;
+
+    const packed = flexbuffers.encode({ answer: 42 });
+    const mutationHeader = {
+      type: "MutationResponse",
+      requestId,
+      success: true,
+      result: { $packed: 0 },
+      ts: longToU64(Long.fromNumber(5)),
+      logLines: [],
+    };
+    const mutationHeaderBytes = new TextEncoder().encode(
+      JSON.stringify(mutationHeader),
+    );
+    const mutationPayload = new Uint8Array(
+      4 + mutationHeaderBytes.length + 4 + packed.length,
+    );
+    const mutationView = new DataView(mutationPayload.buffer);
+    mutationView.setUint32(0, mutationHeaderBytes.length, true);
+    mutationPayload.set(mutationHeaderBytes, 4);
+    let offset = 4 + mutationHeaderBytes.length;
+    mutationView.setUint32(offset, packed.length, true);
+    offset += 4;
+    mutationPayload.set(packed, offset);
+
+    const mutationFrame = new Uint8Array(1 + mutationPayload.length);
+    mutationFrame[0] = 0;
+    mutationFrame.set(mutationPayload, 1);
+    socket().send(Buffer.from(mutationFrame));
+
+    const transitionHeader = {
+      type: "Transition",
+      startVersion: {
+        querySet: 0,
+        ts: longToU64(Long.fromNumber(0)),
+        identity: 0,
+      },
+      endVersion: {
+        querySet: 0,
+        ts: longToU64(Long.fromNumber(10)),
+        identity: 0,
+      },
+      modifications: [],
+    };
+    const transitionHeaderBytes = new TextEncoder().encode(
+      JSON.stringify(transitionHeader),
+    );
+    const transitionPayload = new Uint8Array(4 + transitionHeaderBytes.length);
+    const transitionView = new DataView(transitionPayload.buffer);
+    transitionView.setUint32(0, transitionHeaderBytes.length, true);
+    transitionPayload.set(transitionHeaderBytes, 4);
+    const transitionFrame = new Uint8Array(1 + transitionPayload.length);
+    transitionFrame[0] = 0;
+    transitionFrame.set(transitionPayload, 1);
+    socket().send(Buffer.from(transitionFrame));
+
+    expect(await mutationP).toEqual({ answer: 42 });
     await client.close();
   });
 });
@@ -847,6 +928,66 @@ test("TransitionChunk messages are assembled into a Transition", async () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
+    expect(client.getMaxObservedTimestamp()).toEqual(Long.fromNumber(1000));
+
+    await client.close();
+  });
+});
+
+test("Binary chunk frames are assembled into a Transition", async () => {
+  await withInMemoryWebSocket(async ({ address, receive, socket }) => {
+    const client = new BaseConvexClient(address, () => null, {
+      webSocketConstructor: nodeWebSocket,
+      unsavedChangesWarning: false,
+    });
+    expect((await receive()).type).toEqual("Connect");
+    expect((await receive()).type).toEqual("ModifyQuerySet");
+
+    const transitionHeader = {
+      type: "Transition",
+      startVersion: {
+        querySet: 0,
+        ts: longToU64(Long.fromNumber(0)),
+        identity: 0,
+      },
+      endVersion: {
+        querySet: 1,
+        ts: longToU64(Long.fromNumber(1000)),
+        identity: 0,
+      },
+      modifications: [],
+    };
+    const headerBytes = new TextEncoder().encode(
+      JSON.stringify(transitionHeader),
+    );
+    const payload = new Uint8Array(4 + headerBytes.length);
+    const view = new DataView(payload.buffer);
+    view.setUint32(0, headerBytes.length, true);
+    payload.set(headerBytes, 4);
+
+    const midpoint = Math.floor(payload.length / 2);
+    const chunks = [payload.slice(0, midpoint), payload.slice(midpoint)];
+    const messageId = 9;
+    const totalParts = chunks.length;
+
+    for (let idx = 0; idx < chunks.length; idx++) {
+      const chunk = chunks[idx];
+      const frame = new Uint8Array(13 + chunk.length);
+      const frameView = new DataView(frame.buffer);
+      frame[0] = 1;
+      frameView.setUint32(1, messageId, true);
+      frameView.setUint32(5, idx, true);
+      frameView.setUint32(9, totalParts, true);
+      frame.set(chunk, 13);
+      socket().send(Buffer.from(frame));
+    }
+
+    for (let i = 0; i < 10; i++) {
+      if (client.getMaxObservedTimestamp()) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     expect(client.getMaxObservedTimestamp()).toEqual(Long.fromNumber(1000));
 
     await client.close();

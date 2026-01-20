@@ -89,5 +89,8 @@ export async function performAsyncSyscall(
     // If it came from Rust it won't.
     throw new Error(e.message);
   }
-  return JSON.parse(resultStr);
+  if (typeof resultStr === "string") {
+    return JSON.parse(resultStr);
+  }
+  return resultStr;
 }

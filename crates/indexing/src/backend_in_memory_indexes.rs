@@ -1324,6 +1324,14 @@ impl LazyDocument {
         }
     }
 
+    pub fn into_packed(self) -> PackedDocument {
+        match self {
+            LazyDocument::Resolved(doc) => PackedDocument::pack(&doc),
+            LazyDocument::Packed(doc) => doc,
+            LazyDocument::Memory(doc) => doc.packed_document,
+        }
+    }
+
     pub fn approximate_size(&self) -> usize {
         match self {
             LazyDocument::Resolved(doc) => doc.size(),

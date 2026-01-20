@@ -29,6 +29,7 @@ pub mod isolate_worker;
 pub mod metrics;
 pub mod module_cache;
 pub mod module_map;
+mod packed_values;
 mod ops;
 mod request_scope;
 pub mod strings;

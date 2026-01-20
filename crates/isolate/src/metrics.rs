@@ -251,7 +251,11 @@ pub fn log_argument_length(args: &str) {
 
 register_convex_histogram!(UDF_ISOLATE_RESULT_BYTES, "Size of isolate results in bytes");
 pub fn log_result_length(result: &str) {
-    log_distribution(&UDF_ISOLATE_RESULT_BYTES, result.len() as f64);
+    log_result_bytes(result.len());
+}
+
+pub fn log_result_bytes(size: usize) {
+    log_distribution(&UDF_ISOLATE_RESULT_BYTES, size as f64);
 }
 
 register_convex_histogram!(UDF_OP_SECONDS, "Duration of UDF op", &["status", "op"]);

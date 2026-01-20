@@ -14,6 +14,7 @@ use keybroker::{
 };
 use runtime::testing::TestRuntime;
 use serde_json::json;
+use value::ConvexValue;
 
 use crate::{
     test_helpers::ApplicationTestExt,
@@ -141,7 +142,11 @@ async fn test_mutation_output(rt: TestRuntime) -> anyhow::Result<()> {
         "returns_validation:stringOutputReturnsStringMutation",
     )
     .await?;
-    assert!(result.unwrap().value.as_str().contains("hello"));
+    let value = result.unwrap().value.unpack()?;
+    let ConvexValue::String(value) = value else {
+        anyhow::bail!("Expected string result");
+    };
+    assert!(value.contains("hello"));
     Ok(())
 }
 
@@ -154,7 +159,11 @@ async fn test_query_output(rt: TestRuntime) -> anyhow::Result<()> {
         "returns_validation:stringOutputReturnsStringQuery",
     )
     .await?;
-    assert!(result.result.unwrap().as_str().contains("hello"));
+    let value = result.result.unwrap().unpack()?;
+    let ConvexValue::String(value) = value else {
+        anyhow::bail!("Expected string result");
+    };
+    assert!(value.contains("hello"));
     Ok(())
 }
 
@@ -167,6 +176,10 @@ async fn test_action_output(rt: TestRuntime) -> anyhow::Result<()> {
         "returns_validation:stringOutputReturnsStringAction",
     )
     .await?;
-    assert!(result.unwrap().value.as_str().contains("hello"));
+    let value = result.unwrap().value.unpack()?;
+    let ConvexValue::String(value) = value else {
+        anyhow::bail!("Expected string result");
+    };
+    assert!(value.contains("hello"));
     Ok(())
 }

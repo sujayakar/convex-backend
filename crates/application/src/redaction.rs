@@ -16,6 +16,7 @@ use serde::{
     Serialize,
 };
 use serde_json::json;
+use packed_value::PackedSyncValue;
 use sync_types::{
     types::ErrorPayload,
     LogLinesMessage,
@@ -24,7 +25,6 @@ use udf::HttpActionResponsePart;
 use value::{
     sha256::Sha256,
     ConvexValue,
-    JsonPackedValue,
 };
 
 /// List of log lines from a Convex function execution, redacted to only
@@ -113,12 +113,12 @@ impl RedactedJsError {
         self.error.custom_data
     }
 
-    pub fn into_error_payload(self) -> ErrorPayload<JsonPackedValue> {
+    pub fn into_error_payload(self) -> ErrorPayload<PackedSyncValue> {
         let message = format!("{self}");
         if let Some(data) = self.custom_data_if_any() {
             ErrorPayload::ErrorData {
                 message,
-                data: JsonPackedValue::pack(data),
+                data: PackedSyncValue::pack(&data),
             }
         } else {
             ErrorPayload::Message(message)

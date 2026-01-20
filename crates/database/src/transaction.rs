@@ -32,6 +32,7 @@ use common::{
     document::{
         CreationTime,
         DocumentUpdateWithPrevTs,
+        PackedDocument,
         ResolvedDocument,
     },
     identity::InertIdentity,
@@ -115,6 +116,7 @@ use crate::{
     preloaded::PreloadedIndexRange,
     query::{
         IndexRangeResponse,
+        PackedIndexRangeResponse,
         TableFilter,
     },
     reads::TransactionReadSet,
@@ -544,6 +546,31 @@ impl<RT: Runtime> Transaction<RT> {
         self.get_inner(id, table_name).await
     }
 
+    /// Packed variant of `get` returning a packed document.
+    pub async fn get_packed(
+        &mut self,
+        id: ResolvedDocumentId,
+    ) -> anyhow::Result<Option<PackedDocument>> {
+        Ok(self.get_with_ts_packed(id).await?.map(|(doc, _)| doc))
+    }
+
+    #[fastrace::trace]
+    #[convex_macro::instrument_future]
+    pub async fn get_with_ts_packed(
+        &mut self,
+        id: ResolvedDocumentId,
+    ) -> anyhow::Result<Option<(PackedDocument, WriteTimestamp)>> {
+        task::consume_budget().await;
+        let table_name = match self.table_mapping().tablet_name(id.tablet_id) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+        if self.virtual_system_mapping().is_virtual_table(&table_name) {
+            anyhow::bail!("Virtual tables should use UserFacingModel::get_with_ts");
+        }
+        self.get_inner_packed(id, table_name).await
+    }
+
     #[convex_macro::instrument_future]
     pub(crate) async fn patch_inner(
         &mut self,
@@ -950,6 +977,54 @@ impl<RT: Runtime> Transaction<RT> {
         Ok(result)
     }
 
+    pub(crate) async fn get_inner_packed(
+        &mut self,
+        id: ResolvedDocumentId,
+        table_name: TableName,
+    ) -> anyhow::Result<Option<(PackedDocument, WriteTimestamp)>> {
+        let index_name = TabletIndexName::by_id(id.tablet_id);
+        let printable_index_name = IndexName::by_id(table_name.clone());
+        let index_key = IndexKey::new(vec![], id.into());
+        let interval = Interval::singleton(index_key.to_bytes().into());
+        let range_request = RangeRequest {
+            index_name: index_name.clone(),
+            printable_index_name,
+            interval: interval.clone(),
+            order: Order::Asc,
+            max_size: 2,
+        };
+
+        let [result] = self
+            .index
+            .range_batch_packed(&[&range_request])
+            .await
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("expected result"))?;
+        self.reads
+            .record_indexed_directly(index_name, IndexedFields::by_id(), interval)?;
+        let PackedIndexRangeResponse {
+            page: range_results,
+            cursor,
+        } = result?;
+        if range_results.len() > 1 {
+            Err(anyhow::anyhow!("Got multiple values for id {id:?}"))?;
+        }
+        if !matches!(cursor, CursorPosition::End) {
+            Err(anyhow::anyhow!(
+                "Querying 2 items for a single id didn't exhaust interval for {id:?}"
+            ))?;
+        }
+        let result = match range_results.into_iter().next() {
+            Some((_, doc, timestamp)) => {
+                self.record_read_document_packed(&doc, &table_name)?;
+                Some((doc, timestamp))
+            },
+            None => None,
+        };
+        self.stats.entry(id.tablet_id).or_default().rows_read += 1;
+        Ok(result)
+    }
+
     /// Apply a validated write to the [Transaction], updating the
     /// [IndexRegistry] and [TableRegistry]. Validated means the write
     /// has already been checked for schema enforcement.
@@ -1101,6 +1176,24 @@ impl<RT: Runtime> Transaction<RT> {
             component_path,
             table_name.clone(),
             document.size(),
+            &self.usage_tracker,
+            is_virtual_table,
+        )
+    }
+
+    pub fn record_read_document_packed(
+        &mut self,
+        document: &PackedDocument,
+        table_name: &TableName,
+    ) -> anyhow::Result<()> {
+        let is_virtual_table = self.virtual_system_mapping().is_virtual_table(table_name);
+        let component_path = self
+            .component_path_for_document_id(document.id())?
+            .unwrap_or_default();
+        self.reads.record_read_document(
+            component_path,
+            table_name.clone(),
+            document.value().size(),
             &self.usage_tracker,
             is_virtual_table,
         )

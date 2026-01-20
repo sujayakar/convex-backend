@@ -30,6 +30,7 @@ hex = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 mysql_async = { workspace = true }
+packed_value = { workspace = true }
 prometheus = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }

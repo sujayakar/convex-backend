@@ -27,6 +27,7 @@ itertools = { workspace = true }
 lru = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
+packed_value = { workspace = true }
 postgres-protocol = { workspace = true }
 prometheus = { workspace = true }
 rand = { workspace = true }

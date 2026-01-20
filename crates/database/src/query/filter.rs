@@ -64,8 +64,8 @@ impl QueryStream for Filter {
                         return Ok(QueryStreamNext::WaitingOn(request))
                     },
                 };
-            let value = document.value().0.clone();
-            if self.expr.eval(&value)?.into_boolean()? {
+            if self.expr.eval_packed(document.value())?.into_boolean()?
+            {
                 return Ok(QueryStreamNext::Ready(Some((document, write_timestamp))));
             }
         }

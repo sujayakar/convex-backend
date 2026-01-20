@@ -9,6 +9,7 @@ use common::{
     components::ComponentId,
     document::{
         DeveloperDocument,
+        PackedDeveloperDocument,
         ResolvedDocument,
     },
     query::CursorPosition,
@@ -40,7 +41,7 @@ use crate::{
     },
     query::{
         DeveloperIndexRangeResponse,
-        IndexRangeResponse,
+        PackedIndexRangeResponse,
     },
     transaction::{
         IndexRangeRequest,
@@ -144,6 +145,53 @@ impl<'a, RT: Runtime> UserFacingModel<'a, RT> {
             let table_name = self.tx.table_mapping().tablet_name(id_.tablet_id)?;
             let result = self.tx.get_inner(id_, table_name).await?;
             Ok(result.map(|(doc, ts)| (doc.to_developer(), ts)))
+        }
+    }
+
+    #[fastrace::trace]
+    #[convex_macro::instrument_future]
+    pub async fn get_with_ts_packed(
+        &mut self,
+        id: DeveloperDocumentId,
+        version: Option<Version>,
+    ) -> anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>> {
+        if !self
+            .tx
+            .table_mapping()
+            .namespace(self.namespace)
+            .table_number_exists()(id.table())
+        {
+            return Ok(None);
+        }
+        let id_ = self.tx.resolve_developer_id(&id, self.namespace)?;
+        let physical_table_name = self
+            .tx
+            .table_mapping()
+            .namespace(self.namespace)
+            .tablet_name(id_.tablet_id)?;
+        if let Some(table_name) = self
+            .tx
+            .virtual_system_mapping()
+            .system_to_virtual_table(&physical_table_name)
+            .cloned()
+        {
+            log_virtual_table_get();
+            let result = VirtualTable::new(self.tx)
+                .get(self.namespace, id, version)
+                .await;
+            match result {
+                Ok(Some((document, ts))) => {
+                    let packed = PackedDeveloperDocument::pack(&document);
+                    self.record_read_document_packed(&packed, &table_name)?;
+                    Ok(Some((packed, ts)))
+                },
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            }
+        } else {
+            let table_name = self.tx.table_mapping().tablet_name(id_.tablet_id)?;
+            let result = self.tx.get_inner_packed(id_, table_name).await?;
+            Ok(result.map(|(doc, ts)| (PackedDeveloperDocument::from_packed(doc), ts)))
         }
     }
 
@@ -328,6 +376,27 @@ impl<'a, RT: Runtime> UserFacingModel<'a, RT> {
             is_virtual_table,
         )
     }
+
+    pub fn record_read_document_packed(
+        &mut self,
+        document: &PackedDeveloperDocument,
+        table_name: &TableName,
+    ) -> anyhow::Result<()> {
+        let is_virtual_table = self
+            .tx
+            .virtual_system_mapping()
+            .is_virtual_table(table_name);
+        let component_path = self
+            .tx
+            .must_component_path(ComponentId::from(self.namespace))?;
+        self.tx.reads.record_read_document(
+            component_path,
+            table_name.clone(),
+            document.value().size(),
+            &self.tx.usage_tracker,
+            is_virtual_table,
+        )
+    }
 }
 
 fn start_index_range<RT: Runtime>(
@@ -373,11 +442,10 @@ fn start_index_range<RT: Runtime>(
     }
 }
 
-/// NOTE: returns a page of results. Callers must call record_read_document +
-/// record_indexed_directly for all documents returned from the index stream.
+/// Index range batch for zero-copy paths.
 #[fastrace::trace]
 #[convex_macro::instrument_future]
-pub async fn index_range_batch<RT: Runtime>(
+pub async fn index_range_batch_packed<RT: Runtime>(
     tx: &mut Transaction<RT>,
     requests: BTreeMap<BatchKey, IndexRangeRequest>,
 ) -> BTreeMap<BatchKey, anyhow::Result<DeveloperIndexRangeResponse>> {
@@ -404,27 +472,27 @@ pub async fn index_range_batch<RT: Runtime>(
 
     let fetch_results = tx
         .index
-        .range_batch(&fetch_requests.values().collect_vec())
+        .range_batch_packed(&fetch_requests.values().collect_vec())
         .await;
 
     for (&batch_key, fetch_result) in fetch_requests.keys().zip(fetch_results) {
         let virtual_table_version = virtual_table_versions.get(&batch_key).cloned();
         let result = try {
-            let IndexRangeResponse { page, cursor } = fetch_result?;
+            let PackedIndexRangeResponse { page, cursor } = fetch_result?;
             let developer_results = match virtual_table_version {
                 Some(version) => {
                     let mut converted_documents = vec![];
                     for (key, doc, ts) in page {
                         let doc = VirtualTable::new(tx)
-                            .system_to_virtual_doc(doc, version.clone())
+                            .system_to_virtual_doc(doc.unpack(), version.clone())
                             .await?;
-                        converted_documents.push((key, doc, ts));
+                        converted_documents.push((key, PackedDeveloperDocument::pack(&doc), ts));
                     }
                     converted_documents
                 },
                 None => page
                     .into_iter()
-                    .map(|(key, doc, ts)| (key, doc.to_developer(), ts))
+                    .map(|(key, doc, ts)| (key, PackedDeveloperDocument::from_packed(doc), ts))
                     .collect(),
             };
             DeveloperIndexRangeResponse {

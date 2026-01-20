@@ -21,10 +21,8 @@ use tokio::sync::{
     oneshot,
     Semaphore,
 };
-use value::{
-    ConvexArray,
-    ConvexValue,
-};
+use value::ConvexArray;
+use packed_value::PackedSyncValue;
 
 use super::{
     environment::EnvironmentOutcome,
@@ -67,7 +65,7 @@ pub enum IsolateThreadRequest {
 }
 
 pub enum EvaluateResult {
-    Ready(ConvexValue),
+    Ready(PackedSyncValue),
     Pending(Pending),
 }
 
@@ -111,7 +109,7 @@ pub struct PendingAsyncSyscall {
 #[derive(Debug)]
 pub struct AsyncSyscallCompletion {
     pub promise_id: PromiseId,
-    pub result: anyhow::Result<String>,
+    pub result: anyhow::Result<crate::environment::udf::syscall_result::SyscallResult>,
 }
 
 #[derive(Debug)]

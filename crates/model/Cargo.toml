@@ -50,6 +50,7 @@ maplit = { workspace = true }
 metrics = { workspace = true }
 migrations_model = { workspace = true }
 openidconnect = { workspace = true }
+packed_value = { workspace = true }
 pb = { workspace = true }
 proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }

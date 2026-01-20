@@ -40,6 +40,24 @@ import { performAsyncSyscall } from "./syscall.js";
 import { asObjectValidator } from "../../values/validator.js";
 import { getFunctionAddress } from "../components/paths.js";
 
+const packedValueSymbol = Symbol.for("convex.packed");
+
+function isPackedValue(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const meta = (value as any)[packedValueSymbol];
+  return !!meta && meta.materialized === undefined;
+}
+
+function serializeUdfResult(result: any): any {
+  const normalized = result === undefined ? null : result;
+  if (isPackedValue(normalized)) {
+    return normalized;
+  }
+  return JSON.stringify(convexToJson(normalized));
+}
+
 async function invokeMutation<
   F extends (ctx: GenericMutationCtx<GenericDataModel>, ...args: any) => any,
 >(func: F, argsStr: string) {
@@ -59,7 +77,7 @@ async function invokeMutation<
   };
   const result = await invokeFunction(func, mutationCtx, args as any);
   validateReturnValue(result);
-  return JSON.stringify(convexToJson(result === undefined ? null : result));
+  return serializeUdfResult(result);
 }
 
 export function validateReturnValue(v: any) {
@@ -273,7 +291,7 @@ async function invokeQuery<
   };
   const result = await invokeFunction(func, queryCtx, args as any);
   validateReturnValue(result);
-  return JSON.stringify(convexToJson(result === undefined ? null : result));
+  return serializeUdfResult(result);
 }
 
 /**

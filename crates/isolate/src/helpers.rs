@@ -8,6 +8,7 @@ use common::{
     knobs::FUNCTION_MAX_RESULT_SIZE,
     value::ConvexValue,
 };
+use packed_value::PackedSyncValue;
 use deno_core::v8;
 use errors::{
     ErrorMetadata,
@@ -109,7 +110,7 @@ pub fn get_property<'s>(
 pub fn deserialize_udf_result(
     path: &ResolvedComponentFunctionPath,
     result_str: &str,
-) -> anyhow::Result<Result<ConvexValue, JsError>> {
+) -> anyhow::Result<Result<PackedSyncValue, JsError>> {
     // Don't print out result_str in error messages - as it may contain pii
     let result_v: serde_json::Value = serde_json::from_str(result_str).map_err(|e| {
         anyhow::anyhow!(ErrorMetadata::bad_request(
@@ -130,7 +131,7 @@ pub fn deserialize_udf_result(
                     (*FUNCTION_MAX_RESULT_SIZE).format_size(BINARY),
                 )))
             } else {
-                Ok(value)
+                Ok(PackedSyncValue::pack(&value))
             }
         },
         Err(e) if e.is_deterministic_user_error() => {

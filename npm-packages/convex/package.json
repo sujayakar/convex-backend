@@ -240,7 +240,8 @@
   ],
   "dependencies": {
     "esbuild": "0.27.0",
-    "prettier": "^3.0.0"
+    "prettier": "^3.0.0",
+    "flatbuffers": "~25.9.23"
   },
   "peerDependencies": {
     "@auth0/auth0-react": "^2.0.1",

@@ -99,8 +99,8 @@ use value::{
     base64,
     heap_size::WithHeapSize,
     ConvexObject,
-    ConvexValue,
 };
+use packed_value::PackedSyncValue;
 
 use crate::metrics::{
     log_download_time,
@@ -735,7 +735,7 @@ enum ExecuteResponseResult {
 
 #[derive(Debug)]
 pub struct NodeActionOutcome {
-    pub result: Result<ConvexValue, JsError>,
+    pub result: Result<PackedSyncValue, JsError>,
     pub syscall_trace: SyscallTrace,
     pub memory_used_in_mb: u64,
     pub egress_bytes: u64,

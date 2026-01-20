@@ -35,13 +35,20 @@ pub mod async_syscall;
 
 mod phase;
 pub mod syscall;
+pub mod syscall_result;
 use std::{
     cmp::Ordering,
-    collections::VecDeque,
+    collections::{
+        BTreeMap,
+        VecDeque,
+    },
     sync::Arc,
 };
 
-use anyhow::anyhow;
+use anyhow::{
+    anyhow,
+    Context as _,
+};
 use common::{
     errors::JsError,
     identity::InertIdentity,
@@ -77,19 +84,25 @@ use common::{
         ConvexValue,
     },
 };
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+    PackedSyncValue,
+};
+use crate::packed_values::{
+    extract_packed_meta,
+    open_at_path,
+};
 use database::{
     BiggestDocumentWrites,
     FunctionExecutionSize,
     Transaction,
     OVER_LIMIT_HELP,
 };
-use deno_core::{
-    serde_v8,
-    v8::{
-        self,
-        scope,
-        scope_with_context,
-    },
+use deno_core::v8::{
+    self,
+    scope,
+    scope_with_context,
 };
 use errors::ErrorMetadata;
 use file_storage::TransactionalFileStorage;
@@ -98,12 +111,15 @@ use rand::Rng;
 use rand_chacha::ChaCha12Rng;
 use serde_json::Value as JsonValue;
 use udf::UdfOutcome;
+use humansize::{
+    FormatSize,
+    BINARY,
+};
 use value::{
     heap_size::{
         HeapSize,
         WithHeapSize,
     },
-    JsonPackedValue,
     NamespacedTableMapping,
     Size,
     VALUE_TOO_LARGE_SHORT_MSG,
@@ -133,6 +149,7 @@ use crate::{
         UdfCallback,
         UdfRequest,
     },
+    convert_v8::ToV8 as _,
     environment::{
         helpers::{
             module_loader::module_specifier_from_path,
@@ -199,6 +216,9 @@ pub struct DatabaseUdfEnvironment<RT: Runtime> {
 
     context: ExecutionContext,
 
+    packed_values: BTreeMap<crate::packed_values::PackedValueHandle, PackedValue<ByteBuffer>>,
+    next_packed_value_id: crate::packed_values::PackedValueHandle,
+
     reactor_depth: usize,
     udf_callback: Box<dyn UdfCallback<RT>>,
 }
@@ -248,6 +268,23 @@ impl<RT: Runtime> IsolateEnvironment<RT> for DatabaseUdfEnvironment<RT> {
         let namespace = self.phase.component()?.into();
         let tx = self.phase.tx()?;
         Ok(tx.table_mapping().namespace(namespace))
+    }
+
+    fn register_packed_value(
+        &mut self,
+        value: PackedValue<ByteBuffer>,
+    ) -> anyhow::Result<crate::packed_values::PackedValueHandle> {
+        let handle = self.next_packed_value_id;
+        self.next_packed_value_id += 1;
+        self.packed_values.insert(handle, value);
+        Ok(handle)
+    }
+
+    fn get_packed_value(
+        &self,
+        handle: crate::packed_values::PackedValueHandle,
+    ) -> anyhow::Result<Option<PackedValue<ByteBuffer>>> {
+        Ok(self.packed_values.get(&handle).cloned())
     }
 
     async fn lookup_source(
@@ -362,6 +399,8 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
             syscall_trace: SyscallTrace::new(),
             heap_stats,
             context,
+            packed_values: BTreeMap::new(),
+            next_packed_value_id: 0,
 
             reactor_depth,
             udf_callback,
@@ -469,10 +508,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
                 observed_time: self.phase.observed_time(),
                 log_lines: self.log_lines,
                 journal: self.next_journal,
-                result: match result {
-                    Ok(v) => Ok(JsonPackedValue::pack(v)),
-                    Err(e) => Err(e),
-                },
+                result,
                 syscall_trace: self.syscall_trace,
                 udf_server_version: self.udf_server_version,
                 memory_in_mb,
@@ -491,10 +527,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
                 observed_time: self.phase.observed_time(),
                 log_lines: self.log_lines,
                 journal: self.next_journal,
-                result: match result {
-                    Ok(v) => Ok(JsonPackedValue::pack(v)),
-                    Err(e) => Err(e),
-                },
+                result,
                 syscall_trace: self.syscall_trace,
                 udf_server_version: self.udf_server_version,
                 memory_in_mb,
@@ -513,7 +546,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
         cancellation: BoxFuture<'_, ()>,
         rng_seed: [u8; 32],
         unix_timestamp: UnixTimestamp,
-    ) -> anyhow::Result<Result<ConvexValue, JsError>> {
+    ) -> anyhow::Result<Result<PackedSyncValue, JsError>> {
         let handle = isolate.handle();
         scope!(let v8_scope, isolate.scope());
 
@@ -754,7 +787,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
             for (resolver, result) in resolvers.into_iter().zip(results.into_iter()) {
                 scope!(let result_scope, &mut *scope);
                 let result_v8 = match result {
-                    Ok(v) => Ok(serde_v8::to_v8(result_scope, v)?),
+                    Ok(v) => Ok(v.to_v8(result_scope)?),
                     Err(e) => Err(e),
                 };
                 resolve_promise(result_scope, resolver, result_v8)?;
@@ -773,10 +806,48 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
                     "queries and mutations should run all syscalls to completion"
                 );
                 let promise_result_v8 = promise.result(&scope);
-                let result_v8_str: v8::Local<v8::String> = promise_result_v8.try_into()?;
-                let result_str = helpers::to_rust_string(&scope, &result_v8_str)?;
-                metrics::log_result_length(&result_str);
-                deserialize_udf_result(&path, &result_str)?
+                if let Ok(result_v8_str) = v8::Local::<v8::String>::try_from(promise_result_v8) {
+                    let result_str = helpers::to_rust_string(&scope, &result_v8_str)?;
+                    metrics::log_result_length(&result_str);
+                    deserialize_udf_result(&path, &result_str)?
+                } else {
+                    let Some(meta) = extract_packed_meta(&mut *scope, promise_result_v8)? else {
+                        anyhow::bail!("Function returned non-string non-packed value");
+                    };
+                    let packed = {
+                        let state = scope.state_mut()?;
+                        state
+                            .environment
+                            .get_packed_value(meta.handle)?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Packed value handle {} missing", meta.handle)
+                            })?
+                    };
+                    debug_assert!(matches!(
+                        meta.kind,
+                        crate::packed_values::PackedValueKind::Object
+                            | crate::packed_values::PackedValueKind::Array
+                    ));
+                    let result = if meta.path.is_empty() {
+                        PackedSyncValue::from_packed(packed)
+                    } else {
+                        let opened = open_at_path(&packed, &meta.path)?
+                            .context("Packed value path missing")?;
+                        let value = ConvexValue::try_from(opened)?;
+                        PackedSyncValue::pack(&value)
+                    };
+                    if result.size() > *FUNCTION_MAX_RESULT_SIZE {
+                        Err(JsError::from_message(format!(
+                            "Function {} return value is too large (actual: {}, limit: {})",
+                            path.clone().for_logging().debug_str(),
+                            result.size().format_size(BINARY),
+                            (*FUNCTION_MAX_RESULT_SIZE).format_size(BINARY),
+                        )))
+                    } else {
+                        metrics::log_result_bytes(result.size());
+                        Ok(result)
+                    }
+                }
             },
             v8::PromiseState::Rejected => {
                 let e = promise.result(&scope);
@@ -848,7 +919,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
         execution_time: FunctionExecutionTime,
         execution_size: FunctionExecutionSize,
         biggest_writes: Option<BiggestDocumentWrites>,
-        result: Option<&ConvexValue>,
+        result: Option<&PackedSyncValue>,
         mut trace_system_warning: impl FnMut(SystemWarning),
     ) -> anyhow::Result<()> {
         // let execution_size = self.phase.execution_size();

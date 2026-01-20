@@ -16,8 +16,9 @@ use common::{
 };
 use value::{
     ConvexObject,
-    JsonPackedValue,
 };
+use packed_value::PackedSyncValue;
+use bytes::Bytes;
 
 /// Identifier for a single request in a session
 #[derive(Clone, Debug)]
@@ -104,7 +105,7 @@ pub enum SessionRequestOutcome {
     // In case of mutation, the session request is recorded atomically with
     // performing the mutation. There are no record for incomplete mutations.
     Mutation {
-        result: JsonPackedValue,
+        result: PackedSyncValue,
         log_lines: LogLines,
     },
 }
@@ -120,10 +121,9 @@ impl TryFrom<SessionRequestOutcome> for ConvexObject {
                     .map(ConvexValue::try_from)
                     .try_collect()?;
 
-                let result_s = result.as_str();
                 obj!(
                     "type" => "mutation",
-                    "result" => result_s,
+                    "result" => result.as_bytes().to_vec(),
                     "logLines" => log_lines,
                 )
             },
@@ -148,7 +148,9 @@ impl TryFrom<ConvexObject> for SessionRequestOutcome {
         let outcome = match udf_type.to_string().as_str() {
             "mutation" => {
                 let result = match fields.remove("result") {
-                    Some(ConvexValue::String(s)) => JsonPackedValue::from_network(s.into())?,
+                    Some(ConvexValue::Bytes(b)) => {
+                        PackedSyncValue::from_bytes(Bytes::from(b.to_vec()))?
+                    },
                     v => anyhow::bail!("Invalid result field for SessionRequestOutcome: {:?}", v),
                 };
                 let log_lines: LogLines = match fields.remove("logLines") {

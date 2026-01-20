@@ -28,8 +28,9 @@ use proptest::prelude::*;
 use rand::Rng;
 use value::{
     heap_size::HeapSize,
-    JsonPackedValue,
 };
+use packed_value::PackedSyncValue;
+use bytes::Bytes;
 
 use crate::{
     validation::ValidatedPathAndArgs,
@@ -58,7 +59,7 @@ pub struct UdfOutcome {
 
     // QueryUdfOutcomes are stored in the Udf level cache, which is why we would like
     // them to have more compact representation.
-    pub result: Result<JsonPackedValue, JsError>,
+    pub result: Result<PackedSyncValue, JsError>,
 
     pub syscall_trace: SyscallTrace,
 
@@ -111,7 +112,7 @@ impl TryFrom<UdfOutcome> for UdfOutcomeProto {
         }: UdfOutcome,
     ) -> anyhow::Result<Self> {
         let result = match result {
-            Ok(value) => FunctionResultTypeProto::JsonPackedValue(value.as_str().to_string()),
+            Ok(value) => FunctionResultTypeProto::PackedValue(value.as_bytes().to_vec()),
             Err(js_error) => FunctionResultTypeProto::JsError(js_error.try_into()?),
         };
         Ok(Self {
@@ -186,9 +187,9 @@ impl UdfOutcome {
             .context("Invalid rng_seed length")?;
         let result = result.context("Missing result")?;
         let result = match result.result {
-            Some(FunctionResultTypeProto::JsonPackedValue(value)) => {
-                Ok(JsonPackedValue::from_network(value)?)
-            },
+            Some(FunctionResultTypeProto::PackedValue(value)) => {
+                Ok(PackedSyncValue::from_bytes(Bytes::from(value))?)
+            }
             Some(FunctionResultTypeProto::JsError(js_error)) => Err(js_error.try_into()?),
             None => anyhow::bail!("Missing result"),
         };

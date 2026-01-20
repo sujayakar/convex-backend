@@ -2,6 +2,7 @@ import type { UserIdentityAttributes } from "../../server/authentication.js";
 export type { UserIdentityAttributes } from "../../server/authentication.js";
 import { JSONValue, Base64 } from "../../values/index.js";
 import { Long } from "../../vendor/long.js";
+import * as flexbuffers from "flatbuffers/js/flexbuffers.js";
 
 /**
  * Shared schema
@@ -55,6 +56,151 @@ export function parseServerMessage(
   return undefined as never;
 }
 
+const PACKED_PLACEHOLDER_KEY = "$packed";
+const BINARY_FRAME_TYPE_FULL = 0;
+const BINARY_FRAME_TYPE_CHUNK = 1;
+const binaryTextDecoder = new TextDecoder();
+
+export type BinaryFrame =
+  | { type: "full"; payload: Uint8Array }
+  | {
+      type: "chunk";
+      messageId: number;
+      partNumber: number;
+      totalParts: number;
+      payload: Uint8Array;
+    };
+
+export function decodeBinaryFrame(data: ArrayBuffer): BinaryFrame {
+  const bytes = new Uint8Array(data);
+  if (bytes.byteLength === 0) {
+    throw new Error("Empty binary frame");
+  }
+  const frameType = bytes[0];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (frameType === BINARY_FRAME_TYPE_FULL) {
+    return { type: "full", payload: bytes.subarray(1) };
+  }
+  if (frameType === BINARY_FRAME_TYPE_CHUNK) {
+    if (bytes.byteLength < 13) {
+      throw new Error("Binary chunk frame too short");
+    }
+    const messageId = view.getUint32(1, true);
+    const partNumber = view.getUint32(5, true);
+    const totalParts = view.getUint32(9, true);
+    if (totalParts === 0) {
+      throw new Error("Binary chunk frame has zero parts");
+    }
+    if (partNumber >= totalParts) {
+      throw new Error("Binary chunk frame part out of range");
+    }
+    return {
+      type: "chunk",
+      messageId,
+      partNumber,
+      totalParts,
+      payload: bytes.subarray(13),
+    };
+  }
+  throw new Error(`Unknown binary frame type ${frameType}`);
+}
+
+export function parseBinaryServerMessage(payload: Uint8Array): WireServerMessage {
+  if (payload.byteLength < 4) {
+    throw new Error("Binary server message too short");
+  }
+  const view = new DataView(
+    payload.buffer,
+    payload.byteOffset,
+    payload.byteLength,
+  );
+  const headerLength = view.getUint32(0, true);
+  const headerStart = 4;
+  const headerEnd = headerStart + headerLength;
+  if (headerEnd > payload.byteLength) {
+    throw new Error("Binary server message header is truncated");
+  }
+  const headerBytes = payload.subarray(headerStart, headerEnd);
+  const headerJson = binaryTextDecoder.decode(headerBytes);
+  const header = JSON.parse(headerJson) as EncodedServerMessage;
+  const packedValues: unknown[] = [];
+  let offset = headerEnd;
+  while (offset < payload.byteLength) {
+    if (offset + 4 > payload.byteLength) {
+      throw new Error("Binary packed value length truncated");
+    }
+    const length = view.getUint32(offset, true);
+    offset += 4;
+    const end = offset + length;
+    if (end > payload.byteLength) {
+      throw new Error("Binary packed value truncated");
+    }
+    const packedBytes = payload.subarray(offset, end);
+    offset = end;
+    packedValues.push(decodePackedValue(packedBytes));
+  }
+  const hydrated = replacePackedValues(header, packedValues) as EncodedServerMessage;
+  return parseServerMessage(hydrated);
+}
+
+function decodePackedValue(bytes: Uint8Array): unknown {
+  const buffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+  return normalizeFlexValue(flexbuffers.toObject(buffer));
+}
+
+function normalizeFlexValue(value: any): any {
+  if (ArrayBuffer.isView(value)) {
+    return value.buffer.slice(
+      value.byteOffset,
+      value.byteOffset + value.byteLength,
+    );
+  }
+  if (value instanceof ArrayBuffer) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeFlexValue(entry));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, any> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = normalizeFlexValue(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+function replacePackedValues(node: any, packedValues: unknown[]): unknown {
+  if (node === null || typeof node !== "object") {
+    return node;
+  }
+  if (ArrayBuffer.isView(node) || node instanceof ArrayBuffer) {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map((entry) => replacePackedValues(entry, packedValues));
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(node, PACKED_PLACEHOLDER_KEY) &&
+    typeof (node as { $packed?: unknown })[PACKED_PLACEHOLDER_KEY] === "number"
+  ) {
+    const index = (node as { $packed: number })[PACKED_PLACEHOLDER_KEY];
+    const value = packedValues[index];
+    if (value === undefined) {
+      throw new Error(`Missing packed value at index ${index}`);
+    }
+    return value;
+  }
+  const out: Record<string, any> = {};
+  for (const [key, entry] of Object.entries(node)) {
+    out[key] = replacePackedValues(entry, packedValues);
+  }
+  return out;
+}
 export function encodeClientMessage(
   message: ClientMessage,
 ): EncodedClientMessage {
@@ -123,6 +269,7 @@ type Connect = {
   lastCloseReason: string | null;
   maxObservedTimestamp?: TS | undefined;
   clientTs: number;
+  supportsBinary: boolean;
 };
 
 export type AddQuery = {

@@ -28,14 +28,18 @@ mod buffer;
 mod debug;
 mod flexbuilder;
 mod json;
+mod sync_value;
 mod walk;
 
 #[cfg(test)]
 mod tests;
 
-pub use self::buffer::{
-    ByteBuffer,
-    StringBuffer,
+pub use self::{
+    buffer::{
+        ByteBuffer,
+        StringBuffer,
+    },
+    sync_value::PackedSyncValue,
 };
 use self::flexbuilder::FlexBuilder;
 
@@ -80,10 +84,27 @@ where
         self.buf.len()
     }
 
+    /// Get the underlying buffer as a byte slice (zero-copy)
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buf
+    }
+
     /// Get a shared reference to the PackedValue, so it can be opened multiple
     /// times without cloning the underlying buffer.
     pub fn as_ref(&self) -> PackedValue<&[u8]> {
         PackedValue::new(&self.buf)
+    }
+
+    /// Serialize this packed value into a JSON value without fully unpacking.
+    pub fn to_internal_json(&self) -> anyhow::Result<serde_json::Value> {
+        let opened = self.as_ref().open()?;
+        Ok(serde_json::to_value(crate::json::JsonOpenedValue(&opened))?)
+    }
+
+    /// Serialize this packed value into a JSON string without fully unpacking.
+    pub fn json_serialize(&self) -> anyhow::Result<String> {
+        let opened = self.as_ref().open()?;
+        Ok(serde_json::to_string(&crate::json::JsonOpenedValue(&opened))?)
     }
 
     pub fn open_path(self, field_path: &FieldPath) -> Option<OpenedValue<B>> {

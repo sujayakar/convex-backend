@@ -11,7 +11,6 @@
 pub mod bytes;
 pub mod float;
 pub mod integer;
-pub(crate) mod json_packed_value;
 
 #[cfg(test)]
 mod tests;

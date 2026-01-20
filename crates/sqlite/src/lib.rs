@@ -59,6 +59,10 @@ use futures::{
     StreamExt,
 };
 use futures_async_stream::try_stream;
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use parking_lot::Mutex;
 use rusqlite::{
     params,
@@ -182,7 +186,7 @@ ORDER BY B.key {order}
             let ts = Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds");
             let document_id = row.get::<_, Vec<u8>>(2)?;
             let table: Option<Vec<u8>> = row.get(3)?;
-            let json_value: Option<String> = row.get(4)?;
+            let json_value: Option<Vec<u8>> = row.get(4)?;
             let prev_ts: Option<Timestamp> = row
                 .get::<_, Option<u64>>(5)?
                 .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
@@ -200,8 +204,7 @@ ORDER BY B.key {order}
             let json_value = json_value.ok_or_else(|| {
                 anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
             })?;
-            let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
-            let value: ConvexValue = json_value.try_into()?;
+            let value: ConvexValue = value_from_bytes(&json_value)?;
             let document = ResolvedDocument::from_database(tablet_id, value)?;
             triples.push(Ok((
                 key,
@@ -271,8 +274,8 @@ impl Persistence for SqlitePersistence {
         for update in documents {
             let (json_value, deleted) = if let Some(document) = &update.value {
                 assert_eq!(update.id, document.id_with_table_id());
-                let json_value = document.value().json_serialize()?;
-                (Some(json_value), 0)
+                let packed = PackedValue::pack_object(document.value()).as_slice().to_vec();
+                (Some(packed), 0)
             } else {
                 (None, 1)
             };
@@ -592,7 +595,7 @@ CREATE TABLE IF NOT EXISTS documents (
 
     table_id BLOB NOT NULL,
 
-    json_value TEXT NULL,
+    json_value BLOB NULL,
     deleted INTEGER NOT NULL,
 
     prev_ts INTEGER,
@@ -627,25 +630,33 @@ CREATE TABLE IF NOT EXISTS persistence_globals (
 );
 "#;
 
+fn value_from_bytes(bytes: &[u8]) -> anyhow::Result<ConvexValue> {
+    let packed = PackedValue::new(ByteBuffer::from(bytes.to_vec()));
+    packed.try_into()
+}
+
+fn document_from_bytes(table: TabletId, bytes: &[u8]) -> anyhow::Result<ResolvedDocument> {
+    let value = value_from_bytes(bytes)?;
+    ResolvedDocument::from_database(table, value)
+}
+
 fn row_to_document(
-    row: rusqlite::Result<(Vec<u8>, u64, Vec<u8>, Option<String>, bool, Option<u64>)>,
+    row: rusqlite::Result<(Vec<u8>, u64, Vec<u8>, Option<Vec<u8>>, bool, Option<u64>)>,
 ) -> anyhow::Result<(
     InternalDocumentId,
     Timestamp,
     Option<ResolvedDocument>,
     Option<Timestamp>,
 )> {
-    let (id, prev_ts, table, json_value, deleted, prev_prev_ts) = row?;
+    let (id, prev_ts, table, packed_value, deleted, prev_prev_ts) = row?;
     let id = InternalId::try_from(id)?;
     let prev_ts = Timestamp::try_from(prev_ts)?;
     let table = TabletId(table.try_into()?);
     let document_id = InternalDocumentId::new(table, id);
     let document = if !deleted {
-        let json_value = json_value
+        let packed_value = packed_value
             .ok_or_else(|| anyhow::anyhow!("Unexpected NULL json_value at {} {}", id, prev_ts))?;
-        let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
-        let value: ConvexValue = json_value.try_into()?;
-        Some(ResolvedDocument::from_database(table, value)?)
+        Some(document_from_bytes(table, &packed_value)?)
     } else {
         None
     };
@@ -673,11 +684,11 @@ WHERE ts >= {} AND ts < {}
 
 fn load_document_row(
     row: &Row<'_>,
-) -> rusqlite::Result<(Vec<u8>, u64, Vec<u8>, Option<String>, bool, Option<u64>)> {
+) -> rusqlite::Result<(Vec<u8>, u64, Vec<u8>, Option<Vec<u8>>, bool, Option<u64>)> {
     let id = row.get::<_, Vec<u8>>(0)?;
     let ts = row.get::<_, u64>(1)?;
     let table: Vec<u8> = row.get(2)?;
-    let json_value: Option<String> = row.get(3)?;
+    let json_value: Option<Vec<u8>> = row.get(3)?;
     let deleted = row.get::<_, u32>(4)? != 0;
     let prev_ts: Option<u64> = row.get(5)?;
     Ok((id, ts, table, json_value, deleted, prev_ts))

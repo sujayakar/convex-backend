@@ -120,6 +120,10 @@ use futures::{
 };
 use futures_async_stream::try_stream;
 use itertools::Itertools;
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use postgres_protocol::escape::escape_literal;
 use rustls::{
     ClientConfig,
@@ -913,6 +917,12 @@ pub struct PostgresReader {
 }
 
 impl PostgresReader {
+    fn document_from_bytes(table: TabletId, bytes: Vec<u8>) -> anyhow::Result<ResolvedDocument> {
+        let packed = PackedValue::new(ByteBuffer::from(bytes));
+        let value: ConvexValue = packed.try_into()?;
+        ResolvedDocument::from_database(table, value)
+    }
+
     fn row_to_document(
         &self,
         row: Row,
@@ -928,8 +938,6 @@ impl PostgresReader {
         let ts = Timestamp::try_from(ts)?;
         let tablet_id_bytes: Vec<u8> = row.get(2);
         let binary_value: Vec<u8> = row.get(3);
-        let json_value: JsonValue = serde_json::from_slice(&binary_value)
-            .context("Failed to deserialize database value")?;
 
         let deleted: bool = row.get(4);
         let table = TabletId(
@@ -937,8 +945,7 @@ impl PostgresReader {
         );
         let document_id = InternalDocumentId::new(table, internal_id);
         let document = if !deleted {
-            let value: ConvexValue = json_value.try_into()?;
-            Some(ResolvedDocument::from_database(table, value)?)
+            Some(Self::document_from_bytes(table, binary_value)?)
         } else {
             None
         };
@@ -1047,11 +1054,8 @@ impl PostgresReader {
                 let (ts, document_id, document, prev_ts) = self.row_to_document(row)?;
                 let prev_rev_document: Option<ResolvedDocument> = prev_rev_value
                     .map(|v| {
-                        let json_value: JsonValue = serde_json::from_slice(&v)
-                            .context("Failed to deserialize database value")?;
                         // N.B.: previous revisions should never be deleted, so we don't check that.
-                        let value: ConvexValue = json_value.try_into()?;
-                        ResolvedDocument::from_database(document_id.table(), value)
+                        Self::document_from_bytes(document_id.table(), v)
                     })
                     .transpose()?;
                 rows_loaded += 1;
@@ -1136,16 +1140,13 @@ impl PostgresReader {
                     json,
                     prev_ts,
                 } => {
-                    let json_value: JsonValue = serde_json::from_slice(&json)
-                        .context("Failed to deserialize database value")?;
                     anyhow::ensure!(
-                        json_value != JsonValue::Null,
+                        !json.is_empty(),
                         "Index reference to deleted document {:?} {:?}",
                         key,
                         ts
                     );
-                    let value: ConvexValue = json_value.try_into()?;
-                    let document = ResolvedDocument::from_database(tablet_id, value)?;
+                    let document = Self::document_from_bytes(tablet_id, json)?;
                     yield (
                         key,
                         LatestDocument {
@@ -1898,16 +1899,19 @@ fn document_params(
     maybe_document: &Option<ResolvedDocument>,
     prev_ts: Option<Timestamp>,
 ) -> anyhow::Result<[Param; NUM_DOCUMENT_PARAMS]> {
-    let (json_value, deleted) = match maybe_document {
-        Some(doc) => (doc.value().json_serialize()?, false),
-        None => (JsonValue::Null.to_string(), true),
+    let (packed_value, deleted) = match maybe_document {
+        Some(doc) => (
+            PackedValue::pack_object(doc.value()).as_slice().to_vec(),
+            false,
+        ),
+        None => (Vec::new(), true),
     };
 
     Ok([
         internal_doc_id_param(id),
         Param::Ts(i64::from(ts)),
         Param::TableId(id.table()),
-        Param::JsonValue(json_value),
+        Param::Bytes(packed_value),
         Param::Deleted(deleted),
         match prev_ts {
             Some(prev_ts) => Param::Ts(i64::from(prev_ts)),

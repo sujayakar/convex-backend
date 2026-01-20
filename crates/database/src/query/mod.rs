@@ -13,6 +13,8 @@ use common::{
     },
     document::{
         DeveloperDocument,
+        PackedDocument,
+        PackedDeveloperDocument,
         ResolvedDocument,
     },
     errors::JsError,
@@ -56,7 +58,7 @@ use self::{
     search_query::SearchQuery,
 };
 use crate::{
-    bootstrap_model::user_facing::index_range_batch,
+    bootstrap_model::user_facing::index_range_batch_packed,
     transaction::IndexRangeRequest,
     IndexModel,
     Transaction,
@@ -124,7 +126,7 @@ trait QueryStream: Send {
 }
 
 pub struct DeveloperIndexRangeResponse {
-    pub page: Vec<(IndexKeyBytes, DeveloperDocument, WriteTimestamp)>,
+    pub page: Vec<(IndexKeyBytes, PackedDeveloperDocument, WriteTimestamp)>,
     pub cursor: CursorPosition,
 }
 
@@ -133,9 +135,14 @@ pub struct IndexRangeResponse {
     pub cursor: CursorPosition,
 }
 
+pub struct PackedIndexRangeResponse {
+    pub page: Vec<(IndexKeyBytes, PackedDocument, WriteTimestamp)>,
+    pub cursor: CursorPosition,
+}
+
 #[derive(Debug)]
 pub enum QueryStreamNext {
-    Ready(Option<(DeveloperDocument, WriteTimestamp)>),
+    Ready(Option<(PackedDeveloperDocument, WriteTimestamp)>),
     WaitingOn(IndexRangeRequest),
 }
 
@@ -528,6 +535,29 @@ impl<RT: Runtime> DeveloperQuery<RT> {
             .context("batch_key missing")?
     }
 
+    pub async fn next_packed(
+        &mut self,
+        tx: &mut Transaction<RT>,
+        prefetch_hint: Option<usize>,
+    ) -> anyhow::Result<Option<PackedDeveloperDocument>> {
+        match self.next_packed_with_ts(tx, prefetch_hint).await? {
+            None => Ok(None),
+            Some((document, _)) => Ok(Some(document)),
+        }
+    }
+
+    #[convex_macro::instrument_future]
+    pub async fn next_packed_with_ts(
+        &mut self,
+        tx: &mut Transaction<RT>,
+        prefetch_hint: Option<usize>,
+    ) -> anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>> {
+        query_batch_next_packed(btreemap! {0 => (self, prefetch_hint)}, tx)
+            .await
+            .remove(&0)
+            .context("batch_key missing")?
+    }
+
     pub fn printable_index_name(&self) -> &IndexName {
         self.root.printable_index_name()
     }
@@ -577,13 +607,36 @@ pub fn query_batch_next<'a, RT: Runtime>(
     tx: &'a mut Transaction<RT>,
 ) -> BoxFuture<'a, BTreeMap<BatchKey, anyhow::Result<Option<(DeveloperDocument, WriteTimestamp)>>>>
 {
-    query_batch_next_(batch, tx).boxed()
+    async move {
+        let packed_results = query_batch_next_packed(batch, tx).await;
+        packed_results
+            .into_iter()
+            .map(|(batch_key, result)| {
+                let unpacked = result.and_then(|maybe| match maybe {
+                    Some((doc, ts)) => Ok(Some((doc.unpack()?, ts))),
+                    None => Ok(None),
+                });
+                (batch_key, unpacked)
+            })
+            .collect()
+    }
+    .boxed()
 }
 
-pub async fn query_batch_next_<RT: Runtime>(
+pub fn query_batch_next_packed<'a, RT: Runtime>(
+    batch: BTreeMap<BatchKey, (&'a mut DeveloperQuery<RT>, Option<usize>)>,
+    tx: &'a mut Transaction<RT>,
+) -> BoxFuture<
+    'a,
+    BTreeMap<BatchKey, anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>>>,
+> {
+    query_batch_next_packed_(batch, tx).boxed()
+}
+
+async fn query_batch_next_packed_<RT: Runtime>(
     mut batch: BTreeMap<BatchKey, (&mut DeveloperQuery<RT>, Option<usize>)>,
     tx: &mut Transaction<RT>,
-) -> BTreeMap<BatchKey, anyhow::Result<Option<(DeveloperDocument, WriteTimestamp)>>> {
+) -> BTreeMap<BatchKey, anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>>> {
     let batch_size = batch.len();
     // Algorithm overview:
     // Call `next` on every query.
@@ -622,7 +675,7 @@ pub async fn query_batch_next_<RT: Runtime>(
         let mut responses = if requests.is_empty() {
             BTreeMap::new()
         } else {
-            index_range_batch(tx, requests).await
+            index_range_batch_packed(tx, requests).await
         };
         let mut next_batch = BTreeMap::new();
         for (batch_key, (query, prefetch_hint)) in batch_to_feed {

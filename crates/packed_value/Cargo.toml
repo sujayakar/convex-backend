@@ -32,5 +32,9 @@ value = { workspace = true, features = ["testing"] }
 name = "packed_value"
 harness = false
 
+[[bench]]
+name = "zero_copy"
+harness = false
+
 [lints]
 workspace = true

@@ -115,6 +115,10 @@ use futures::{
     },
 };
 use futures_async_stream::try_stream;
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use metrics::write_persistence_global_timer;
 use mysql_async::{
     Row,
@@ -670,6 +674,17 @@ fn bytes_col(row: &Row, col: usize) -> anyhow::Result<&[u8]> {
 }
 
 impl<RT: Runtime> MySqlReader<RT> {
+    fn document_from_bytes(table: TabletId, bytes: &[u8]) -> anyhow::Result<ResolvedDocument> {
+        let packed = PackedValue::new(ByteBuffer::from(bytes.to_vec()));
+        let value: ConvexValue = packed.try_into()?;
+        ResolvedDocument::from_database(table, value)
+    }
+
+    fn value_from_bytes(bytes: &[u8]) -> anyhow::Result<ConvexValue> {
+        let packed = PackedValue::new(ByteBuffer::from(bytes.to_vec()));
+        packed.try_into()
+    }
+
     fn initial_id_param(order: Order) -> Vec<u8> {
         match order {
             Order::Asc => InternalId::BEFORE_ALL_BYTES.to_vec(),
@@ -690,13 +705,11 @@ impl<RT: Runtime> MySqlReader<RT> {
         let ts: i64 = row.get_opt(1).context("row[1]")??;
         let ts = Timestamp::try_from(ts)?;
         let table_b = bytes_col(row, 2)?;
-        let json_value: JsonValue = serde_json::from_slice(bytes_col(row, 3)?)?;
         let deleted: bool = row.get_opt(4).context("row[4]")??;
         let table = TabletId(table_b[..].try_into()?);
         let document_id = InternalDocumentId::new(table, internal_id);
         let document = if !deleted {
-            let value: ConvexValue = json_value.try_into()?;
-            Some(ResolvedDocument::from_database(table, value)?)
+            Some(Self::document_from_bytes(table, bytes_col(row, 3)?)?)
         } else {
             None
         };
@@ -806,12 +819,9 @@ impl<RT: Runtime> MySqlReader<RT> {
                 let prev_rev_document: Option<ResolvedDocument> = if include_prev_rev {
                     maybe_bytes_col(&row, 6)?
                         .map(|v| {
-                            let json_value: JsonValue = serde_json::from_slice(v)
-                                .context("Failed to deserialize database value")?;
                             // N.B.: previous revisions should never be deleted, so we don't check
                             // that.
-                            let value: ConvexValue = json_value.try_into()?;
-                            ResolvedDocument::from_database(document_id.table(), value)
+                            Self::document_from_bytes(document_id.table(), v)
                         })
                         .transpose()?
                 } else {
@@ -1037,14 +1047,14 @@ impl<RT: Runtime> MySqlReader<RT> {
                     table_b.ok_or_else(|| {
                         anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
                     })?;
-                    let json_value: JsonValue = serde_json::from_slice(bytes_col(&row, 8)?)?;
+                    let packed_bytes = bytes_col(&row, 8)?;
                     anyhow::ensure!(
-                        json_value != serde_json::Value::Null,
+                        !packed_bytes.is_empty(),
                         "Index reference to deleted document {:?} {:?}",
                         key,
                         ts
                     );
-                    let value: ConvexValue = json_value.try_into()?;
+                    let value: ConvexValue = Self::value_from_bytes(packed_bytes)?;
 
                     let prev_ts: Option<i64> = row.get_opt(9).context("row[9]")??;
                     let prev_ts = prev_ts.map(Timestamp::try_from).transpose()?;
@@ -1139,19 +1149,17 @@ impl<RT: Runtime> MySqlReader<RT> {
         };
         let ts = Timestamp::try_from(row.get_opt::<i64, _>(0).context("row[0]")??)?;
         let tablet_id = TabletId(bytes_col(&row, 1)?.try_into()?);
-        let json_value = maybe_bytes_col(&row, 2)?
+        let packed_bytes = maybe_bytes_col(&row, 2)?
             .ok_or_else(|| anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts))?;
         let prev_ts: Option<i64> = row.get_opt(3).context("row[3]")??;
         let prev_ts = prev_ts.map(Timestamp::try_from).transpose()?;
-        let json_value: JsonValue = serde_json::from_slice(json_value)?;
         anyhow::ensure!(
-            json_value != JsonValue::Null,
+            !packed_bytes.is_empty(),
             "Index reference to deleted document {:?} {:?}",
             key,
             ts
         );
-        let value: ConvexValue = json_value.try_into()?;
-        let value = ResolvedDocument::from_database(tablet_id, value)?;
+        let value = Self::document_from_bytes(tablet_id, packed_bytes)?;
         Ok(Some(LatestDocument { ts, value, prev_ts }))
     }
 
@@ -1730,15 +1738,18 @@ fn document_params(
     maybe_doc: Option<ResolvedDocument>,
     prev_ts: Option<Timestamp>,
 ) -> anyhow::Result<Vec<mysql_async::Value>> {
-    let (json_str, deleted) = match maybe_doc {
-        Some(document) => (document.value().json_serialize()?, false),
-        None => (serde_json::Value::Null.to_string(), true),
+    let (packed_bytes, deleted) = match maybe_doc {
+        Some(document) => (
+            PackedValue::pack_object(document.value()).as_slice().to_vec(),
+            false,
+        ),
+        None => (Vec::new(), true),
     };
 
     query.push(internal_doc_id_param(id).into());
     query.push(i64::from(ts).into());
     query.push(internal_id_param(id.table().0).into());
-    query.push(mysql_async::Value::Bytes(json_str.into_bytes()));
+    query.push(mysql_async::Value::Bytes(packed_bytes));
     query.push(deleted.into());
     query.push(prev_ts.map(i64::from).into());
     Ok(query)

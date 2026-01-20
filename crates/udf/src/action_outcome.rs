@@ -26,7 +26,8 @@ use pb::{
 #[cfg(any(test, feature = "testing"))]
 use proptest::prelude::*;
 use semver::Version;
-use value::JsonPackedValue;
+use packed_value::PackedSyncValue;
+use bytes::Bytes;
 
 #[cfg(any(test, feature = "testing"))]
 use crate::HttpActionRequest;
@@ -58,7 +59,7 @@ pub struct ActionOutcome {
 
     pub unix_timestamp: UnixTimestamp,
 
-    pub result: Result<JsonPackedValue, JsError>,
+    pub result: Result<PackedSyncValue, JsError>,
     pub syscall_trace: SyscallTrace,
 
     #[cfg_attr(any(test, feature = "testing"), proptest(value = "None"))]
@@ -109,9 +110,9 @@ impl ActionOutcome {
     ) -> anyhow::Result<Self> {
         let result = result.context("Missing result")?;
         let result = match result.result {
-            Some(FunctionResultTypeProto::JsonPackedValue(value)) => {
-                Ok(JsonPackedValue::from_network(value)?)
-            },
+            Some(FunctionResultTypeProto::PackedValue(value)) => {
+                Ok(PackedSyncValue::from_bytes(Bytes::from(value))?)
+            }
             Some(FunctionResultTypeProto::JsError(js_error)) => Err(js_error.try_into()?),
             None => anyhow::bail!("Missing result"),
         };
@@ -147,7 +148,7 @@ impl TryFrom<ActionOutcome> for ActionOutcomeProto {
         }: ActionOutcome,
     ) -> anyhow::Result<Self> {
         let result = match result {
-            Ok(value) => FunctionResultTypeProto::JsonPackedValue(value.as_str().to_string()),
+            Ok(value) => FunctionResultTypeProto::PackedValue(value.as_bytes().to_vec()),
             Err(js_error) => FunctionResultTypeProto::JsError(js_error.try_into()?),
         };
         Ok(Self {
@@ -241,7 +242,7 @@ impl HttpActionOutcome {
     ) -> anyhow::Result<Self> {
         let result = result.context("Missing result")?;
         let result = match result.result {
-            Some(FunctionResultTypeProto::JsonPackedValue(_)) => {
+            Some(FunctionResultTypeProto::PackedValue(_)) => {
                 anyhow::bail!("Http actions not expected to have aresult")
             },
             Some(FunctionResultTypeProto::JsError(js_error)) => {

@@ -48,10 +48,10 @@ use common::{
         FunctionCaller,
         UdfType,
     },
-    value::JsonPackedValue,
     version::ClientVersion,
     RequestId,
 };
+use packed_value::PackedSyncValue;
 use errors::{
     ErrorMetadata,
     ErrorMetadataAnyhowExt,
@@ -259,7 +259,7 @@ pub struct SyncWorker<RT: Runtime> {
 
 enum QueryResult {
     Rerun {
-        result: Result<JsonPackedValue, RedactedJsError>,
+        result: Result<PackedSyncValue, RedactedJsError>,
         log_lines: RedactedLogLines,
         journal: SerializedQueryJournal,
     },
@@ -271,7 +271,7 @@ enum QueryResult {
 
 struct TransitionState {
     udf_results: Vec<(QueryId, QueryResult, Box<dyn SubscriptionTrait>)>,
-    state_modifications: BTreeMap<QueryId, StateModification<JsonPackedValue>>,
+    state_modifications: BTreeMap<QueryId, StateModification<PackedSyncValue>>,
     current_version: StateVersion,
     new_version: StateVersion,
     timer: StatusTimer,
@@ -480,6 +480,7 @@ impl<RT: Runtime> SyncWorker<RT> {
                 max_observed_timestamp,
                 connection_count,
                 client_ts,
+                supports_binary: _,
             } => {
                 if let Some((timer, on_connect)) = self.on_connect.take() {
                     timer.finish();
@@ -941,9 +942,10 @@ impl<RT: Runtime> SyncWorker<RT> {
                                         let subscription = subscriptions_client
                                             .subscribe(udf_return.token)
                                             .await?;
+                                        let result = udf_return.result;
                                         (
                                             QueryResult::Rerun {
-                                                result: udf_return.result,
+                                                result,
                                                 log_lines: udf_return.log_lines,
                                                 journal: udf_return.journal,
                                             },
