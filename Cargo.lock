@@ -9260,6 +9260,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "application",
+ "base64 0.13.1",
  "cmd_util",
  "common",
  "convex",

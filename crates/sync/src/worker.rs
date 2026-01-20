@@ -480,6 +480,7 @@ impl<RT: Runtime> SyncWorker<RT> {
                 max_observed_timestamp,
                 connection_count,
                 client_ts,
+                supports_binary: _,
             } => {
                 if let Some((timer, on_connect)) = self.on_connect.take() {
                     timer.finish();

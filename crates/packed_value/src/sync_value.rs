@@ -160,6 +160,22 @@ impl TryFrom<PackedSyncValue> for ConvexValue {
     }
 }
 
+impl From<PackedSyncValue> for JsonValue {
+    fn from(value: PackedSyncValue) -> Self {
+        value
+            .to_json()
+            .expect("PackedSyncValue JSON conversion failed")
+    }
+}
+
+impl From<&PackedSyncValue> for JsonValue {
+    fn from(value: &PackedSyncValue) -> Self {
+        value
+            .to_json()
+            .expect("PackedSyncValue JSON conversion failed")
+    }
+}
+
 impl PackedSyncValue {
     /// Convert from a JsonPackedValue (for gradual migration)
     pub fn from_json_packed(json_packed: &value::JsonPackedValue) -> anyhow::Result<Self> {

@@ -1,6 +1,15 @@
-use std::time::{
-    Duration,
-    Instant,
+use std::{
+    sync::{
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+        Arc,
+    },
+    time::{
+        Duration,
+        Instant,
+    },
 };
 
 use ::errors::{
@@ -53,6 +62,11 @@ use runtime::prod::ProdRuntime;
 use sentry::SentryFutureExt;
 use serde_json::Value as JsonValue;
 use sync::{
+    binary::{
+        encode_server_message_binary,
+        BINARY_FRAME_TYPE_CHUNK,
+        BINARY_FRAME_TYPE_FULL,
+    },
     worker::measurable_unbounded_channel,
     ServerMessage,
     SyncWorker,
@@ -150,11 +164,13 @@ async fn run_sync_socket(
     let _drop_token = SyncSocketDropToken::new();
 
     let (mut tx, mut rx) = socket.split();
+    let binary_enabled = Arc::new(AtomicBool::new(false));
 
     let last_received = Mutex::new(Instant::now());
     let last_ping_sent = Mutex::new(Instant::now());
 
     let (client_tx, client_rx) = mpsc::unbounded_channel();
+    let binary_enabled_recv = Arc::clone(&binary_enabled);
     let receive_messages = async {
         let _receive_message_drop_token = DebugSyncSocketDropToken::new("receive_message");
         while let Some(message_r) = rx.next().await {
@@ -180,6 +196,13 @@ async fn run_sync_socket(
                                 format!("Received Invalid JSON on websocket: {e}"),
                             ))
                         })?;
+                    if let ClientMessage::Connect {
+                        supports_binary, ..
+                    } = &body
+                    {
+                        binary_enabled_recv
+                            .store(supports_binary.unwrap_or(false), Ordering::Release);
+                    }
                     log_websocket_client_message_bytes(
                         client_message_size,
                         body.as_ref().to_string(),
@@ -209,9 +232,11 @@ async fn run_sync_socket(
     };
 
     let (server_tx, mut server_rx) = measurable_unbounded_channel();
+    let binary_enabled_send = Arc::clone(&binary_enabled);
     let send_messages = async {
         let _send_message_drop_token = DebugSyncSocketDropToken::new("send_message");
         let mut ping_ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
+        let mut binary_message_id: u32 = 0;
         'top: loop {
             select_biased! {
                 _ = ping_ticker.tick().fuse() => {
@@ -233,14 +258,25 @@ async fn run_sync_socket(
                         None => break 'top,
                     };
                     message.inject_server_ts(st.runtime.generate_timestamp()?);
-                    let messages =
-                        maybe_split_transition(message, config.supports_transition_chunks)?;
-                    for msg in messages {
+                    if binary_enabled_send.load(Ordering::Acquire) {
                         let delay = st.runtime.monotonic_now() - send_time;
-                        log_websocket_message_out(&msg, delay);
-                        let serialized = serde_json::to_string(&JsonValue::from(msg))?;
-                        if tx.send(Message::Text(serialized.into())).await.is_err() {
-                            break 'top;
+                        log_websocket_message_out(&message, delay);
+                        let encoded = encode_server_message_binary(&message)?;
+                        for frame in split_binary_message(encoded, &mut binary_message_id) {
+                            if tx.send(Message::Binary(frame.into())).await.is_err() {
+                                break 'top;
+                            }
+                        }
+                    } else {
+                        let messages =
+                            maybe_split_transition(message, config.supports_transition_chunks)?;
+                        for msg in messages {
+                            let delay = st.runtime.monotonic_now() - send_time;
+                            log_websocket_message_out(&msg, delay);
+                            let serialized = serde_json::to_string(&JsonValue::from(msg))?;
+                            if tx.send(Message::Text(serialized.into())).await.is_err() {
+                                break 'top;
+                            }
                         }
                     }
                 },
@@ -378,6 +414,7 @@ fn new_sync_worker_config(client_version: ClientVersion) -> anyhow::Result<SyncW
 
 // Maximum size of a single message before splitting into chunks (5MB)
 const MAX_MESSAGE_SIZE: usize = 5_000_000;
+const BINARY_CHUNK_HEADER_LEN: usize = 1 + 4 + 4 + 4;
 
 /// Split a large Transition message into TransitionChunk messages if needed.
 fn maybe_split_transition(
@@ -425,6 +462,40 @@ fn maybe_split_transition(
             transition_id: transition_id.clone(),
         })
         .collect())
+}
+
+fn split_binary_message(payload: Vec<u8>, message_id: &mut u32) -> Vec<Vec<u8>> {
+    if payload.len() + 1 <= MAX_MESSAGE_SIZE {
+        return vec![wrap_binary_frame(payload)];
+    }
+
+    let id = *message_id;
+    *message_id = message_id.wrapping_add(1);
+    let chunk_size = MAX_MESSAGE_SIZE
+        .saturating_sub(BINARY_CHUNK_HEADER_LEN)
+        .max(1);
+    let total_parts = payload.len().div_ceil(chunk_size);
+    let total_parts_u32 = u32::try_from(total_parts).unwrap_or(u32::MAX);
+
+    let mut frames = Vec::with_capacity(total_parts);
+    for (part_number, chunk) in payload.chunks(chunk_size).enumerate() {
+        let mut frame = Vec::with_capacity(BINARY_CHUNK_HEADER_LEN + chunk.len());
+        frame.push(BINARY_FRAME_TYPE_CHUNK);
+        frame.extend_from_slice(&id.to_le_bytes());
+        frame.extend_from_slice(&(part_number as u32).to_le_bytes());
+        frame.extend_from_slice(&total_parts_u32.to_le_bytes());
+        frame.extend_from_slice(chunk);
+        frames.push(frame);
+    }
+
+    frames
+}
+
+fn wrap_binary_frame(payload: Vec<u8>) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(payload.len() + 1);
+    frame.push(BINARY_FRAME_TYPE_FULL);
+    frame.extend_from_slice(&payload);
+    frame
 }
 
 pub async fn sync_handler(

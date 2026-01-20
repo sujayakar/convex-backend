@@ -1,11 +1,15 @@
 import { Logger } from "../logging.js";
 import {
+  BinaryFrame,
   ClientMessage,
+  decodeBinaryFrame,
   encodeClientMessage,
+  parseBinaryServerMessage,
   parseServerMessage,
   ServerMessage,
   Transition,
   TransitionChunk,
+  WireServerMessage,
 } from "./protocol.js";
 
 const CLOSE_NORMAL = 1000;
@@ -168,6 +172,12 @@ export class WebSocketManager {
     chunks: string[];
     totalParts: number;
     transitionId: string;
+  } | null = null;
+
+  private binaryChunkBuffer: {
+    chunks: Uint8Array[];
+    totalParts: number;
+    messageId: number;
   } | null = null;
 
   /** Upon HTTPS/WSS failure, the first jittered backoff duration, in ms. */
@@ -346,6 +356,55 @@ export class WebSocketManager {
     return null;
   }
 
+  private assembleBinaryChunks(chunk: Extract<BinaryFrame, { type: "chunk" }>) {
+    if (
+      chunk.partNumber < 0 ||
+      chunk.partNumber >= chunk.totalParts ||
+      chunk.totalParts === 0 ||
+      (this.binaryChunkBuffer &&
+        (this.binaryChunkBuffer.totalParts !== chunk.totalParts ||
+          this.binaryChunkBuffer.messageId !== chunk.messageId))
+    ) {
+      this.binaryChunkBuffer = null;
+      throw new Error("Invalid binary chunk");
+    }
+
+    if (this.binaryChunkBuffer === null) {
+      this.binaryChunkBuffer = {
+        chunks: [],
+        totalParts: chunk.totalParts,
+        messageId: chunk.messageId,
+      };
+    }
+
+    if (chunk.partNumber !== this.binaryChunkBuffer.chunks.length) {
+      const expectedLength = this.binaryChunkBuffer.chunks.length;
+      this.binaryChunkBuffer = null;
+      throw new Error(
+        `Binary chunk received out of order: expected part ${expectedLength}, got ${chunk.partNumber}`,
+      );
+    }
+
+    this.binaryChunkBuffer.chunks.push(chunk.payload);
+
+    if (this.binaryChunkBuffer.chunks.length === chunk.totalParts) {
+      const totalLength = this.binaryChunkBuffer.chunks.reduce(
+        (sum, entry) => sum + entry.byteLength,
+        0,
+      );
+      const combined = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const entry of this.binaryChunkBuffer.chunks) {
+        combined.set(entry, offset);
+        offset += entry.byteLength;
+      }
+      this.binaryChunkBuffer = null;
+      return combined;
+    }
+
+    return null;
+  }
+
   private connect() {
     if (this.socket.state === "terminated") {
       return;
@@ -360,6 +419,7 @@ export class WebSocketManager {
     }
 
     const ws = new this.webSocketConstructor(this.uri);
+    ws.binaryType = "arraybuffer";
     this._logVerbose("constructed WebSocket");
     this.setSocketState({
       state: "connecting",
@@ -426,6 +486,7 @@ export class WebSocketManager {
     // NB: The WebSocket API calls `onclose` even if connection fails, so we can route all error paths through `onclose`.
     ws.onerror = (error) => {
       this.transitionChunkBuffer = null;
+      this.binaryChunkBuffer = null;
       const message = (error as ErrorEvent).message;
       if (message) {
         this.logger.log(`WebSocket error message: ${message}`);
@@ -433,50 +494,125 @@ export class WebSocketManager {
     };
     ws.onmessage = (message) => {
       this.resetServerInactivityTimeout();
-      const messageLength = message.data.length;
-      let serverMessage = parseServerMessage(JSON.parse(message.data));
-      this._logVerbose(`received ws message with type ${serverMessage.type}`);
 
-      // Ping's only purpose is to reset the server inactivity timer.
-      if (serverMessage.type === "Ping") {
+      const handleServerMessage = (
+        serverMessage: WireServerMessage,
+        messageLength: number,
+      ) => {
+        this._logVerbose(`received ws message with type ${serverMessage.type}`);
+
+        // Ping's only purpose is to reset the server inactivity timer.
+        if (serverMessage.type === "Ping") {
+          return;
+        }
+
+        // TransitionChunks never reach the main client logic.
+        if (serverMessage.type === "TransitionChunk") {
+          const transition = this.assembleTransition(serverMessage);
+          if (!transition) {
+            return;
+          }
+          serverMessage = transition;
+          this._logVerbose(
+            `assembled full ws message of type ${serverMessage.type}`,
+          );
+        }
+
+        if (this.transitionChunkBuffer !== null) {
+          this.transitionChunkBuffer = null;
+          this.logger.log(
+            `Received unexpected ${serverMessage.type} while buffering TransitionChunks`,
+          );
+        }
+
+        if (this.binaryChunkBuffer !== null) {
+          this.binaryChunkBuffer = null;
+          this.logger.log(
+            `Received unexpected ${serverMessage.type} while buffering binary chunks`,
+          );
+        }
+
+        if (serverMessage.type === "Transition") {
+          this.reportLargeTransition({
+            messageLength,
+            transition: serverMessage,
+          });
+        }
+        const response = this.onMessage(serverMessage as ServerMessage);
+        if (response.hasSyncedPastLastReconnect) {
+          // Reset backoff to 0 once all outstanding requests are complete.
+          this.retries = 0;
+          this.markConnectionStateDirty();
+        }
+      };
+
+      const processBinary = (binary: Uint8Array) => {
+        const frameBuffer =
+          binary.byteOffset === 0 &&
+          binary.byteLength === binary.buffer.byteLength
+            ? binary.buffer
+            : binary.buffer.slice(
+                binary.byteOffset,
+                binary.byteOffset + binary.byteLength,
+              );
+        const frame = decodeBinaryFrame(frameBuffer);
+        if (frame.type === "chunk") {
+          const combined = this.assembleBinaryChunks(frame);
+          if (!combined) {
+            return;
+          }
+          handleServerMessage(
+            parseBinaryServerMessage(combined),
+            combined.byteLength,
+          );
+          return;
+        }
+        handleServerMessage(
+          parseBinaryServerMessage(frame.payload),
+          frame.payload.byteLength,
+        );
+      };
+
+      if (typeof message.data === "string") {
+        handleServerMessage(
+          parseServerMessage(JSON.parse(message.data)),
+          message.data.length,
+        );
         return;
       }
 
-      // TransitionChunks never reach the main client logic.
-      if (serverMessage.type === "TransitionChunk") {
-        const transition = this.assembleTransition(serverMessage);
-        if (!transition) {
-          return;
-        }
-        serverMessage = transition;
-        this._logVerbose(
-          `assembled full ws message of type ${serverMessage.type}`,
-        );
+      if (message.data instanceof ArrayBuffer) {
+        processBinary(new Uint8Array(message.data));
+        return;
       }
 
-      if (this.transitionChunkBuffer !== null) {
-        this.transitionChunkBuffer = null;
-        this.logger.log(
-          `Received unexpected ${serverMessage.type} while buffering TransitionChunks`,
+      if (ArrayBuffer.isView(message.data)) {
+        const view = message.data;
+        processBinary(
+          new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
         );
+        return;
       }
 
-      if (serverMessage.type === "Transition") {
-        this.reportLargeTransition({
-          messageLength,
-          transition: serverMessage,
-        });
+      if (message.data instanceof Blob) {
+        message.data
+          .arrayBuffer()
+          .then((buffer) => processBinary(new Uint8Array(buffer)))
+          .catch((error) => {
+            this.logger.log(
+              "Failed to decode websocket binary message",
+              error,
+            );
+          });
+        return;
       }
-      const response = this.onMessage(serverMessage);
-      if (response.hasSyncedPastLastReconnect) {
-        // Reset backoff to 0 once all outstanding requests are complete.
-        this.retries = 0;
-        this.markConnectionStateDirty();
-      }
+
+      throw new Error("Unsupported websocket message type");
     };
     ws.onclose = (event) => {
       this._logVerbose("begin ws.onclose");
       this.transitionChunkBuffer = null;
+      this.binaryChunkBuffer = null;
       if (this.lastCloseReason === null) {
         // event.reason is often an empty string
         this.lastCloseReason = event.reason || `closed with code ${event.code}`;
@@ -633,6 +769,7 @@ export class WebSocketManager {
    */
   private close(): Promise<void> {
     this.transitionChunkBuffer = null;
+    this.binaryChunkBuffer = null;
     switch (this.socket.state) {
       case "disconnected":
       case "terminated":

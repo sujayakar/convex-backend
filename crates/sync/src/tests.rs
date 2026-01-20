@@ -177,6 +177,7 @@ impl<RT: Runtime> SyncTest<RT> {
                 last_close_reason: "InitialConnect".to_string(),
                 max_observed_timestamp,
                 client_ts: None,
+                supports_binary: None,
             },
             self.rt.monotonic_now(),
         ))?;

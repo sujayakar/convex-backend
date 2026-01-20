@@ -205,6 +205,10 @@ enum ClientMessageJsonInner {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         client_ts: Option<i64>,
+
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        supports_binary: Option<bool>,
     },
     #[serde(rename_all = "camelCase")]
     ModifyQuerySet { base_version: u32, new_version: u32 },
@@ -250,6 +254,7 @@ impl TryFrom<ClientMessage> for JsonValue {
                 last_close_reason,
                 max_observed_timestamp,
                 client_ts,
+                supports_binary,
             } => (
                 ClientMessageJsonInner::Connect {
                     session_id: format!("{}", session_id.as_hyphenated()),
@@ -258,6 +263,7 @@ impl TryFrom<ClientMessage> for JsonValue {
                     max_observed_timestamp: max_observed_timestamp
                         .map(|ts| u64_to_string(ts.into())),
                     client_ts: client_ts.map(|ts| ts as i64),
+                    supports_binary,
                 },
                 None,
                 None,
@@ -375,6 +381,7 @@ impl TryFrom<JsonValue> for ClientMessage {
                 last_close_reason,
                 max_observed_timestamp,
                 client_ts,
+                supports_binary,
             } => ClientMessage::Connect {
                 session_id: session_id.parse()?,
                 connection_count,
@@ -385,6 +392,7 @@ impl TryFrom<JsonValue> for ClientMessage {
                     .map(Timestamp::try_from)
                     .transpose()?,
                 client_ts: client_ts.map(|ts| ts as u64),
+                supports_binary,
             },
             ClientMessageJsonInner::ModifyQuerySet {
                 base_version,

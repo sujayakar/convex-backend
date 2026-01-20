@@ -4,6 +4,7 @@
 
 mod metrics;
 mod state;
+pub mod binary;
 pub mod worker;
 
 pub use worker::{

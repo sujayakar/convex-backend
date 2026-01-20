@@ -409,6 +409,7 @@ export class BaseConvexClient {
             type: "Connect",
             sessionId: this._sessionId,
             maxObservedTimestamp: this.maxObservedTimestamp,
+            supportsBinary: true,
           });
 
           // Throw out our remote query, reissue queries

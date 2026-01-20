@@ -138,6 +138,7 @@ pub enum ClientMessage {
         last_close_reason: String,
         max_observed_timestamp: Option<Timestamp>,
         client_ts: Option<u64>,
+        supports_binary: Option<bool>,
     },
     ModifyQuerySet {
         base_version: QuerySetVersion,

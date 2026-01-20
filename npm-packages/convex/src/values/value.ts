@@ -190,9 +190,21 @@ function validateObjectField(k: string) {
  *
  * @public
  */
-export function jsonToConvex(value: JSONValue): Value {
+export function jsonToConvex(value: JSONValue | Value): Value {
   if (isPackedValue(value)) {
     return value as Value;
+  }
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return value.buffer.slice(
+      value.byteOffset,
+      value.byteOffset + value.byteLength,
+    );
   }
   if (value === null) {
     return value;
@@ -255,10 +267,10 @@ export function jsonToConvex(value: JSONValue): Value {
       );
     }
   }
-  const out: { [key: string]: Value } = {};
+  const out: { [key: string]: Value | undefined } = {};
   for (const [k, v] of Object.entries(value)) {
     validateObjectField(k);
-    out[k] = jsonToConvex(v);
+    out[k] = v === undefined ? undefined : jsonToConvex(v);
   }
   return out;
 }
