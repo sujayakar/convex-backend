@@ -331,6 +331,11 @@ impl WebSocketWorker {
                             }
                         },
                         Message::Text(t) => {
+                            if binary_chunk_buffer.take().is_some() {
+                                tracing::warn!(
+                                    "Dropping buffered binary chunks due to text message"
+                                );
+                            }
                             let json: serde_json::Value = serde_json::from_str(&t).context("JsonDeserializeError")?;
                             let server_message = json.try_into()?;
                             match server_message {
