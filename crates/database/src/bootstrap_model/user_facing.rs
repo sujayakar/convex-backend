@@ -354,7 +354,6 @@ fn start_index_range<RT: Runtime>(
                 interval: request.interval.clone(),
                 order: request.order,
                 max_size: max_rows,
-                selected_fields: request.selected_fields.clone(),
             }))
         },
         StableIndexName::Virtual(index_name, tablet_index_name) => {
@@ -365,7 +364,6 @@ fn start_index_range<RT: Runtime>(
                 interval: request.interval.clone(),
                 order: request.order,
                 max_size: max_rows,
-                selected_fields: request.selected_fields.clone(),
             }))
         },
         StableIndexName::Missing(_) => Ok(Ok(DeveloperIndexRangeResponse {

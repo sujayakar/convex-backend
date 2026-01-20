@@ -53,6 +53,7 @@ use self::{
         IndexRange,
     },
     limit::Limit,
+    projection::Projection,
     search_query::SearchQuery,
 };
 use crate::{
@@ -65,6 +66,7 @@ use crate::{
 mod filter;
 mod index_range;
 mod limit;
+mod projection;
 mod search_query;
 
 pub use index_range::soft_data_limit;
@@ -414,7 +416,7 @@ impl<RT: Runtime> DeveloperQuery<RT> {
             },
         };
 
-        let mut cur_node = match query.source {
+        let source_node = match query.source {
             QuerySource::FullTableScan(full_table_scan) => QueryNode::IndexRange(IndexRange::new(
                 namespace,
                 stable_index_name,
@@ -454,6 +456,16 @@ impl<RT: Runtime> DeveloperQuery<RT> {
                 version,
             )),
         };
+
+        // If field selection is specified, wrap the source in a Projection node.
+        // This ensures projection happens BEFORE any filters see the documents,
+        // providing consistent semantics regardless of caching.
+        let mut cur_node = if let Some(ref fields) = selected_fields {
+            QueryNode::Projection(Box::new(Projection::new(source_node, fields.clone())))
+        } else {
+            source_node
+        };
+
         for operator in query.operators {
             let next_node = match operator {
                 QueryOperator::Filter(expr) => {
@@ -705,6 +717,7 @@ pub async fn resolved_query_batch_next<RT: Runtime>(
 enum QueryNode {
     IndexRange(IndexRange),
     Search(SearchQuery),
+    Projection(Box<Projection>),
     Filter(Box<Filter>),
     Limit(Box<Limit>),
 }
@@ -715,6 +728,7 @@ impl QueryStream for QueryNode {
         match self {
             QueryNode::IndexRange(r) => r.cursor_position(),
             QueryNode::Search(r) => r.cursor_position(),
+            QueryNode::Projection(r) => r.cursor_position(),
             QueryNode::Filter(r) => r.cursor_position(),
             QueryNode::Limit(r) => r.cursor_position(),
         }
@@ -724,6 +738,7 @@ impl QueryStream for QueryNode {
         match self {
             QueryNode::IndexRange(r) => r.split_cursor_position(),
             QueryNode::Search(r) => r.split_cursor_position(),
+            QueryNode::Projection(r) => r.split_cursor_position(),
             QueryNode::Filter(r) => r.split_cursor_position(),
             QueryNode::Limit(r) => r.split_cursor_position(),
         }
@@ -733,6 +748,7 @@ impl QueryStream for QueryNode {
         match self {
             Self::IndexRange(r) => r.is_approaching_data_limit(),
             Self::Search(r) => r.is_approaching_data_limit(),
+            Self::Projection(r) => r.is_approaching_data_limit(),
             Self::Filter(r) => r.is_approaching_data_limit(),
             Self::Limit(r) => r.is_approaching_data_limit(),
         }
@@ -746,6 +762,7 @@ impl QueryStream for QueryNode {
         match self {
             QueryNode::IndexRange(r) => r.next(tx, prefetch_hint).await,
             QueryNode::Search(r) => r.next(tx, prefetch_hint).await,
+            QueryNode::Projection(r) => r.next(tx, prefetch_hint).await,
             QueryNode::Filter(r) => r.next(tx, prefetch_hint).await,
             QueryNode::Limit(r) => r.next(tx, prefetch_hint).await,
         }
@@ -755,6 +772,7 @@ impl QueryStream for QueryNode {
         match self {
             QueryNode::IndexRange(r) => r.feed(index_range_response),
             QueryNode::Search(r) => r.feed(index_range_response),
+            QueryNode::Projection(r) => r.feed(index_range_response),
             QueryNode::Filter(r) => r.feed(index_range_response),
             QueryNode::Limit(r) => r.feed(index_range_response),
         }
@@ -764,6 +782,7 @@ impl QueryStream for QueryNode {
         match self {
             QueryNode::IndexRange(r) => r.tablet_index_name(),
             QueryNode::Search(r) => r.tablet_index_name(),
+            QueryNode::Projection(r) => r.tablet_index_name(),
             QueryNode::Filter(r) => r.tablet_index_name(),
             QueryNode::Limit(r) => r.tablet_index_name(),
         }
@@ -773,6 +792,7 @@ impl QueryStream for QueryNode {
         match self {
             QueryNode::IndexRange(r) => r.printable_index_name(),
             QueryNode::Search(r) => r.printable_index_name(),
+            QueryNode::Projection(r) => r.printable_index_name(),
             QueryNode::Filter(r) => r.printable_index_name(),
             QueryNode::Limit(r) => r.printable_index_name(),
         }

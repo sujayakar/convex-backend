@@ -244,7 +244,6 @@ impl<RT: Runtime, T: SystemTable> SystemQuery<'_, '_, RT, T> {
             order: self.order,
             interval: mem::replace(&mut self.index_range, Interval::empty()),
             max_size: n,
-            selected_fields: None,
         };
         let [result] = self
             .tx

@@ -94,6 +94,10 @@ pub struct IndexRange {
     soft_maximum_rows_read: usize,
     soft_maximum_bytes_read: usize,
     version: Option<Version>,
+    // Note: Projection is now handled by the Projection query node, but we keep
+    // this field for potential future use where we might push projection down
+    // to the index layer for optimization.
+    #[allow(dead_code)]
     selected_fields: Option<Vec<FieldPath>>,
 }
 
@@ -278,7 +282,6 @@ impl IndexRange {
             order: self.order,
             max_rows,
             version: self.version.clone(),
-            selected_fields: self.selected_fields.clone(),
         }))
     }
 

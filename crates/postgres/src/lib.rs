@@ -1175,17 +1175,16 @@ impl PostgresReader {
         interval: Interval,
         order: Order,
         batch_size: usize,
-        selected_fields: Option<Vec<FieldPath>>,
+        _selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
         tx: mpsc::Sender<IndexScanResult>,
     ) -> anyhow::Result<()> {
+        // Note: selected_fields is ignored here - projection happens in the query layer
+        // to ensure consistent behavior with caching and filtering.
         let _timer = metrics::query_index_timer();
         let multitenant = self.multitenant;
         let instance_name = self.instance_name.clone();
         let (mut lower, mut upper) = to_sql_bounds(interval.clone());
-        let projection = selected_fields
-            .as_deref()
-            .map(build_projection_expression);
 
         let mut stats = QueryIndexStats::new();
 
@@ -1208,7 +1207,7 @@ impl PostgresReader {
                 upper.clone(),
                 order,
                 batch_size,
-                projection.as_deref(),
+                None,
                 multitenant,
                 &instance_name,
             );
@@ -2067,6 +2066,7 @@ fn to_sql_bounds(interval: Interval) -> (Bound<SqlKey>, Bound<SqlKey>) {
     (lower, upper)
 }
 
+#[allow(dead_code)]
 fn build_projection_expression(selected_fields: &[FieldPath]) -> String {
     let mut field_names = vec![ID_FIELD.to_string(), CREATION_TIME_FIELD.to_string()];
     for field in selected_fields {

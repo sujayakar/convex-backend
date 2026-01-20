@@ -15,10 +15,8 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use common::{
     document::{
-        CREATION_TIME_FIELD,
         InternalId,
         ResolvedDocument,
-        ID_FIELD,
     },
     index::{
         IndexEntry,
@@ -51,9 +49,7 @@ use common::{
         Timestamp,
     },
     value::{
-        ConvexObject,
         ConvexValue,
-        FieldName,
         FieldPath,
         InternalDocumentId,
         TabletId,
@@ -133,8 +129,10 @@ impl SqlitePersistence {
         read_timestamp: Timestamp,
         interval: &Interval,
         order: Order,
-        selected_fields: Option<Vec<FieldPath>>,
+        _selected_fields: Option<Vec<FieldPath>>,
     ) -> anyhow::Result<Vec<anyhow::Result<(IndexKeyBytes, LatestDocument)>>> {
+        // Note: selected_fields is ignored here - projection happens in the query layer
+        // to ensure consistent behavior with caching and filtering.
         let interval = interval.clone();
         let index_id = &index_id[..];
         let read_timestamp: u64 = read_timestamp.into();
@@ -163,43 +161,10 @@ impl SqlitePersistence {
             Order::Asc => "ASC",
             Order::Desc => "DESC",
         };
-        let (projection_fields, projection_clause) = if let Some(selected_fields) =
-            selected_fields
-        {
-            let mut fields = vec![
-                FieldPath::for_root_field(ID_FIELD.clone()),
-                FieldPath::for_root_field(CREATION_TIME_FIELD.clone()),
-            ];
-            for field in selected_fields {
-                if field.fields().len() != 1 {
-                    continue;
-                }
-                let name = &field.fields()[0];
-                if *name == *ID_FIELD || *name == *CREATION_TIME_FIELD {
-                    continue;
-                }
-                fields.push(field);
-            }
-            let projection = fields
-                .iter()
-                .map(|field| {
-                    let field_name = field.fields()[0].to_string();
-                    let json_path = format!("$.\"{field_name}\"");
-                    format!(
-                        "json_type(C.json_value, '{json_path}'), \
-json_extract(C.json_value, '{json_path}')"
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            (Some(fields), projection)
-        } else {
-            (None, "C.json_value".to_string())
-        };
 
         let query = format!(
             r#"
-SELECT B.key, B.ts, B.document_id, C.table_id, {projection_clause}, C.prev_ts
+SELECT B.key, B.ts, B.document_id, C.table_id, C.json_value, C.prev_ts
 FROM (
     SELECT index_id, key, MAX(ts) as max_ts
     FROM indexes
@@ -233,51 +198,17 @@ ORDER BY B.key {order}
             })?;
             let table = TabletId(table.try_into()?);
             let _document_id = InternalDocumentId::new(table, InternalId::try_from(document_id)?);
-            let mut column_index = 4;
-            let (document, prev_ts) = match &projection_fields {
-                Some(fields) => {
-                    let mut field_values = BTreeMap::new();
-                    for field in fields {
-                        let field_type: Option<String> = row.get(column_index)?;
-                        let field_value: Option<SqlValue> = row.get(column_index + 1)?;
-                        column_index += 2;
-                        if let Some(field_type) = field_type {
-                            let value =
-                                Self::sqlite_json_value_to_convex(&field_type, field_value)?;
-                            let field_name = FieldName::from(field.fields()[0].clone());
-                            field_values.insert(field_name, value);
-                        } else if field.fields()[0] == *ID_FIELD
-                            || field.fields()[0] == *CREATION_TIME_FIELD
-                        {
-                            anyhow::bail!(
-                                "Index reference to deleted document {:?} {:?}",
-                                key,
-                                ts
-                            );
-                        }
-                    }
-                    let prev_ts = row
-                        .get::<_, Option<u64>>(column_index)?
-                        .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
-                    let object = ConvexObject::try_from(field_values)?;
-                    let document =
-                        ResolvedDocument::from_database(tablet_id, ConvexValue::Object(object))?;
-                    (document, prev_ts)
-                },
-                None => {
-                    let json_value: Option<String> = row.get(column_index)?;
-                    let prev_ts = row
-                        .get::<_, Option<u64>>(column_index + 1)?
-                        .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
-                    let json_value = json_value.ok_or_else(|| {
-                        anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
-                    })?;
-                    let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
-                    let value: ConvexValue = json_value.try_into()?;
-                    let document = ResolvedDocument::from_database(tablet_id, value)?;
-                    (document, prev_ts)
-                },
-            };
+
+            let json_value: Option<String> = row.get(4)?;
+            let prev_ts = row
+                .get::<_, Option<u64>>(5)?
+                .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
+            let json_value = json_value.ok_or_else(|| {
+                anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
+            })?;
+            let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
+            let value: ConvexValue = json_value.try_into()?;
+            let document = ResolvedDocument::from_database(tablet_id, value)?;
 
             triples.push(Ok((
                 key,
@@ -291,6 +222,7 @@ ORDER BY B.key {order}
         Ok(triples)
     }
 
+    #[allow(dead_code)]
     fn sqlite_json_value_to_convex(
         field_type: &str,
         field_value: Option<SqlValue>,

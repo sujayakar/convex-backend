@@ -312,7 +312,6 @@ impl TransactionIndex {
                 interval,
                 order: _,
                 max_size,
-                selected_fields: _,
             },
             fetch_result,
         ) in ranges.iter().zip(fetch_results)
@@ -407,7 +406,6 @@ impl TransactionIndex {
                     interval: remaining_interval,
                     order: Order::Asc,
                     max_size: DEFAULT_PAGE_SIZE,
-                    selected_fields: None,
                 }])
                 .await
                 .try_into()
@@ -967,8 +965,7 @@ mod tests {
                     interval: Interval::all(),
                     order: Order::Asc,
                     max_size: 100,
-                    selected_fields: None,
-                })
+                    })
                 .await;
             assert!(result.is_err());
             match result {
@@ -1084,8 +1081,7 @@ mod tests {
                     interval: Interval::all(),
                     order: Order::Asc,
                     max_size: 100,
-                    selected_fields: None,
-                })
+                    })
                 .await;
             assert!(result.is_err());
             match result {

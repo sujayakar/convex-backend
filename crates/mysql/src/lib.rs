@@ -672,6 +672,7 @@ fn bytes_col(row: &Row, col: usize) -> anyhow::Result<&[u8]> {
     }
 }
 
+#[allow(dead_code)]
 fn build_projection_expression(selected_fields: &[FieldPath]) -> String {
     let mut field_names = vec![ID_FIELD.to_string(), CREATION_TIME_FIELD.to_string()];
     for field in selected_fields {
@@ -927,14 +928,13 @@ impl<RT: Runtime> MySqlReader<RT> {
         interval: Interval,
         order: Order,
         size_hint: usize,
-        selected_fields: Option<Vec<FieldPath>>,
+        _selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) {
+        // Note: selected_fields is ignored here - projection happens in the query layer
+        // to ensure consistent behavior with caching and filtering.
         let _timer = metrics::query_index_timer(self.read_pool.cluster_name());
         let (mut lower, mut upper) = sql::to_sql_bounds(interval.clone());
-        let projection = selected_fields
-            .as_deref()
-            .map(build_projection_expression);
 
         let mut stats = QueryIndexStats::new(self.read_pool.cluster_name());
 
@@ -966,7 +966,7 @@ impl<RT: Runtime> MySqlReader<RT> {
                     upper.clone(),
                     order,
                     batch_size as usize,
-                    projection.as_deref(),
+                    None,
                     self.multitenant,
                     &self.instance_name,
                 );
@@ -1137,9 +1137,11 @@ impl<RT: Runtime> MySqlReader<RT> {
         index_id: IndexId,
         key: &BinaryKey,
         read_timestamp: Timestamp,
-        selected_fields: Option<Vec<FieldPath>>,
+        _selected_fields: Option<Vec<FieldPath>>,
         retention_validator: Arc<dyn RetentionValidator>,
     ) -> anyhow::Result<Option<LatestDocument>> {
+        // Note: selected_fields is ignored here - projection happens in the query layer
+        // to ensure consistent behavior with caching and filtering.
         let mut client = self
             .read_pool
             .acquire("index_lookup", &self.db_name)
@@ -1158,10 +1160,7 @@ impl<RT: Runtime> MySqlReader<RT> {
         if self.multitenant {
             params.push(self.instance_name.to_string().into());
         }
-        let projection = selected_fields
-            .as_deref()
-            .map(build_projection_expression);
-        let query = index_point_query(self.multitenant, projection.as_deref());
+        let query = index_point_query(self.multitenant, None);
         let maybe_row = client.query_optional(&query, params).await?;
         execute_timer.finish();
 
