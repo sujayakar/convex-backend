@@ -539,6 +539,8 @@ pub async fn sync(
 
 #[cfg(test)]
 mod tests {
+    use std::convert::TryInto;
+
     use axum::{
         extract::{
             ws::{
@@ -559,7 +561,14 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tungstenite::error::Error as TungsteniteError;
 
-    use super::is_connection_closed_error;
+    use super::{
+        is_connection_closed_error,
+        split_binary_message,
+        BINARY_CHUNK_HEADER_LEN,
+        BINARY_FRAME_TYPE_CHUNK,
+        BINARY_FRAME_TYPE_FULL,
+        MAX_MESSAGE_SIZE,
+    };
 
     /// Test that the axum tungstenite matches the tungstenite we're using in
     /// backend in `is_connection_closed_error` to work around axum sloppiness.
@@ -624,5 +633,42 @@ mod tests {
         shutdown_tx.send(()).unwrap();
         proxy_server.await??;
         Ok(())
+    }
+
+    #[test]
+    fn test_split_binary_message_full_frame() {
+        let payload = vec![1u8, 2, 3];
+        let mut message_id = 7;
+        let frames = split_binary_message(payload.clone(), &mut message_id);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(message_id, 7);
+        assert_eq!(frames[0][0], BINARY_FRAME_TYPE_FULL);
+        assert_eq!(&frames[0][1..], payload.as_slice());
+    }
+
+    #[test]
+    fn test_split_binary_message_chunked() {
+        let payload = vec![0u8; MAX_MESSAGE_SIZE + 10];
+        let mut message_id = 0;
+        let frames = split_binary_message(payload.clone(), &mut message_id);
+        assert!(frames.len() > 1);
+        assert_eq!(message_id, 1);
+
+        let mut reconstructed = Vec::with_capacity(payload.len());
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame[0], BINARY_FRAME_TYPE_CHUNK);
+            assert!(
+                frame.len() > BINARY_CHUNK_HEADER_LEN,
+                "Chunk frame missing payload"
+            );
+            let id = u32::from_le_bytes(frame[1..5].try_into().unwrap());
+            let part_number = u32::from_le_bytes(frame[5..9].try_into().unwrap());
+            let total_parts = u32::from_le_bytes(frame[9..13].try_into().unwrap());
+            assert_eq!(id, 0);
+            assert_eq!(part_number as usize, index);
+            assert_eq!(total_parts as usize, frames.len());
+            reconstructed.extend_from_slice(&frame[13..]);
+        }
+        assert_eq!(reconstructed, payload);
     }
 }
