@@ -19,7 +19,11 @@ const TWOFIFTYSIX = BigInt("256");
 const packedValueSymbol = Symbol.for("convex.packed");
 
 function isPackedValue(value: unknown): boolean {
-  return typeof value === "object" && value !== null && (value as any)[packedValueSymbol];
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const meta = (value as any)[packedValueSymbol];
+  return !!meta && meta.materialized === undefined;
 }
 
 /**

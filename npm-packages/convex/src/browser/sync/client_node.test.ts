@@ -33,6 +33,9 @@ test("BaseConvexClient protocol in node", async () => {
 
     const connect = await receive();
     expect(connect.type).toEqual("Connect");
+    if (connect.type !== "Connect") {
+      throw new Error("Expected Connect message");
+    }
     expect(connect.supportsBinary).toBe(true);
     expect((await receive()).type).toEqual("ModifyQuerySet");
 

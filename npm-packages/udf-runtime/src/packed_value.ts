@@ -12,6 +12,7 @@ interface PackedMeta {
   handle: number;
   kind: PackedValueKind;
   path: PackedPath;
+  materialized?: any;
 }
 
 function isArrayIndex(prop: string): boolean {
@@ -33,11 +34,40 @@ function unpackReadResult(handle: number, result: any): any {
   }
 }
 
+function materializePackedValue(meta: PackedMeta): any {
+  if (meta.kind === "array") {
+    const length = performOp("packedValue/length", meta.handle, meta.path);
+    const out = new Array(length);
+    for (let i = 0; i < length; i++) {
+      const result = performOp("packedValue/read", meta.handle, meta.path, i);
+      out[i] = unpackReadResult(meta.handle, result);
+    }
+    return out;
+  }
+  const keys = performOp("packedValue/keys", meta.handle, meta.path);
+  const out: Record<string, any> = {};
+  for (const key of keys) {
+    const result = performOp("packedValue/read", meta.handle, meta.path, key);
+    out[key] = unpackReadResult(meta.handle, result);
+  }
+  return out;
+}
+
+function getMaterialized(meta: PackedMeta): any {
+  if (meta.materialized === undefined) {
+    meta.materialized = materializePackedValue(meta);
+  }
+  return meta.materialized;
+}
+
 const packedValueHandler: ProxyHandler<any> = {
   get(target, prop, receiver) {
     const meta: PackedMeta = target[packedValueSymbol];
     if (prop === packedValueSymbol) {
       return meta;
+    }
+    if (meta.materialized !== undefined) {
+      return Reflect.get(meta.materialized, prop, receiver);
     }
     if (prop === Symbol.toStringTag) {
       return meta.kind === "array" ? "Array" : "Object";
@@ -63,6 +93,9 @@ const packedValueHandler: ProxyHandler<any> = {
   },
   has(target, prop) {
     const meta: PackedMeta = target[packedValueSymbol];
+    if (meta.materialized !== undefined) {
+      return Reflect.has(meta.materialized, prop);
+    }
     if (typeof prop !== "string") {
       return false;
     }
@@ -75,14 +108,26 @@ const packedValueHandler: ProxyHandler<any> = {
   },
   ownKeys(target) {
     const meta: PackedMeta = target[packedValueSymbol];
+    if (meta.materialized !== undefined) {
+      const keys = Reflect.ownKeys(meta.materialized);
+      keys.push(packedValueSymbol);
+      return keys;
+    }
     const keys = performOp("packedValue/keys", meta.handle, meta.path);
     if (meta.kind === "array") {
       keys.push("length");
     }
+    keys.push(packedValueSymbol);
     return keys;
   },
   getOwnPropertyDescriptor(target, prop) {
     const meta: PackedMeta = target[packedValueSymbol];
+    if (prop === packedValueSymbol) {
+      return Object.getOwnPropertyDescriptor(target, prop);
+    }
+    if (meta.materialized !== undefined) {
+      return Object.getOwnPropertyDescriptor(meta.materialized, prop);
+    }
     if (typeof prop !== "string") {
       return undefined;
     }
@@ -105,6 +150,22 @@ const packedValueHandler: ProxyHandler<any> = {
       enumerable: true,
       value: unpackReadResult(meta.handle, readResult),
     };
+  },
+  set(target, prop, value, receiver) {
+    const meta: PackedMeta = target[packedValueSymbol];
+    const materialized = getMaterialized(meta);
+    return Reflect.set(materialized, prop, value, receiver);
+  },
+  deleteProperty(target, prop) {
+    const meta: PackedMeta = target[packedValueSymbol];
+    const materialized = getMaterialized(meta);
+    return Reflect.deleteProperty(materialized, prop);
+  },
+  defineProperty(target, prop, descriptor) {
+    const meta: PackedMeta = target[packedValueSymbol];
+    const materialized = getMaterialized(meta);
+    Object.defineProperty(materialized, prop, descriptor);
+    return true;
   },
 };
 
