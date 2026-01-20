@@ -58,7 +58,7 @@ use self::{
     search_query::SearchQuery,
 };
 use crate::{
-    bootstrap_model::user_facing::index_range_batch,
+    bootstrap_model::user_facing::index_range_batch_packed,
     transaction::IndexRangeRequest,
     IndexModel,
     Transaction,
@@ -126,11 +126,6 @@ trait QueryStream: Send {
 }
 
 pub struct DeveloperIndexRangeResponse {
-    pub page: Vec<(IndexKeyBytes, DeveloperDocument, WriteTimestamp)>,
-    pub cursor: CursorPosition,
-}
-
-pub struct DeveloperPackedIndexRangeResponse {
     pub page: Vec<(IndexKeyBytes, PackedDeveloperDocument, WriteTimestamp)>,
     pub cursor: CursorPosition,
 }
@@ -147,7 +142,7 @@ pub struct PackedIndexRangeResponse {
 
 #[derive(Debug)]
 pub enum QueryStreamNext {
-    Ready(Option<(DeveloperDocument, WriteTimestamp)>),
+    Ready(Option<(PackedDeveloperDocument, WriteTimestamp)>),
     WaitingOn(IndexRangeRequest),
 }
 
@@ -612,7 +607,20 @@ pub fn query_batch_next<'a, RT: Runtime>(
     tx: &'a mut Transaction<RT>,
 ) -> BoxFuture<'a, BTreeMap<BatchKey, anyhow::Result<Option<(DeveloperDocument, WriteTimestamp)>>>>
 {
-    query_batch_next_(batch, tx).boxed()
+    async move {
+        let packed_results = query_batch_next_packed(batch, tx).await;
+        packed_results
+            .into_iter()
+            .map(|(batch_key, result)| {
+                let unpacked = result.and_then(|maybe| match maybe {
+                    Some((doc, ts)) => Ok(Some((doc.unpack()?, ts))),
+                    None => Ok(None),
+                });
+                (batch_key, unpacked)
+            })
+            .collect()
+    }
+    .boxed()
 }
 
 pub fn query_batch_next_packed<'a, RT: Runtime>(
@@ -622,25 +630,13 @@ pub fn query_batch_next_packed<'a, RT: Runtime>(
     'a,
     BTreeMap<BatchKey, anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>>>,
 > {
-    async move {
-        let results = query_batch_next_(batch, tx).await;
-        results
-            .into_iter()
-            .map(|(batch_key, result)| {
-                let packed_result = result.map(|maybe| {
-                    maybe.map(|(doc, ts)| (PackedDeveloperDocument::pack(&doc), ts))
-                });
-                (batch_key, packed_result)
-            })
-            .collect()
-    }
-    .boxed()
+    query_batch_next_packed_(batch, tx).boxed()
 }
 
-pub async fn query_batch_next_<RT: Runtime>(
+async fn query_batch_next_packed_<RT: Runtime>(
     mut batch: BTreeMap<BatchKey, (&mut DeveloperQuery<RT>, Option<usize>)>,
     tx: &mut Transaction<RT>,
-) -> BTreeMap<BatchKey, anyhow::Result<Option<(DeveloperDocument, WriteTimestamp)>>> {
+) -> BTreeMap<BatchKey, anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>>> {
     let batch_size = batch.len();
     // Algorithm overview:
     // Call `next` on every query.
@@ -679,7 +675,7 @@ pub async fn query_batch_next_<RT: Runtime>(
         let mut responses = if requests.is_empty() {
             BTreeMap::new()
         } else {
-            index_range_batch(tx, requests).await
+            index_range_batch_packed(tx, requests).await
         };
         let mut next_batch = BTreeMap::new();
         for (batch_key, (query, prefetch_hint)) in batch_to_feed {

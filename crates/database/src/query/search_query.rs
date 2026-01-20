@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use common::{
-    document::DeveloperDocument,
+    document::{
+        DeveloperDocument,
+        PackedDeveloperDocument,
+    },
     index::IndexKeyBytes,
     knobs::TRANSACTION_MAX_READ_SIZE_BYTES,
     query::{
@@ -123,7 +126,7 @@ impl SearchQuery {
     async fn _next<RT: Runtime>(
         &mut self,
         tx: &mut Transaction<RT>,
-    ) -> anyhow::Result<Option<(DeveloperDocument, WriteTimestamp)>> {
+    ) -> anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>> {
         let iterator = match &mut self.results {
             Some(results) => results,
             None => self.results.get_or_insert(self.search(tx).await?),
@@ -144,7 +147,7 @@ impl SearchQuery {
             },
             Some((next_document, next_index_key, next_timestamp)) => {
                 self.cursor_interval.curr_exclusive = Some(CursorPosition::After(next_index_key));
-                Some((next_document, next_timestamp))
+                Some((PackedDeveloperDocument::pack(&next_document), next_timestamp))
             },
         })
     }

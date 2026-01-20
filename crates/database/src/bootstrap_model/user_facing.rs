@@ -41,8 +41,6 @@ use crate::{
     },
     query::{
         DeveloperIndexRangeResponse,
-        DeveloperPackedIndexRangeResponse,
-        IndexRangeResponse,
         PackedIndexRangeResponse,
     },
     transaction::{
@@ -331,6 +329,27 @@ impl<'a, RT: Runtime> UserFacingModel<'a, RT> {
             is_virtual_table,
         )
     }
+
+    pub fn record_read_document_packed(
+        &mut self,
+        document: &PackedDeveloperDocument,
+        table_name: &TableName,
+    ) -> anyhow::Result<()> {
+        let is_virtual_table = self
+            .tx
+            .virtual_system_mapping()
+            .is_virtual_table(table_name);
+        let component_path = self
+            .tx
+            .must_component_path(ComponentId::from(self.namespace))?;
+        self.tx.reads.record_read_document(
+            component_path,
+            table_name.clone(),
+            document.value().size(),
+            &self.tx.usage_tracker,
+            is_virtual_table,
+        )
+    }
 }
 
 fn start_index_range<RT: Runtime>(
@@ -376,11 +395,10 @@ fn start_index_range<RT: Runtime>(
     }
 }
 
-/// NOTE: returns a page of results. Callers must call record_read_document +
-/// record_indexed_directly for all documents returned from the index stream.
+/// Index range batch for zero-copy paths.
 #[fastrace::trace]
 #[convex_macro::instrument_future]
-pub async fn index_range_batch<RT: Runtime>(
+pub async fn index_range_batch_packed<RT: Runtime>(
     tx: &mut Transaction<RT>,
     requests: BTreeMap<BatchKey, IndexRangeRequest>,
 ) -> BTreeMap<BatchKey, anyhow::Result<DeveloperIndexRangeResponse>> {
@@ -398,78 +416,6 @@ pub async fn index_range_batch<RT: Runtime>(
             },
             Ok(Ok(result)) => {
                 results.insert(batch_key, Ok(result));
-            },
-            Ok(Err(request)) => {
-                fetch_requests.insert(batch_key, request);
-            },
-        }
-    }
-
-    let fetch_results = tx
-        .index
-        .range_batch(&fetch_requests.values().collect_vec())
-        .await;
-
-    for (&batch_key, fetch_result) in fetch_requests.keys().zip(fetch_results) {
-        let virtual_table_version = virtual_table_versions.get(&batch_key).cloned();
-        let result = try {
-            let IndexRangeResponse { page, cursor } = fetch_result?;
-            let developer_results = match virtual_table_version {
-                Some(version) => {
-                    let mut converted_documents = vec![];
-                    for (key, doc, ts) in page {
-                        let doc = VirtualTable::new(tx)
-                            .system_to_virtual_doc(doc, version.clone())
-                            .await?;
-                        converted_documents.push((key, doc, ts));
-                    }
-                    converted_documents
-                },
-                None => page
-                    .into_iter()
-                    .map(|(key, doc, ts)| (key, doc.to_developer(), ts))
-                    .collect(),
-            };
-            DeveloperIndexRangeResponse {
-                page: developer_results,
-                cursor,
-            }
-        };
-        results.insert(batch_key, result);
-    }
-    assert_eq!(results.len(), batch_size);
-    results
-}
-
-/// Packed variant of index_range_batch for zero-copy paths.
-#[fastrace::trace]
-#[convex_macro::instrument_future]
-pub async fn index_range_batch_packed<RT: Runtime>(
-    tx: &mut Transaction<RT>,
-    requests: BTreeMap<BatchKey, IndexRangeRequest>,
-) -> BTreeMap<BatchKey, anyhow::Result<DeveloperPackedIndexRangeResponse>> {
-    let batch_size = requests.len();
-    let mut results = BTreeMap::new();
-    let mut fetch_requests = BTreeMap::new();
-    let mut virtual_table_versions = BTreeMap::new();
-    for (batch_key, request) in requests {
-        if matches!(request.stable_index_name, StableIndexName::Virtual(_, _)) {
-            virtual_table_versions.insert(batch_key, request.version.clone());
-        }
-        match start_index_range(tx, request) {
-            Err(e) => {
-                results.insert(batch_key, Err(e));
-            },
-            Ok(Ok(result)) => {
-                let packed = DeveloperPackedIndexRangeResponse {
-                    cursor: result.cursor,
-                    page: result
-                        .page
-                        .into_iter()
-                        .map(|(key, doc, ts)| (key, PackedDeveloperDocument::pack(&doc), ts))
-                        .collect(),
-                };
-                results.insert(batch_key, Ok(packed));
             },
             Ok(Err(request)) => {
                 fetch_requests.insert(batch_key, request);
@@ -502,7 +448,7 @@ pub async fn index_range_batch_packed<RT: Runtime>(
                     .map(|(key, doc, ts)| (key, PackedDeveloperDocument::from_packed(doc), ts))
                     .collect(),
             };
-            DeveloperPackedIndexRangeResponse {
+            DeveloperIndexRangeResponse {
                 page: developer_results,
                 cursor,
             }
