@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use common::{
     document::{
-        DeveloperDocument,
         PackedDeveloperDocument,
     },
     index::IndexKeyBytes,
@@ -147,7 +146,7 @@ impl SearchQuery {
             },
             Some((next_document, next_index_key, next_timestamp)) => {
                 self.cursor_interval.curr_exclusive = Some(CursorPosition::After(next_index_key));
-                Some((PackedDeveloperDocument::pack(&next_document), next_timestamp))
+                Some((next_document, next_timestamp))
             },
         })
     }
@@ -229,7 +228,7 @@ impl SearchResultIterator {
     async fn next<RT: Runtime>(
         &mut self,
         tx: &mut Transaction<RT>,
-    ) -> anyhow::Result<Option<(DeveloperDocument, IndexKeyBytes, WriteTimestamp)>> {
+    ) -> anyhow::Result<Option<(PackedDeveloperDocument, IndexKeyBytes, WriteTimestamp)>> {
         let timer = metrics::search::iterator_next_timer();
         task::consume_budget().await;
 
@@ -253,13 +252,13 @@ impl SearchResultIterator {
 
         let id = DeveloperDocumentId::new(self.table_number, candidate.id);
         let (document, existing_doc_ts) = UserFacingModel::new(tx, self.namespace)
-            .get_with_ts(id, self.version.clone())
+            .get_with_ts_packed(id, self.version.clone())
             .await?
             .ok_or_else(|| {
                 anyhow::anyhow!("Unable to load search result {id}@{:?}", candidate.ts)
             })?;
 
-        self.bytes_read += document.size();
+        self.bytes_read += document.value().size();
 
         anyhow::ensure!(
             existing_doc_ts == candidate.ts,

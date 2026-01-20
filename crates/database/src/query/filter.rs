@@ -64,11 +64,7 @@ impl QueryStream for Filter {
                         return Ok(QueryStreamNext::WaitingOn(request))
                     },
                 };
-            let unpacked = document.unpack()?;
-            if self
-                .expr
-                .eval(&unpacked.value().0)?
-                .into_boolean()?
+            if self.expr.eval_packed(document.value())?.into_boolean()?
             {
                 return Ok(QueryStreamNext::Ready(Some((document, write_timestamp))));
             }

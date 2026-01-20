@@ -148,6 +148,53 @@ impl<'a, RT: Runtime> UserFacingModel<'a, RT> {
         }
     }
 
+    #[fastrace::trace]
+    #[convex_macro::instrument_future]
+    pub async fn get_with_ts_packed(
+        &mut self,
+        id: DeveloperDocumentId,
+        version: Option<Version>,
+    ) -> anyhow::Result<Option<(PackedDeveloperDocument, WriteTimestamp)>> {
+        if !self
+            .tx
+            .table_mapping()
+            .namespace(self.namespace)
+            .table_number_exists()(id.table())
+        {
+            return Ok(None);
+        }
+        let id_ = self.tx.resolve_developer_id(&id, self.namespace)?;
+        let physical_table_name = self
+            .tx
+            .table_mapping()
+            .namespace(self.namespace)
+            .tablet_name(id_.tablet_id)?;
+        if let Some(table_name) = self
+            .tx
+            .virtual_system_mapping()
+            .system_to_virtual_table(&physical_table_name)
+            .cloned()
+        {
+            log_virtual_table_get();
+            let result = VirtualTable::new(self.tx)
+                .get(self.namespace, id, version)
+                .await;
+            match result {
+                Ok(Some((document, ts))) => {
+                    let packed = PackedDeveloperDocument::pack(&document);
+                    self.record_read_document_packed(&packed, &table_name)?;
+                    Ok(Some((packed, ts)))
+                },
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            }
+        } else {
+            let table_name = self.tx.table_mapping().tablet_name(id_.tablet_id)?;
+            let result = self.tx.get_inner_packed(id_, table_name).await?;
+            Ok(result.map(|(doc, ts)| (PackedDeveloperDocument::from_packed(doc), ts)))
+        }
+    }
+
     /// Returns an error if the component associated with the current namespace
     /// is unmounted. Should be called in all methods that write to user tables.
     async fn require_active_component(&mut self) -> anyhow::Result<()> {

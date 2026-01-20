@@ -19,6 +19,10 @@ use itertools::{
     Either,
     Itertools,
 };
+use packed_value::{
+    ByteBuffer,
+    PackedValue,
+};
 use pb::convex_cursor::{
     cursor::Position as PositionProto,
     IndexKey as IndexKeyProto,
@@ -914,20 +918,21 @@ mod proptest {
     }
 }
 
-fn binary_arithmetic<I, F>(
+fn binary_arithmetic_with<P, I, F>(
     name: &'static str,
-    environ: &ConvexObject,
+    get_path: &P,
     l_expr: &Expression,
     r_expr: &Expression,
     do_ints: I,
     do_floats: F,
 ) -> anyhow::Result<ConvexValue>
 where
+    P: Fn(&FieldPath) -> Option<ConvexValue>,
     I: FnOnce(i64, i64) -> i64,
     F: FnOnce(f64, f64) -> f64,
 {
-    let l = l_expr.eval(environ)?;
-    let r = r_expr.eval(environ)?;
+    let l = l_expr.eval_with(get_path)?;
+    let r = r_expr.eval_with(get_path)?;
 
     let result = match (&l.0, &r.0) {
         (Some(ConvexValue::Int64(l)), Some(ConvexValue::Int64(r))) => {
@@ -954,6 +959,17 @@ impl Expression {
     /// Evaluate the expression and return the result. Expression::Fields are
     /// evaluated on `environ`.
     pub fn eval(&self, environ: &ConvexObject) -> anyhow::Result<MaybeValue> {
+        self.eval_with(&|field_path| environ.get_path(field_path).cloned())
+    }
+
+    pub fn eval_packed(&self, packed: &PackedValue<ByteBuffer>) -> anyhow::Result<MaybeValue> {
+        self.eval_with(&|field_path| packed.get_path(field_path))
+    }
+
+    fn eval_with<P>(&self, get_path: &P) -> anyhow::Result<MaybeValue>
+    where
+        P: Fn(&FieldPath) -> Option<ConvexValue>,
+    {
         // Convert input value into a value that compares with ==, !=, >, <, etc. in
         // the same order as they would be compared in an index.
         let comparable_value = |v: MaybeValue| v.0;
@@ -962,76 +978,86 @@ impl Expression {
             // originate. Until we migrate our index keys, field expressions use the old behavior
             // that maps missing fields to `Value::Null`.
             Expression::Field(field_path) => {
-                return Ok(MaybeValue(environ.get_path(field_path).cloned()));
+                return Ok(MaybeValue(get_path(field_path)));
             },
             Expression::Literal(v) => return Ok(v.clone()),
 
             // Comparison operations need to operate on `ConvexValue`, not `Value`, so they match
             // the ordering in our index keys, which store table IDs.
             Expression::Eq(l_expr, r_expr) => {
-                let l = comparable_value(l_expr.eval(environ)?);
-                let r = comparable_value(r_expr.eval(environ)?);
+                let l = comparable_value(l_expr.eval_with(get_path)?);
+                let r = comparable_value(r_expr.eval_with(get_path)?);
                 ConvexValue::from(l == r)
             },
             Expression::Neq(l_expr, r_expr) => {
-                let l = comparable_value(l_expr.eval(environ)?);
-                let r = comparable_value(r_expr.eval(environ)?);
+                let l = comparable_value(l_expr.eval_with(get_path)?);
+                let r = comparable_value(r_expr.eval_with(get_path)?);
                 ConvexValue::from(l != r)
             },
             Expression::Lt(l_expr, r_expr) => {
-                let l = comparable_value(l_expr.eval(environ)?);
-                let r = comparable_value(r_expr.eval(environ)?);
+                let l = comparable_value(l_expr.eval_with(get_path)?);
+                let r = comparable_value(r_expr.eval_with(get_path)?);
                 ConvexValue::from(l < r)
             },
             Expression::Lte(l_expr, r_expr) => {
-                let l = comparable_value(l_expr.eval(environ)?);
-                let r = comparable_value(r_expr.eval(environ)?);
+                let l = comparable_value(l_expr.eval_with(get_path)?);
+                let r = comparable_value(r_expr.eval_with(get_path)?);
                 ConvexValue::from(l <= r)
             },
             Expression::Gt(l_expr, r_expr) => {
-                let l = comparable_value(l_expr.eval(environ)?);
-                let r = comparable_value(r_expr.eval(environ)?);
+                let l = comparable_value(l_expr.eval_with(get_path)?);
+                let r = comparable_value(r_expr.eval_with(get_path)?);
                 ConvexValue::from(l > r)
             },
             Expression::Gte(l_expr, r_expr) => {
-                let l = comparable_value(l_expr.eval(environ)?);
-                let r = comparable_value(r_expr.eval(environ)?);
+                let l = comparable_value(l_expr.eval_with(get_path)?);
+                let r = comparable_value(r_expr.eval_with(get_path)?);
                 ConvexValue::from(l >= r)
             },
             // Arithmetic operations only work on Int64 and Float64, so we don't have to worry about
             // mapping those from table names to table IDs.
-            Expression::Add(l_expr, r_expr) => {
-                binary_arithmetic("add", environ, l_expr, r_expr, |l, r| l + r, |l, r| l + r)?
-            },
-            Expression::Sub(l_expr, r_expr) => binary_arithmetic(
+            Expression::Add(l_expr, r_expr) => binary_arithmetic_with(
+                "add",
+                get_path,
+                l_expr,
+                r_expr,
+                |l, r| l + r,
+                |l, r| l + r,
+            )?,
+            Expression::Sub(l_expr, r_expr) => binary_arithmetic_with(
                 "subtract",
-                environ,
+                get_path,
                 l_expr,
                 r_expr,
                 |l, r| l - r,
                 |l, r| l - r,
             )?,
-            Expression::Mul(l_expr, r_expr) => binary_arithmetic(
+            Expression::Mul(l_expr, r_expr) => binary_arithmetic_with(
                 "multiply",
-                environ,
+                get_path,
                 l_expr,
                 r_expr,
                 |l, r| l * r,
                 |l, r| l * r,
             )?,
-            Expression::Div(l_expr, r_expr) => binary_arithmetic(
+            Expression::Div(l_expr, r_expr) => binary_arithmetic_with(
                 "divide",
-                environ,
+                get_path,
                 l_expr,
                 r_expr,
                 |l, r| l / r,
                 |l, r| l / r,
             )?,
-            Expression::Mod(l_expr, r_expr) => {
-                binary_arithmetic("mod", environ, l_expr, r_expr, |l, r| l % r, |l, r| l % r)?
-            },
+            Expression::Mod(l_expr, r_expr) => binary_arithmetic_with(
+                "mod",
+                get_path,
+                l_expr,
+                r_expr,
+                |l, r| l % r,
+                |l, r| l % r,
+            )?,
             Expression::Neg(x_expr) => {
-                let x = x_expr.eval(environ)?;
+                let x = x_expr.eval_with(get_path)?;
                 match &x.0 {
                     Some(ConvexValue::Int64(x)) => ConvexValue::from(-*x),
                     Some(ConvexValue::Float64(x)) => ConvexValue::from(-*x),
@@ -1044,7 +1070,7 @@ impl Expression {
             // Similarly, boolean operations only work on booleans, which don't contain table IDs.
             Expression::And(vs) => {
                 for v in vs {
-                    if !v.eval(environ)?.into_boolean()? {
+                    if !v.eval_with(get_path)?.into_boolean()? {
                         return Ok(ConvexValue::from(false).into());
                     }
                 }
@@ -1052,13 +1078,15 @@ impl Expression {
             },
             Expression::Or(vs) => {
                 for v in vs {
-                    if v.eval(environ)?.into_boolean()? {
+                    if v.eval_with(get_path)?.into_boolean()? {
                         return Ok(ConvexValue::from(true).into());
                     }
                 }
                 ConvexValue::from(false)
             },
-            Expression::Not(x_expr) => ConvexValue::from(!x_expr.eval(environ)?.into_boolean()?),
+            Expression::Not(x_expr) => {
+                ConvexValue::from(!x_expr.eval_with(get_path)?.into_boolean()?)
+            },
         };
         Ok(result.into())
     }
@@ -1178,6 +1206,7 @@ impl Query {
 mod tests {
 
     use cmd_util::env::env_config;
+    use packed_value::PackedValue;
     use proptest::prelude::*;
     use sync_types::testing::assert_roundtrips;
     use value::{
@@ -1337,6 +1366,24 @@ mod tests {
             )?;
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_expr_eval_packed_matches_unpacked() -> anyhow::Result<()> {
+        let environ = assert_obj!(
+            "email" => "bw@convex.dev",
+            "salary" => 5,
+        );
+        let packed = PackedValue::pack_object(&environ);
+        let expr = Expression::Gt(
+            Box::new(Expression::Field("salary".parse()?)),
+            Box::new(Expression::Literal(maybe_val!(4))),
+        );
+        assert_eq!(expr.eval(&environ)?, expr.eval_packed(&packed)?);
+
+        let missing_expr = Expression::Field("missing".parse()?);
+        assert_eq!(missing_expr.eval_packed(&packed)?, maybe_val!(undefined));
         Ok(())
     }
 
