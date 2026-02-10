@@ -12,6 +12,7 @@ use common::{
         ComponentPath,
     },
     document::{
+        CreationTime,
         DocumentUpdateRef,
         ResolvedDocument,
     },
@@ -242,6 +243,10 @@ pub struct Snapshot {
     pub virtual_system_mapping: VirtualSystemMapping,
     pub text_indexes: TextIndexManager,
     pub vector_indexes: VectorIndexManager,
+    /// Per-table lower bounds for monotonic creation time rewriting.
+    /// For a table in this map, newly assigned `_creationTime` must be
+    /// strictly greater than the stored bound.
+    pub monotonic_creation_time_lower_bounds: OrdMap<TabletId, CreationTime>,
 }
 
 impl Snapshot {
