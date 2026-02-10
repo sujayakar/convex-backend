@@ -195,6 +195,7 @@ export class TableDefinition<
   private stagedSearchIndexes: SearchIndex[];
   private vectorIndexes: VectorIndex[];
   private stagedVectorIndexes: VectorIndex[];
+  private _monotonicCreationTime: boolean = false;
   // The type of documents stored in this table.
   validator: DocumentType;
 
@@ -529,6 +530,27 @@ export class TableDefinition<
   }
 
   /**
+   * Enable monotonic creation times for this table.
+   *
+   * When enabled, the `_creationTime` field for documents in this table will be
+   * guaranteed to be monotonically increasing in commit order, rather than
+   * transaction execution order. This ensures that documents committed later
+   * will always have a higher `_creationTime` than documents committed earlier,
+   * even if their transactions executed concurrently.
+   *
+   * @returns A {@link TableDefinition} with monotonic creation times enabled.
+   */
+  monotonicCreationTime(): TableDefinition<
+    DocumentType,
+    Indexes,
+    SearchIndexes,
+    VectorIndexes
+  > {
+    this._monotonicCreationTime = true;
+    return this;
+  }
+
+  /**
    * Work around for https://github.com/microsoft/TypeScript/issues/57035
    */
   protected self(): TableDefinition<
@@ -561,6 +583,7 @@ export class TableDefinition<
       vectorIndexes: this.vectorIndexes,
       stagedVectorIndexes: this.stagedVectorIndexes,
       documentType,
+      ...(this._monotonicCreationTime && { monotonicCreationTime: true }),
     };
   }
 }
@@ -685,6 +708,7 @@ export class SchemaDefinition<
           vectorIndexes,
           stagedVectorIndexes,
           documentType,
+          monotonicCreationTime,
         } = definition.export();
         return {
           tableName,
@@ -695,6 +719,7 @@ export class SchemaDefinition<
           vectorIndexes,
           stagedVectorIndexes,
           documentType,
+          ...(monotonicCreationTime && { monotonicCreationTime }),
         };
       }),
       schemaValidation: this.schemaValidation,

@@ -204,6 +204,7 @@ impl FivetranTableSchema {
         })?;
 
         Ok(TableDefinition {
+            monotonic_creation_time: false,
             table_name,
             document_type,
             indexes,
@@ -662,6 +663,7 @@ impl FivetranTableSchema {
         let document_schema = DocumentSchema::Union(vec![object_schema]);
 
         Ok(TableDefinition {
+            monotonic_creation_time: false,
             table_name,
             indexes,
             staged_db_indexes: BTreeMap::new(),

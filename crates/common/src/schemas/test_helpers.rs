@@ -146,6 +146,7 @@ macro_rules! db_schema_with_indexes {
                         vector_indexes,
                         staged_vector_indexes,
                         document_type,
+                        monotonic_creation_time: false,
                     };
                     tables.insert(table_name, table_def);
                 )*

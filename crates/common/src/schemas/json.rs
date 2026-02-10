@@ -122,6 +122,8 @@ pub struct TableDefinitionJson {
     vector_indexes: Option<Vec<VectorIndexSchemaJson>>,
     staged_vector_indexes: Option<Vec<VectorIndexSchemaJson>>,
     document_type: Option<ValidatorJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monotonic_creation_time: Option<bool>,
 }
 
 impl JsonForm for TableDefinition {
@@ -296,6 +298,7 @@ impl TryFrom<TableDefinitionJson> for TableDefinition {
             vector_indexes,
             staged_vector_indexes,
             document_type,
+            monotonic_creation_time: j.monotonic_creation_time.unwrap_or(false),
         })
     }
 }
@@ -313,6 +316,7 @@ impl TryFrom<TableDefinition> for TableDefinitionJson {
             vector_indexes,
             staged_vector_indexes,
             document_type,
+            monotonic_creation_time,
         }: TableDefinition,
     ) -> anyhow::Result<Self> {
         let table_name = String::from(table_name);
@@ -360,6 +364,11 @@ impl TryFrom<TableDefinition> for TableDefinitionJson {
             vector_indexes,
             staged_vector_indexes,
             document_type,
+            monotonic_creation_time: if monotonic_creation_time {
+                Some(true)
+            } else {
+                None
+            },
         })
     }
 }

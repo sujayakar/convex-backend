@@ -727,6 +727,120 @@ test("Experimental API table.[' indexes']() returns indexes", () => {
   ]);
 });
 
+describe("monotonicCreationTime", () => {
+  test("monotonicCreationTime() enables the flag", () => {
+    const table = defineTable({
+      a: v.string(),
+    }).monotonicCreationTime();
+
+    expect(table.export().monotonicCreationTime).toBe(true);
+  });
+
+  test("monotonicCreationTime() returns correct type", () => {
+    const table = defineTable({
+      a: v.string(),
+    }).monotonicCreationTime();
+
+    // Verify it's still a TableDefinition
+    expect(table).toBeInstanceOf(defineTable({}).constructor);
+    // Verify we can still call other methods
+    const withIndex = table.index("by_a", ["a"]);
+    expect(withIndex.export().indexes).toEqual([
+      { indexDescriptor: "by_a", fields: ["a"] },
+    ]);
+    expect(withIndex.export().monotonicCreationTime).toBe(true);
+  });
+
+  test("monotonicCreationTime() can be chained with indexes", () => {
+    const table = defineTable({
+      a: v.string(),
+      b: v.string(),
+    })
+      .index("by_a", ["a"])
+      .monotonicCreationTime()
+      .index("by_b", ["b"]);
+
+    const exported = table.export();
+    expect(exported.monotonicCreationTime).toBe(true);
+    expect(exported.indexes).toEqual([
+      { indexDescriptor: "by_a", fields: ["a"] },
+      { indexDescriptor: "by_b", fields: ["b"] },
+    ]);
+  });
+
+  test("monotonicCreationTime() can be chained with searchIndex", () => {
+    const table = defineTable({
+      text: v.string(),
+    })
+      .monotonicCreationTime()
+      .searchIndex("search_text", {
+        searchField: "text",
+      });
+
+    const exported = table.export();
+    expect(exported.monotonicCreationTime).toBe(true);
+    expect(exported.searchIndexes).toEqual([
+      {
+        indexDescriptor: "search_text",
+        searchField: "text",
+        filterFields: [],
+      },
+    ]);
+  });
+
+  test("monotonicCreationTime() can be chained with vectorIndex", () => {
+    const table = defineTable({
+      embedding: v.array(v.float64()),
+    })
+      .monotonicCreationTime()
+      .vectorIndex("vector_embedding", {
+        vectorField: "embedding",
+        dimensions: 1536,
+      });
+
+    const exported = table.export();
+    expect(exported.monotonicCreationTime).toBe(true);
+    expect(exported.vectorIndexes).toEqual([
+      {
+        indexDescriptor: "vector_embedding",
+        vectorField: "embedding",
+        dimensions: 1536,
+        filterFields: [],
+      },
+    ]);
+  });
+
+  test("monotonicCreationTime is omitted when not enabled", () => {
+    const table = defineTable({
+      a: v.string(),
+    });
+
+    expect(table.export().monotonicCreationTime).toBeUndefined();
+  });
+
+  test("monotonicCreationTime is included in schema export", () => {
+    const schema = defineSchema({
+      table: defineTable({
+        a: v.string(),
+      }).monotonicCreationTime(),
+    });
+
+    const exported = JSON.parse(schema.export());
+    expect(exported.tables[0].monotonicCreationTime).toBe(true);
+  });
+
+  test("monotonicCreationTime is omitted in schema export when not enabled", () => {
+    const schema = defineSchema({
+      table: defineTable({
+        a: v.string(),
+      }),
+    });
+
+    const exported = JSON.parse(schema.export());
+    expect(exported.tables[0].monotonicCreationTime).toBeUndefined();
+  });
+});
+
 describe("JsonTypesFromSchema", () => {
   test("TableDefinition includes field types", () => {
     const table = defineTable({
