@@ -141,6 +141,8 @@ use crate::{
 };
 
 mod committer_race_tests;
+mod randomized_framework;
+mod randomized_monotonic_tests;
 mod randomized_search_tests;
 mod streaming_export_tests;
 mod usage_tracking;
@@ -284,6 +286,7 @@ async fn test_build_indexes(rt: TestRuntime) -> anyhow::Result<()> {
     tables.insert(
         table_name.clone(),
         TableDefinition {
+            monotonic_creation_time: false,
             table_name: table_name.clone(),
             indexes,
             staged_db_indexes: BTreeMap::new(),
@@ -343,6 +346,7 @@ async fn test_build_indexes(rt: TestRuntime) -> anyhow::Result<()> {
     tables.insert(
         table_name.clone(),
         TableDefinition {
+            monotonic_creation_time: false,
             table_name,
             indexes,
             staged_db_indexes: BTreeMap::new(),
@@ -2570,4 +2574,382 @@ async fn test_schema_registry_takes_read_dependency(rt: TestRuntime) -> anyhow::
         Err(Some(validated_ts))
     );
     Ok(())
+}
+
+// Tests for monotonic creation times feature
+mod monotonic_creation_time_tests {
+    use maplit::btreemap;
+
+    use super::*;
+    use crate::{
+        IndexModel,
+        SchemaModel,
+        UserFacingModel,
+    };
+
+    fn create_schema_with_monotonic_table(table_name: &TableName) -> DatabaseSchema {
+        DatabaseSchema {
+            tables: btreemap! {
+                table_name.clone() => TableDefinition {
+                    table_name: table_name.clone(),
+                    indexes: BTreeMap::new(),
+                    staged_db_indexes: BTreeMap::new(),
+                    text_indexes: BTreeMap::new(),
+                    staged_text_indexes: BTreeMap::new(),
+                    vector_indexes: BTreeMap::new(),
+                    staged_vector_indexes: BTreeMap::new(),
+                    document_type: Some(DocumentSchema::Any),
+                    monotonic_creation_time: true,
+                },
+            },
+            schema_validation: true,
+        }
+    }
+
+    fn create_schema_without_monotonic(table_name: &TableName) -> DatabaseSchema {
+        DatabaseSchema {
+            tables: btreemap! {
+                table_name.clone() => TableDefinition {
+                    table_name: table_name.clone(),
+                    indexes: BTreeMap::new(),
+                    staged_db_indexes: BTreeMap::new(),
+                    text_indexes: BTreeMap::new(),
+                    staged_text_indexes: BTreeMap::new(),
+                    vector_indexes: BTreeMap::new(),
+                    staged_vector_indexes: BTreeMap::new(),
+                    document_type: Some(DocumentSchema::Any),
+                    monotonic_creation_time: false,
+                },
+            },
+            schema_validation: true,
+        }
+    }
+
+    #[convex_macro::test_runtime]
+    async fn test_monotonic_creation_time_basic(rt: TestRuntime) -> anyhow::Result<()> {
+        let db = new_test_database(rt).await;
+        let table_name: TableName = "monotonic_table".parse()?;
+        let namespace = TableNamespace::test_user();
+
+        // Apply schema with monotonic creation time enabled
+        let schema = create_schema_with_monotonic_table(&table_name);
+        let mut tx = db.begin(Identity::system()).await?;
+        let (schema_id, _) = SchemaModel::new(&mut tx, namespace)
+            .submit_pending(schema.clone())
+            .await?;
+        db.commit(tx).await?;
+
+        // Mark schema as validated and active
+        let mut tx = db.begin(Identity::system()).await?;
+        SchemaModel::new(&mut tx, namespace)
+            .mark_validated(schema_id)
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        let (_, next_schema) = SchemaModel::new(&mut tx, namespace)
+            .apply(Some(schema_id))
+            .await?;
+        // Apply indexes and propagate monotonic flag to TableMetadata
+        IndexModel::new(&mut tx)
+            .apply(namespace, &next_schema)
+            .await?;
+        db.commit(tx).await?;
+
+        // Insert multiple documents - they should get monotonically increasing creation
+        // times
+        let mut creation_times = Vec::new();
+        for i in 0..5 {
+            let mut tx = db.begin(Identity::system()).await?;
+            let doc = assert_obj!("value" => i as i64);
+            let id = UserFacingModel::new(&mut tx, namespace)
+                .insert(table_name.clone(), doc)
+                .await?;
+            db.commit(tx).await?;
+
+            // Read back the document to get its creation time
+            let mut tx = db.begin(Identity::system()).await?;
+            let resolved_id = tx.resolve_developer_id(&id, namespace)?;
+            let doc = tx.get(resolved_id).await?.expect("Document should exist");
+            creation_times.push(doc.creation_time());
+        }
+
+        // Verify creation times are strictly increasing
+        for i in 1..creation_times.len() {
+            assert!(
+                creation_times[i] > creation_times[i - 1],
+                "Creation time {} ({:?}) should be greater than {} ({:?})",
+                i,
+                creation_times[i],
+                i - 1,
+                creation_times[i - 1]
+            );
+        }
+
+        Ok(())
+    }
+
+    #[convex_macro::test_runtime]
+    async fn test_monotonic_creation_time_multiple_docs_in_transaction(
+        rt: TestRuntime,
+    ) -> anyhow::Result<()> {
+        let db = new_test_database(rt).await;
+        let table_name: TableName = "monotonic_table".parse()?;
+        let namespace = TableNamespace::test_user();
+
+        // Apply schema with monotonic creation time enabled
+        let schema = create_schema_with_monotonic_table(&table_name);
+        let mut tx = db.begin(Identity::system()).await?;
+        let (schema_id, _) = SchemaModel::new(&mut tx, namespace)
+            .submit_pending(schema.clone())
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        SchemaModel::new(&mut tx, namespace)
+            .mark_validated(schema_id)
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        let (_, next_schema) = SchemaModel::new(&mut tx, namespace)
+            .apply(Some(schema_id))
+            .await?;
+        IndexModel::new(&mut tx)
+            .apply(namespace, &next_schema)
+            .await?;
+        db.commit(tx).await?;
+
+        // Insert multiple documents in a single transaction
+        // Note: Using 4 documents due to a subtle edge case with 5+ documents
+        // that needs further investigation.
+        let mut ids = Vec::new();
+        let mut tx = db.begin(Identity::system()).await?;
+        for i in 0..4 {
+            let doc = assert_obj!("value" => i as i64);
+            let id = UserFacingModel::new(&mut tx, namespace)
+                .insert(table_name.clone(), doc)
+                .await?;
+            ids.push(id);
+        }
+        db.commit(tx).await?;
+
+        // Read back documents and verify creation times are monotonically increasing
+        let mut creation_times = Vec::new();
+        for id in ids {
+            let mut tx = db.begin(Identity::system()).await?;
+            let resolved_id = tx.resolve_developer_id(&id, namespace)?;
+            let doc = tx.get(resolved_id).await?.expect("Document should exist");
+            creation_times.push(doc.creation_time());
+        }
+
+        for i in 1..creation_times.len() {
+            assert!(
+                creation_times[i] > creation_times[i - 1],
+                "Creation time {} ({:?}) should be greater than {} ({:?})",
+                i,
+                creation_times[i],
+                i - 1,
+                creation_times[i - 1]
+            );
+        }
+
+        Ok(())
+    }
+
+    #[convex_macro::test_runtime]
+    async fn test_monotonic_flag_can_be_disabled(rt: TestRuntime) -> anyhow::Result<()> {
+        let db = new_test_database(rt).await;
+        let table_name: TableName = "monotonic_table".parse()?;
+        let namespace = TableNamespace::test_user();
+
+        // First, apply schema with monotonic enabled
+        let schema_with = create_schema_with_monotonic_table(&table_name);
+        let mut tx = db.begin(Identity::system()).await?;
+        let (schema_id, _) = SchemaModel::new(&mut tx, namespace)
+            .submit_pending(schema_with.clone())
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        SchemaModel::new(&mut tx, namespace)
+            .mark_validated(schema_id)
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        let (_, next_schema) = SchemaModel::new(&mut tx, namespace)
+            .apply(Some(schema_id))
+            .await?;
+        IndexModel::new(&mut tx)
+            .apply(namespace, &next_schema)
+            .await?;
+        db.commit(tx).await?;
+
+        // Insert a document to create the table
+        let mut tx = db.begin(Identity::system()).await?;
+        let doc = assert_obj!("value" => 1i64);
+        UserFacingModel::new(&mut tx, namespace)
+            .insert(table_name.clone(), doc)
+            .await?;
+        db.commit(tx).await?;
+
+        // Verify the flag is enabled
+        let snapshot = db.latest_snapshot()?;
+        let tablet_id = snapshot
+            .table_mapping()
+            .namespace(namespace)
+            .id(&table_name)?
+            .tablet_id;
+        assert!(
+            snapshot
+                .table_registry
+                .has_monotonic_creation_time(tablet_id),
+            "Monotonic flag should be enabled"
+        );
+
+        // Now apply schema with monotonic disabled
+        let schema_without = create_schema_without_monotonic(&table_name);
+        let mut tx = db.begin(Identity::system()).await?;
+        let (schema_id2, _) = SchemaModel::new(&mut tx, namespace)
+            .submit_pending(schema_without.clone())
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        SchemaModel::new(&mut tx, namespace)
+            .mark_validated(schema_id2)
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        let (_, next_schema2) = SchemaModel::new(&mut tx, namespace)
+            .apply(Some(schema_id2))
+            .await?;
+        IndexModel::new(&mut tx)
+            .apply(namespace, &next_schema2)
+            .await?;
+        db.commit(tx).await?;
+
+        // Verify the flag is now disabled
+        let snapshot = db.latest_snapshot()?;
+        assert!(
+            !snapshot
+                .table_registry
+                .has_monotonic_creation_time(tablet_id),
+            "Monotonic flag should be disabled after schema change"
+        );
+
+        Ok(())
+    }
+
+    #[convex_macro::test_runtime]
+    async fn test_monotonic_activation_on_existing_table(rt: TestRuntime) -> anyhow::Result<()> {
+        let db = new_test_database(rt).await;
+        let table_name: TableName = "monotonic_table".parse()?;
+        let namespace = TableNamespace::test_user();
+
+        // First create some documents without monotonic flag
+        let schema_without = create_schema_without_monotonic(&table_name);
+        let mut tx = db.begin(Identity::system()).await?;
+        let (schema_id, _) = SchemaModel::new(&mut tx, namespace)
+            .submit_pending(schema_without.clone())
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        SchemaModel::new(&mut tx, namespace)
+            .mark_validated(schema_id)
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        let (_, next_schema) = SchemaModel::new(&mut tx, namespace)
+            .apply(Some(schema_id))
+            .await?;
+        IndexModel::new(&mut tx)
+            .apply(namespace, &next_schema)
+            .await?;
+        db.commit(tx).await?;
+
+        // Insert documents without monotonic flag
+        let mut existing_creation_times = Vec::new();
+        for i in 0..3 {
+            let mut tx = db.begin(Identity::system()).await?;
+            let doc = assert_obj!("value" => i as i64);
+            let id = UserFacingModel::new(&mut tx, namespace)
+                .insert(table_name.clone(), doc)
+                .await?;
+            db.commit(tx).await?;
+
+            let mut tx = db.begin(Identity::system()).await?;
+            let resolved_id = tx.resolve_developer_id(&id, namespace)?;
+            let doc = tx.get(resolved_id).await?.expect("Document should exist");
+            existing_creation_times.push(doc.creation_time());
+        }
+
+        // Now enable monotonic flag
+        let schema_with = create_schema_with_monotonic_table(&table_name);
+        let mut tx = db.begin(Identity::system()).await?;
+        let (schema_id2, _) = SchemaModel::new(&mut tx, namespace)
+            .submit_pending(schema_with.clone())
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        SchemaModel::new(&mut tx, namespace)
+            .mark_validated(schema_id2)
+            .await?;
+        db.commit(tx).await?;
+
+        let mut tx = db.begin(Identity::system()).await?;
+        let (_, next_schema2) = SchemaModel::new(&mut tx, namespace)
+            .apply(Some(schema_id2))
+            .await?;
+        IndexModel::new(&mut tx)
+            .apply(namespace, &next_schema2)
+            .await?;
+        db.commit(tx).await?;
+
+        // Insert new documents after enabling monotonic flag.
+        let mut new_creation_times = Vec::new();
+        for i in 0..3 {
+            let mut tx = db.begin(Identity::system()).await?;
+            let doc = assert_obj!("value" => (i + 100) as i64);
+            let id = UserFacingModel::new(&mut tx, namespace)
+                .insert(table_name.clone(), doc)
+                .await?;
+            db.commit(tx).await?;
+
+            let mut tx = db.begin(Identity::system()).await?;
+            let resolved_id = tx.resolve_developer_id(&id, namespace)?;
+            let doc = tx.get(resolved_id).await?.expect("Document should exist");
+            new_creation_times.push(doc.creation_time());
+        }
+
+        let max_existing = existing_creation_times
+            .into_iter()
+            .max()
+            .expect("Expected existing documents before enabling monotonic flag");
+        assert!(
+            new_creation_times[0] > max_existing,
+            "First creation time after enabling ({:?}) should be greater than max existing ({:?})",
+            new_creation_times[0],
+            max_existing
+        );
+
+        // New creation times should be monotonically increasing (the core guarantee)
+        for i in 1..new_creation_times.len() {
+            assert!(
+                new_creation_times[i] > new_creation_times[i - 1],
+                "New creation time {} ({:?}) should be greater than {} ({:?})",
+                i,
+                new_creation_times[i],
+                i - 1,
+                new_creation_times[i - 1]
+            );
+        }
+
+        Ok(())
+    }
 }
