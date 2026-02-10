@@ -35,6 +35,28 @@ test-self-hosted *ARGS:
     just _test self-hosted-backend "$@"
     docker compose -f ../../self-hosted/docker/docker-compose.yml down
 
+# Run integration tests against a locally running backend (convex-local-backend).
+# Prerequisites:
+#   1. Start the backend in another terminal from repo root:
+#        just run-local-backend
+#   2. Build npm packages once: from repo root, run `just rush build -t js-integration-tests`
+# Then from this directory (npm-packages/js-integration-tests) run:
+#   just test-local-backend
+# Or to run a single test file:
+#   just test-local-backend monotonic_creation_time.test.ts
+test-local-backend *ARGS:
+    #!/usr/bin/env bash
+    set -e
+    ROOT_DIR="$(cd ../.. && pwd)"
+    ADMIN_KEY="$(cat "$ROOT_DIR/crates/keybroker/dev/admin_key.txt")"
+    export DEPLOYMENT_URL="http://127.0.0.1:3210"
+    export SITE_URL="http://127.0.0.1:3211"
+    export ADMIN_KEY
+    echo "Deploying to $DEPLOYMENT_URL ..."
+    npx convex deploy --url "$DEPLOYMENT_URL" --admin-key "$ADMIN_KEY"
+    echo "Running tests ..."
+    npm run test-integration -- "${@}"
+
 # Run tests without building the NPM packages or binaries
 _test *ARGS:
     #!/usr/bin/env bash

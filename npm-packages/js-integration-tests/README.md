@@ -3,6 +3,38 @@
 These tests use the `ConvexHttpClient` and `ConvexReactClient` to talk to a real
 backend.
 
+## Run against a local backend (convex-local-backend)
+
+To run tests against a backend you start yourself (e.g. for working on backend
+or integration tests without the full harness):
+
+1. **Start the backend** (from repo root):
+   ```sh
+   just run-local-backend
+   ```
+   Or: `cargo run -p local_backend --bin convex-local-backend` (listens on
+   port 3210 by default).
+
+2. **Build this package and its deps** (from repo root, once):
+   ```sh
+   just rush build -t js-integration-tests
+   ```
+
+3. **Deploy and run tests** (from this directory, `npm-packages/js-integration-tests`):
+   ```sh
+   just test-local-backend
+   ```
+   To run a single test file:
+   ```sh
+   just test-local-backend monotonic_creation_time.test.ts
+   ```
+
+You can also set `DEPLOYMENT_URL`, `SITE_URL`, and `ADMIN_KEY` yourself and run
+`npm run test-integration`; `common.ts` uses the dev admin key from
+`crates/keybroker/dev/admin_key.txt` when those are not set.
+
+## Run with backend harness (CI / full stack)
+
 Run `just test` from this directory to run a rush build, and then run
 integration tests.
 
