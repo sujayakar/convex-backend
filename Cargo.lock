@@ -5060,6 +5060,7 @@ dependencies = [
  "itertools 0.14.0",
  "keybroker",
  "libc",
+ "lz4_flex",
  "maplit",
  "metrics",
  "mime",
@@ -5709,6 +5710,9 @@ name = "lz4_flex"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a8cbbb2831780bc3b9c15a41f5b49222ef756b6730a95f3decfdd15903eb5a3"
+dependencies = [
+ "twox-hash 1.6.3",
+]
 
 [[package]]
 name = "macro_rules_attribute"
@@ -6169,7 +6173,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
- "twox-hash",
+ "twox-hash 2.1.0",
  "url",
  "webpki-roots",
 ]
@@ -10312,6 +10316,16 @@ dependencies = [
 [[package]]
 name = "tuple_struct"
 version = "0.1.0"
+
+[[package]]
+name = "twox-hash"
+version = "1.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
+dependencies = [
+ "cfg-if",
+ "static_assertions",
+]
 
 [[package]]
 name = "twox-hash"
