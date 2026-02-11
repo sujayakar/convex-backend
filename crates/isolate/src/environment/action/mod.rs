@@ -115,6 +115,9 @@ use value::{
 pub use self::{
     async_syscall::parse_name_or_reference,
     task::{
+        FileResponse,
+        FormPart,
+        FormPartFile,
         TaskResponse,
         TaskResponseEnum,
     },

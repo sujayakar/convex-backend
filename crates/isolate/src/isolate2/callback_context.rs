@@ -478,6 +478,7 @@ mod op_provider {
         NamespacedTableMapping,
     };
 
+
     use super::CallbackContext;
     use crate::{
         environment::AsyncOpRequest,
@@ -497,8 +498,7 @@ mod op_provider {
         }
 
         fn crypto_rng(&mut self) -> anyhow::Result<crate::environment::crypto_rng::CryptoRng> {
-            // TODO: this needs to detect if we are in an action
-            anyhow::bail!("TODO: CryptoRng in isolate2")
+            self.context_state()?.environment.crypto_rng()
         }
 
         fn scope(&mut self) -> v8::PinScope<'_, 'i> {
@@ -589,9 +589,9 @@ mod op_provider {
 
         fn get_environment_variable(
             &mut self,
-            _name: EnvVarName,
+            name: EnvVarName,
         ) -> anyhow::Result<Option<EnvVarValue>> {
-            todo!()
+            self.context_state()?.environment.get_environment_variable(name)
         }
 
         fn get_all_table_mappings(&mut self) -> anyhow::Result<NamespacedTableMapping> {
