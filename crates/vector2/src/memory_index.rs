@@ -12,21 +12,18 @@ use imbl::{
     OrdSet,
     Vector,
 };
-use qdrant_segment::spaces::{
-    metric::Metric,
-    simple::CosineMetric,
-};
 use value::InternalId;
 
 use crate::{
-    qdrant_index::{
-        NormalizedQdrantDocument,
-        QdrantDocument,
-    },
     query::{
         CompiledVectorFilter,
         CompiledVectorSearch,
         VectorSearchQueryResult,
+    },
+    spann::{
+        cosine,
+        NormalizedVectorDocument,
+        VectorDocument,
     },
 };
 
@@ -38,7 +35,7 @@ pub struct MemoryVectorIndex {
     documents: OrdMap<InternalId, Revision>,
     documents_size: usize,
 
-    tombstones: Vector<(WriteTimestamp, NormalizedQdrantDocument)>,
+    tombstones: Vector<(WriteTimestamp, NormalizedVectorDocument)>,
     tombstones_size: usize,
 
     transactions: OrdSet<WriteTimestamp>,
@@ -67,7 +64,7 @@ impl MemoryVectorIndex {
         size += self.documents_size;
 
         size +=
-            self.tombstones.len() * mem::size_of::<(WriteTimestamp, NormalizedQdrantDocument)>();
+            self.tombstones.len() * mem::size_of::<(WriteTimestamp, NormalizedVectorDocument)>();
         size += self.tombstones_size;
 
         size += self.transactions.len() * mem::size_of::<WriteTimestamp>();
@@ -87,8 +84,8 @@ impl MemoryVectorIndex {
         &mut self,
         id: InternalId,
         ts: WriteTimestamp,
-        old_value: Option<QdrantDocument>,
-        new_value: Option<QdrantDocument>,
+        old_value: Option<VectorDocument>,
+        new_value: Option<VectorDocument>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.min_ts <= ts,
@@ -110,7 +107,7 @@ impl MemoryVectorIndex {
             }
         }
         if let Some(old_value) = old_value {
-            let normalized = NormalizedQdrantDocument::from(old_value);
+            let normalized = NormalizedVectorDocument::from(old_value);
             self.tombstones_size += normalized.size();
             self.tombstones.push_back((ts, normalized));
         }
@@ -119,7 +116,7 @@ impl MemoryVectorIndex {
             self.documents_size -= old_value.document.size();
         }
         if let Some(new_value) = new_value {
-            let normalized = NormalizedQdrantDocument::from(new_value);
+            let normalized = NormalizedVectorDocument::from(new_value);
             self.documents_size += normalized.size();
             let revision = Revision {
                 ts,
@@ -164,7 +161,6 @@ impl MemoryVectorIndex {
         }
 
         self.min_ts = new_min_ts;
-        self.min_ts = new_min_ts;
         self.max_ts = self.max_ts.max(new_min_ts);
 
         Ok(())
@@ -203,12 +199,12 @@ impl MemoryVectorIndex {
             self.min_ts,
         );
         let query_vector = Vec::from(query.vector.clone());
-        let query_vector = CosineMetric::preprocess(query_vector);
+        let query_vector = cosine::preprocess(query_vector);
         let mut candidates = vec![];
 
         for (&id, revision) in &self.documents {
             if revision.document.matches(query) {
-                let distance = CosineMetric::similarity(&query_vector, &revision.document.vector);
+                let distance = cosine::cosine_similarity(&query_vector, &revision.document.vector);
                 candidates.push(VectorSearchQueryResult {
                     score: distance,
                     id,
@@ -227,10 +223,10 @@ impl MemoryVectorIndex {
 #[derive(Clone)]
 pub struct Revision {
     ts: WriteTimestamp,
-    document: NormalizedQdrantDocument,
+    document: NormalizedVectorDocument,
 }
 
-impl NormalizedQdrantDocument {
+impl NormalizedVectorDocument {
     fn matches(&self, query: &CompiledVectorSearch) -> bool {
         if query.filter_conditions.is_empty() {
             return true;

@@ -14,15 +14,17 @@ use common::{
     runtime::Runtime,
 };
 use futures::FutureExt;
-use qdrant_segment::segment::Segment;
 use tantivy::Searcher;
 use text_search::tracker::{
     load_alive_bitset,
     StaticDeletionTracker,
 };
-use vector::qdrant_segments::{
-    load_disk_segment,
-    UntarredVectorDiskSegmentPaths,
+use vector::{
+    qdrant_segments::{
+        load_disk_segment,
+        SpannSegment,
+        UntarredVectorDiskSegmentPaths,
+    },
 };
 
 use crate::disk_index::index_reader_for_directory;
@@ -32,7 +34,7 @@ struct VectorSegmentGenerator<RT: Runtime> {
     thread_pool: BoundedThreadPool<RT>,
 }
 
-pub struct SizedVectorSegment(pub Segment);
+pub struct SizedVectorSegment(pub SpannSegment);
 
 impl SizedValue for SizedVectorSegment {
     fn size(&self) -> u64 {
@@ -41,7 +43,7 @@ impl SizedValue for SizedVectorSegment {
 }
 
 impl Deref for SizedVectorSegment {
-    type Target = Segment;
+    type Target = SpannSegment;
 
     fn deref(&self) -> &Self::Target {
         &self.0

@@ -26,10 +26,6 @@ use futures::{
     TryStreamExt,
 };
 use itertools::Itertools;
-use qdrant_segment::{
-    id_tracker::IdTracker,
-    types::ExtendedPointId,
-};
 use storage::Storage;
 use tempfile::TempDir;
 use tokio::fs;
@@ -235,9 +231,9 @@ pub struct PreviousVectorSegments(pub Vec<MutableFragmentedSegmentMetadata>);
 
 // A circular dependency workaround for search / database / vector.
 impl PreviousVectorSegmentsHack for PreviousVectorSegments {
-    fn maybe_delete_qdrant(&mut self, qdrant_id: ExtendedPointId) -> anyhow::Result<()> {
+    fn maybe_delete_vector(&mut self, external_id: QdrantExternalId) -> anyhow::Result<()> {
         for segment in &mut self.0 {
-            segment.maybe_delete(qdrant_id)?;
+            segment.maybe_delete(&external_id)?;
         }
         Ok(())
     }
@@ -246,7 +242,7 @@ impl PreviousVectorSegmentsHack for PreviousVectorSegments {
 impl PreviousVectorSegments {
     pub fn maybe_delete_convex(&mut self, convex_id: InternalId) -> anyhow::Result<()> {
         let point_id = QdrantExternalId::try_from(convex_id)?;
-        self.maybe_delete_qdrant(*point_id)
+        self.maybe_delete_vector(point_id)
     }
 }
 
@@ -333,8 +329,11 @@ impl MutableFragmentedSegmentMetadata {
         })
     }
 
-    pub fn maybe_delete(&mut self, external_id: ExtendedPointId) -> anyhow::Result<()> {
-        if let Some(internal_id) = self.id_tracker.internal_id(external_id)
+    pub fn maybe_delete(&mut self, external_id: &QdrantExternalId) -> anyhow::Result<()> {
+        // Convert the ExternalId (UUID) to InternalId for lookup
+        let internal_id_bytes = external_id.as_bytes();
+        let convex_id = InternalId(*internal_id_bytes);
+        if let Some(internal_id) = self.id_tracker.internal_id(convex_id)
             // Documents may be updated N times, each of which will trigger a call to maybe_deleted.
             // We need to ignore deletes for already deleted points.
             // Check the mutated bitset in case the document was updated / deleted multiple times

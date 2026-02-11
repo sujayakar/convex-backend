@@ -13,36 +13,30 @@ use common::{
     types::IndexName,
 };
 use errors::ErrorMetadata;
-use qdrant_segment::data_types::vectors::{
-    QueryVector,
-    Vector,
-};
 use value::FieldPath;
 
 pub mod id_tracker;
 mod memory_index;
 pub mod metrics;
-mod qdrant_index;
 pub mod qdrant_segments;
 mod query;
 mod searcher;
+pub mod spann;
 mod vector_index_manager;
 
+#[cfg(test)]
+mod integration_tests;
+
 #[cfg(any(test, feature = "testing"))]
-pub use self::qdrant_index::cosine_similarity;
+pub use self::spann::cosine_similarity;
+// Backward-compat aliases for code that imports the old names.
+pub use self::spann::VectorSchema as QdrantSchema;
 pub use self::{
     memory_index::MemoryVectorIndex,
     metrics::{
         vector_index_type_label,
         VectorIndexType,
         VECTOR_INDEX_TYPE_LABEL,
-    },
-    qdrant_index::{
-        PreviousVectorSegmentsHack,
-        QdrantDocument,
-        QdrantExternalId,
-        QdrantSchema,
-        QdrantVectorIndexType,
     },
     query::{
         CompiledVectorSearch,
@@ -55,6 +49,23 @@ pub use self::{
         VectorSearchRequest,
     },
     searcher::VectorSearcher,
+    spann::{
+        load_disk_segment,
+        merge_disk_segments,
+        restore_segment_from_tar,
+        segment::{
+            ExternalId as QdrantExternalId,
+            PreviousSegmentsHack as PreviousVectorSegmentsHack,
+        },
+        NormalizedVectorDocument,
+        SpannSegment,
+        UntarredVectorDiskSegmentPaths,
+        VectorDiskSegmentPaths,
+        VectorDiskSegmentValues,
+        VectorDocument,
+        VectorDocument as QdrantDocument,
+        VectorSchema,
+    },
     vector_index_manager::{
         IndexState,
         VectorIndexManager,
@@ -64,15 +75,10 @@ pub use self::{
 pub const MAX_VECTOR_RESULTS: usize = 256;
 pub const DEFAULT_VECTOR_LIMIT: u32 = 10;
 pub const MAX_FILTER_LENGTH: usize = 64;
+pub const VECTOR_ELEMENT_SIZE: usize = std::mem::size_of::<f32>();
 
 #[derive(Clone, Debug)]
 pub struct IndexedVector(Vec<f32>);
-
-impl From<IndexedVector> for QueryVector {
-    fn from(value: IndexedVector) -> Self {
-        QueryVector::Nearest(Vector::Dense(value.0))
-    }
-}
 
 impl Deref for IndexedVector {
     type Target = [f32];

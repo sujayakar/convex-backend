@@ -40,7 +40,7 @@ use maplit::{
 use must_let::must_let;
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
-use qdrant_segment::types::VECTOR_ELEMENT_SIZE;
+use vector::VECTOR_ELEMENT_SIZE;
 use runtime::{
     prod::ProdRuntime,
     testing::{
@@ -938,7 +938,23 @@ async fn test_recall_multi_segment(rt: TestRuntime) -> anyhow::Result<()> {
             .search_with_limit(query.clone(), btreeset![], Some(limit))
             .await?;
 
-        assert_eq!(results, expected);
+        // Compare IDs (ranking order) exactly, but allow small score
+        // differences due to f16 quantization in the SPANN index.
+        assert_eq!(
+            results.len(),
+            expected.len(),
+            "Result count mismatch"
+        );
+        for (r, e) in results.iter().zip(expected.iter()) {
+            assert_eq!(r.id, e.id, "Result ID mismatch");
+            assert!(
+                (r.score - e.score).abs() < 0.01,
+                "Score differs too much: got {}, expected {}, diff={}",
+                r.score,
+                e.score,
+                (r.score - e.score).abs()
+            );
+        }
 
         scenario.backfill().await?;
     }

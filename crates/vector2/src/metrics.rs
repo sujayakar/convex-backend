@@ -13,7 +13,6 @@ use metrics::{
 };
 
 use crate::{
-    qdrant_index::QdrantVectorIndexType,
     query::CompiledVectorFilter,
     CompiledVectorSearch,
     VectorSearchQueryResult,
@@ -223,37 +222,6 @@ register_convex_counter!(
 );
 pub fn log_index_deleted() {
     log_counter(&VECTOR_UPDATE_INDEX_DELETED_TOTAL, 1);
-}
-
-const QDRANT_VECTOR_INDEX_TYPE: &str = "index_type";
-
-impl QdrantVectorIndexType {
-    fn metric_label(&self) -> StaticMetricLabel {
-        let index_string = match self {
-            QdrantVectorIndexType::Plain => "plain",
-            QdrantVectorIndexType::HNSW => "hnsw",
-        };
-        StaticMetricLabel::new(QDRANT_VECTOR_INDEX_TYPE, index_string)
-    }
-}
-
-register_convex_histogram!(
-    QDRANT_SEGMENT_MEMORY_BUILD_SECONDS,
-    "The amount of time it takes to build the appendable memory qdrant segment",
-    &STATUS_LABEL,
-);
-pub fn qdrant_segment_memory_build_timer() -> StatusTimer {
-    StatusTimer::new(&QDRANT_SEGMENT_MEMORY_BUILD_SECONDS)
-}
-register_convex_histogram!(
-    QDRANT_SEGMENT_DISK_BUILD_SECONDS,
-    "The amount of time it takes to build the hnsw indexed immutable qdrant segment",
-    &[STATUS_LABEL[0], QDRANT_VECTOR_INDEX_TYPE],
-);
-pub fn qdrant_segment_disk_build_timer(disk_index_type: QdrantVectorIndexType) -> StatusTimer {
-    let mut timer = StatusTimer::new(&QDRANT_SEGMENT_DISK_BUILD_SECONDS);
-    timer.add_label(disk_index_type.metric_label());
-    timer
 }
 
 #[derive(Clone, Copy, Debug)]

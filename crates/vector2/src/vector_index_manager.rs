@@ -54,12 +54,12 @@ use crate::{
         finish_index_manager_update_timer,
         VectorIndexType,
     },
-    qdrant_index::QdrantSchema,
     query::{
         InternalVectorSearch,
         VectorSearchQueryResult,
     },
     searcher::VectorSearcher,
+    spann::VectorSchema,
     CompiledVectorSearch,
     VectorIndexWriteSize,
 };
@@ -238,13 +238,13 @@ impl VectorIndexManager {
             let IndexConfig::Vector { ref spec, .. } = index.metadata.config else {
                 continue;
             };
-            let qdrant_schema = QdrantSchema::new(spec);
-            let old_value = deletion.as_ref().and_then(|d| qdrant_schema.index(d));
-            let new_value = insertion.as_ref().and_then(|d| qdrant_schema.index(d));
+            let vector_schema = VectorSchema::new(spec);
+            let old_value = deletion.as_ref().and_then(|d| vector_schema.index(d));
+            let new_value = insertion.as_ref().and_then(|d| vector_schema.index(d));
 
             // We need to add the size of the document id to the write size because it's
             // also stored in the vector index.
-            write_size.0 += (qdrant_schema.estimate_vector_size() + id.size()) as u64;
+            write_size.0 += (vector_schema.estimate_vector_size() + id.size()) as u64;
             self.indexes.update(&index.id, None, |memory_index| {
                 memory_index.update(id.internal_id(), ts, old_value, new_value)
             })?;
@@ -454,7 +454,7 @@ impl VectorIndexManager {
             let Some((vector_index, memory_index)) = self.require_ready_index(&index.id())? else {
                 anyhow::bail!("Vector index {:?} not available", index.id());
             };
-            let qdrant_schema = QdrantSchema::new(spec);
+            let vector_schema = VectorSchema::new(spec);
             let VectorIndexState::SnapshottedAt(snapshot) = vector_index else {
                 anyhow::bail!(index_backfilling_error(&query.printable_index_name()?));
             };
@@ -468,7 +468,7 @@ impl VectorIndexManager {
                         searcher,
                         segments,
                         search_storage,
-                        qdrant_schema,
+                        vector_schema,
                         memory_index,
                         snapshot.ts,
                     )
@@ -498,16 +498,16 @@ impl VectorIndexManager {
         searcher: Arc<dyn VectorSearcher>,
         segments: &Vec<FragmentedVectorSegment>,
         search_storage: Arc<dyn Storage>,
-        qdrant_schema: QdrantSchema,
+        vector_schema: VectorSchema,
         memory_index: &MemoryVectorIndex,
         ts: Timestamp,
     ) -> anyhow::Result<Vec<VectorSearchQueryResult>> {
         self.compile_search_and_truncate(
             query,
-            qdrant_schema,
+            vector_schema,
             memory_index,
             ts,
-            |qdrant_schema, compiled_query, overfetch_delta| {
+            |vector_schema, compiled_query, overfetch_delta| {
                 async move {
                     let timer = metrics::searchlight_client_execute_timer(
                         VectorIndexType::MultiSegment,
@@ -522,7 +522,7 @@ impl VectorIndexManager {
                                 .cloned()
                                 .map(|segment| segment.to_paths_proto())
                                 .try_collect()?,
-                            qdrant_schema,
+                            vector_schema,
                             compiled_query.clone(),
                             overfetch_delta as u32,
                         )
@@ -540,22 +540,22 @@ impl VectorIndexManager {
     async fn compile_search_and_truncate<'a>(
         &'a self,
         query: InternalVectorSearch,
-        qdrant_schema: QdrantSchema,
+        vector_schema: VectorSchema,
         memory_index: &MemoryVectorIndex,
         ts: Timestamp,
         call_searchlight: impl FnOnce(
-            QdrantSchema,
+            VectorSchema,
             CompiledVectorSearch,
             usize,
         )
             -> BoxFuture<'a, anyhow::Result<Vec<VectorSearchQueryResult>>>,
     ) -> anyhow::Result<Vec<VectorSearchQueryResult>> {
-        let compiled_query = qdrant_schema.compile(query)?;
+        let compiled_query = vector_schema.compile(query)?;
         let updated_matches = memory_index.updated_matches(ts, &compiled_query)?;
         let overfetch_delta = updated_matches.len();
         metrics::log_searchlight_overfetch_delta(overfetch_delta);
         let mut disk_revisions =
-            call_searchlight(qdrant_schema, compiled_query.clone(), overfetch_delta).await?;
+            call_searchlight(vector_schema, compiled_query.clone(), overfetch_delta).await?;
 
         block_in_place(|| {
             // Filter out revisions that are no longer latest.

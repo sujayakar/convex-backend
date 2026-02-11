@@ -5,11 +5,11 @@ use common::bootstrap_model::index::vector_index::FragmentedVectorSegment;
 use storage::Storage;
 
 use crate::{
-    qdrant_index::QdrantSchema,
     query::{
         CompiledVectorSearch,
         VectorSearchQueryResult,
     },
+    spann::VectorSchema,
 };
 
 #[async_trait]
@@ -18,7 +18,7 @@ pub trait VectorSearcher: Send + Sync + 'static {
         &self,
         search_storage: Arc<dyn Storage>,
         segments: Vec<pb::searchlight::FragmentedVectorSegmentPaths>,
-        schema: QdrantSchema,
+        schema: VectorSchema,
         search: CompiledVectorSearch,
         overfetch_delta: u32,
     ) -> anyhow::Result<Vec<VectorSearchQueryResult>>;
