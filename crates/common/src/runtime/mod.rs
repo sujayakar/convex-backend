@@ -346,6 +346,8 @@ pub trait Runtime: Clone + Sync + Send + 'static {
     }
 
     fn pause_client(&self) -> PauseClient;
+
+    fn event_recorder(&self) -> crate::event_recorder::EventRecorder;
 }
 
 /// Abstraction over a unix timestamp. Internally it stores a Duration since the

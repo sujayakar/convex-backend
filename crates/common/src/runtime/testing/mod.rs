@@ -83,6 +83,15 @@ impl TestDriver {
     }
 
     pub fn rt(&self) -> TestRuntime {
+        self.rt_with_event_recorder(crate::event_recorder::EventRecorder::new())
+    }
+
+    /// Create a TestRuntime with a specific EventRecorder (e.g., an active
+    /// one for simulation testing).
+    pub fn rt_with_event_recorder(
+        &self,
+        event_recorder: crate::event_recorder::EventRecorder,
+    ) -> TestRuntime {
         TestRuntime {
             tokio_handle: self
                 .tokio_runtime
@@ -92,6 +101,7 @@ impl TestDriver {
                 .clone(),
             state: Arc::downgrade(&self.state),
             pause_client: self.pause_client.clone(),
+            event_recorder,
         }
     }
 
@@ -123,6 +133,7 @@ pub struct TestRuntime {
     tokio_handle: tokio::runtime::Handle,
     state: Weak<Mutex<TestRuntimeState>>,
     pause_client: PauseClient,
+    event_recorder: crate::event_recorder::EventRecorder,
 }
 
 impl TestRuntime {
@@ -184,6 +195,10 @@ impl Runtime for TestRuntime {
 
     fn pause_client(&self) -> PauseClient {
         self.pause_client.clone()
+    }
+
+    fn event_recorder(&self) -> crate::event_recorder::EventRecorder {
+        self.event_recorder.clone()
     }
 }
 
