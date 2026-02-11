@@ -240,7 +240,9 @@ fn execution_to_json(
                 environment,
             }
         },
-        UdfParams::Http { result, identifier } => {
+        UdfParams::Http {
+            result, identifier, ..
+        } => {
             let identifier: String = identifier.to_string();
             let (success, error) = match result {
                 Ok(v) => (Some(JsonValue::from(v)), None),
