@@ -92,8 +92,12 @@ impl VirtualSystemDocMapper for ScheduledJobsDocMapper {
                 .with_context(|| format!("Missing udf args bytes for job {job_metadata_id}"))?
         };
         let args = args_from_bytes(args_bytes)?;
+        let component = if job_metadata.path.component.is_root() {
+            None
+        } else {
+            Some(String::from(job_metadata.path.component.clone()))
+        };
         let public_job = PublicScheduledJob {
-            // TODO(ENG-6920) include component (job.path.component) in virtual table.
             name: job_metadata.path.udf_path,
             args,
             state: job_metadata.state,
@@ -102,6 +106,7 @@ impl VirtualSystemDocMapper for ScheduledJobsDocMapper {
                 Some(ts) => Some(timestamp_to_ms(ts)?),
                 None => None,
             },
+            component,
         };
         let mut public_job_resolved: ConvexObject = public_job.try_into()?;
 
@@ -133,6 +138,7 @@ pub struct PublicScheduledJob {
     pub state: ScheduledJobState,
     pub scheduled_time: f64,
     pub completed_time: Option<f64>,
+    pub component: Option<String>,
 }
 
 impl TryFrom<PublicScheduledJob> for ConvexObject {
@@ -164,6 +170,12 @@ impl TryFrom<PublicScheduledJob> for ConvexObject {
             obj.insert(
                 "completedTime".parse()?,
                 ConvexValue::Float64(completed_time),
+            );
+        }
+        if let Some(component) = job.component {
+            obj.insert(
+                "component".parse()?,
+                ConvexValue::try_from(component)?,
             );
         }
         ConvexObject::try_from(obj)
@@ -215,12 +227,20 @@ impl TryFrom<ConvexObject> for PublicScheduledJob {
                 "Invalid `completedTime` field for PublicScheduledJob: {completed_time:?}"
             ),
         };
+        let component = match fields.remove("component") {
+            None => None,
+            Some(ConvexValue::String(s)) => Some(String::from(s)),
+            component => anyhow::bail!(
+                "Invalid `component` field for PublicScheduledJob: {component:?}"
+            ),
+        };
         Ok(PublicScheduledJob {
             name,
             args,
             state,
             scheduled_time,
             completed_time,
+            component,
         })
     }
 }
