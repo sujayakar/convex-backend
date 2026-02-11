@@ -23,6 +23,10 @@ use super::{
     entered_context::EnteredContext,
     environment::Environment,
     session::Session,
+    snapshot::{
+        EntrypointSnapshot,
+        GroupSnapshot,
+    },
     FunctionId,
 };
 use crate::strings;
@@ -38,15 +42,16 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new(session: &mut Session, environment: Box<dyn Environment>) -> anyhow::Result<Self> {
+    pub fn new(
+        session: &mut Session,
+        environment: Box<dyn Environment>,
+    ) -> anyhow::Result<Self> {
         let context = {
             scope!(let handle_scope, session.isolate);
             let context = v8::Context::new(handle_scope, v8::ContextOptions::default());
             let mut scope = v8::ContextScope::new(handle_scope, context);
 
             let state = ContextState::new(environment);
-            // TODO: this uses isolate-global slots, ideally it should use context-keyed
-            // slots
             scope.set_slot(state);
 
             let global = context.global(&scope);
@@ -95,6 +100,91 @@ impl Context {
             next_function_id: 0,
             pending_functions: BTreeMap::new(),
         })
+    }
+
+    /// Create a context from an entrypoint snapshot with pre-compiled modules.
+    pub fn new_from_snapshot(
+        session: &mut Session,
+        environment: Box<dyn Environment>,
+        snapshot: &EntrypointSnapshot,
+    ) -> anyhow::Result<Self> {
+        let context = {
+            scope!(let handle_scope, session.isolate);
+            let context = v8::Context::new(handle_scope, v8::ContextOptions::default());
+            let mut scope = v8::ContextScope::new(handle_scope, context);
+
+            let module_map = super::snapshot::restore_module_map(&mut scope, snapshot)?;
+
+            let mut state = ContextState::new(environment);
+            state.module_map = module_map;
+            scope.set_slot(state);
+
+            v8::Global::new(&scope, context)
+        };
+
+        Ok(Self {
+            context,
+            next_function_id: 0,
+            pending_functions: BTreeMap::new(),
+        })
+    }
+
+    /// Create a context from a group snapshot at the given context index.
+    pub fn new_from_group_snapshot(
+        session: &mut Session,
+        environment: Box<dyn Environment>,
+        snapshot: &GroupSnapshot,
+        context_index: usize,
+    ) -> anyhow::Result<Self> {
+        let context = {
+            scope!(let handle_scope, session.isolate);
+
+            // V8's from_snapshot uses 0-based indexing for non-default contexts.
+            let context = if context_index == 0 {
+                v8::Context::new(handle_scope, v8::ContextOptions::default())
+            } else {
+                v8::Context::from_snapshot(
+                    handle_scope,
+                    context_index - 1,
+                    v8::ContextOptions::default(),
+                )
+                .context("Failed to restore context from group snapshot")?
+            };
+
+            let mut scope = v8::ContextScope::new(handle_scope, context);
+
+            let module_map = super::snapshot::restore_group_module_map(
+                &mut scope,
+                snapshot,
+                context_index,
+            )?;
+
+            let mut state = ContextState::new(environment);
+            state.module_map = module_map;
+            scope.set_slot(state);
+
+            v8::Global::new(&scope, context)
+        };
+
+        Ok(Self {
+            context,
+            next_function_id: 0,
+            pending_functions: BTreeMap::new(),
+        })
+    }
+
+    /// Reset the context for a new execution, preserving the V8 context and
+    /// its compiled modules. Swaps in a new environment and clears per-request
+    /// state.
+    pub fn reset(&mut self, session: &mut Session, environment: Box<dyn Environment>) {
+        self.next_function_id = 0;
+        self.pending_functions.clear();
+
+        scope_with_context!(let scope, session.isolate, &self.context);
+        if let Some(state) = scope.get_slot_mut::<ContextState>() {
+            state.reset(environment);
+        }
+        scope.perform_microtask_checkpoint();
     }
 
     pub fn enter<R>(&mut self, session: &mut Session, f: impl FnOnce(EnteredContext) -> R) -> R {

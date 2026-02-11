@@ -70,6 +70,7 @@ humansize = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 keybroker = { workspace = true }
+lz4_flex = { workspace = true }
 maplit = { workspace = true, optional = true }
 metrics = { workspace = true }
 mime = { workspace = true }
