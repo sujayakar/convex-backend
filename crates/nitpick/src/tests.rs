@@ -17,6 +17,7 @@ use crate::{
         link_ring_js::LinkRingJsScenario,
         pagination_js::PaginationJsScenario,
         scheduled_js::ScheduledJsScenario,
+        sdk_client_poc::SdkClientPocScenario,
         subscription_js::SubscriptionJsScenario,
         text_search_js::TextSearchJsScenario,
     },
@@ -299,5 +300,19 @@ fn test_subscription_js_smoke() -> anyhow::Result<()> {
         seed: 42,
     };
     run_scenario(SubscriptionJsScenario, config)?;
+    Ok(())
+}
+
+// ---- SDK Client simulation (ConvexClient in V8 isolate) ----
+
+#[test]
+fn test_sdk_client_poc_smoke() -> anyhow::Result<()> {
+    common::testing::init_test_logging();
+    let config = Config {
+        transactions: 5,
+        concurrency: 1, // sequential mutations
+        seed: 42,
+    };
+    run_scenario(SdkClientPocScenario, config)?;
     Ok(())
 }
