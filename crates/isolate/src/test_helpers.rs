@@ -1425,10 +1425,11 @@ impl<RT: Runtime, P: Persistence> ActionCallbacks for UdfTest<RT, P> {
     async fn cancel_job(
         &self,
         identity: Identity,
+        component_id: ComponentId,
         virtual_id: DeveloperDocumentId,
     ) -> anyhow::Result<()> {
         let mut tx = self.database.begin(identity).await?;
-        VirtualSchedulerModel::new(&mut tx, ComponentId::test_user().into())
+        VirtualSchedulerModel::new(&mut tx, component_id.into())
             .cancel(virtual_id)
             .await?;
         self.database.commit(tx).await?;

@@ -190,7 +190,6 @@ use value::{
     identifier::Identifier,
     serialized_args_ext::SerializedArgsExt,
     JsonPackedValue,
-    TableNamespace,
 };
 use vector::{
     PublicVectorSearchQueryResult,
@@ -2204,6 +2203,7 @@ impl<RT: Runtime> ActionCallbacks for ApplicationFunctionRunner<RT> {
     async fn cancel_job(
         &self,
         identity: Identity,
+        component_id: ComponentId,
         virtual_id: DeveloperDocumentId,
     ) -> anyhow::Result<()> {
         self.database
@@ -2213,7 +2213,7 @@ impl<RT: Runtime> ActionCallbacks for ApplicationFunctionRunner<RT> {
                 "app_funrun_cancel_job",
                 |tx| {
                     async {
-                        VirtualSchedulerModel::new(tx, TableNamespace::by_component_TODO())
+                        VirtualSchedulerModel::new(tx, component_id.into())
                             .cancel(virtual_id)
                             .await
                     }

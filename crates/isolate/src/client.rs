@@ -298,6 +298,7 @@ pub trait ActionCallbacks: Send + Sync {
     async fn cancel_job(
         &self,
         identity: Identity,
+        component_id: ComponentId,
         virtual_id: DeveloperDocumentId,
     ) -> anyhow::Result<()>;
 

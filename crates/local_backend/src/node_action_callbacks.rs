@@ -331,7 +331,7 @@ pub async fn cancel_developer_job(
     MtState(st): MtState<LocalAppState>,
     ExtractActionIdentity {
         identity,
-        component_id: _,
+        component_id,
     }: ExtractActionIdentity,
     Json(CancelDeveloperJobRequest { id }): Json<CancelDeveloperJobRequest>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
@@ -341,7 +341,7 @@ pub async fn cancel_developer_job(
     ))?;
     st.application
         .runner()
-        .cancel_job(identity, virtual_doc_id)
+        .cancel_job(identity, component_id, virtual_doc_id)
         .await?;
     Ok(Json(json!(null)))
 }

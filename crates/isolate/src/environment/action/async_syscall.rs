@@ -320,7 +320,7 @@ impl<RT: Runtime> TaskExecutor<RT> {
         })?;
 
         self.action_callbacks
-            .cancel_job(self.identity.clone(), virtual_id_v6)
+            .cancel_job(self.identity.clone(), self.component_id(), virtual_id_v6)
             .await?;
         Ok(JsonValue::Null)
     }
