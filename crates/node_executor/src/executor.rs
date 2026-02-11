@@ -586,8 +586,6 @@ impl TryFrom<ExecutorRequest> for JsonValue {
                     })
                     .collect::<anyhow::Result<_>>()?;
                 let (path, args, npm_version) = r.path_and_args.consume();
-                // TODO(lee)
-                anyhow::ensure!(path.component.is_root());
                 let udf_path = path.udf_path;
 
                 json!({
