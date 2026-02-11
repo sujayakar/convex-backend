@@ -64,7 +64,7 @@ udf = { path = "crates/udf" }
 udf_metrics = { path = "crates/udf_metrics" }
 usage_tracking = { path = "crates/usage_tracking" }
 value = { path = "crates/value" }
-vector = { path = "crates/vector" }
+vector = { path = "crates/vector2" }
 aes = { version = "0.8.4" }
 ahash = "0.8"
 anyhow = "1"
@@ -130,6 +130,7 @@ futures-async-stream = "0.2.11"
 futures-util = "0.3.30"
 fxhash = "0.2.1"
 governor = "0.10.0"
+half = { version = "2", features = ["std"] }
 hashlink = "0.11"
 hdrhistogram = "7.5.4"
 headers = "0.4"
@@ -149,6 +150,7 @@ jemalloc_pprof = "0.8"
 jsonschema = "0.33"
 levenshtein_automata = "0.2.1"
 libc = "0.2"
+memmap2 = "0.9"
 libsodium-sys-stable = { version = "1.22.2", features = [ "minimal" ] }
 lru = "0.14.0"
 maplit = "1"
@@ -182,8 +184,6 @@ prost-types = "0.13"
 pyo3 = "0.27"
 pyo3-async-runtimes = { version = "0.27", features = [ "tokio-runtime" ] }
 pyo3-build-config = { version = "0.27", features = [ "resolve-config" ] }
-qdrant_common = { git = "https://github.com/get-convex/qdrant", rev = "a5d1b7bc9fd04861316b6455204c8a946d43117e", package = "qdrant_common" }
-qdrant_segment = { git = "https://github.com/get-convex/qdrant", rev = "a5d1b7bc9fd04861316b6455204c8a946d43117e", package = "segment" }
 quote = "1.0"
 rand = "0.9"
 rand_chacha = "0.9.0"
@@ -214,6 +214,7 @@ sourcemap = "9"
 spki = "0.7.3"
 strum = { version = "0.27", features = [ "derive" ] }
 sucds = { version = "0.8.1", features = [ "intrinsics" ] }
+tar = "0.4"
 syn = { version = "2.0", features = [ "full" ] }
 tantivy = { git = "https://github.com/get-convex/tantivy", rev = "c745b0977df94bc22fe4fc75db0200a8023f9a2c" }
 tantivy-common = { git = "https://github.com/get-convex/tantivy", rev = "c745b0977df94bc22fe4fc75db0200a8023f9a2c" }
@@ -334,6 +335,3 @@ codegen-units = 16
 [profile.dev.package.crc32fast]
 opt-level = 3
 codegen-units = 16
-
-[profile.release.package.segment]
-overflow-checks = false

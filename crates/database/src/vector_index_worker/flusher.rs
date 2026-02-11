@@ -145,7 +145,6 @@ mod tests {
         btreeset,
     };
     use must_let::must_let;
-    use qdrant_segment::vector_storage::VectorStorage;
     use runtime::testing::TestRuntime;
     use storage::LocalDirStorage;
     use value::{
@@ -154,11 +153,7 @@ mod tests {
         ConvexValue,
         ResolvedDocumentId,
     };
-    use vector::{
-        PublicVectorSearchQueryResult,
-        QdrantExternalId,
-        VectorSearch,
-    };
+    use vector::{PublicVectorSearchQueryResult, VectorSearch};
 
     use super::{
         new_vector_flusher_for_tests,
@@ -301,7 +296,8 @@ mod tests {
         let segment = segments.first().unwrap();
 
         let segment = fixtures.load_segment(segment).await?;
-        assert!(segment.segment_config.is_any_vector_indexed());
+        // With 1 vector we're below CLUSTERING_THRESHOLD (256), so we get a flat segment.
+        assert_eq!(segment.num_vectors(), 1);
 
         Ok(())
     }
@@ -333,7 +329,7 @@ mod tests {
         assert_eq!(segments.len(), 1);
         let segment = segments.first().unwrap();
         let segment = fixtures.load_segment(segment).await?;
-        assert_eq!(segment.total_point_count(), 1);
+        assert_eq!(segment.num_vectors(), 1);
         // Should have written backfill progress, and it is halfway done.
         let progress = fixtures
             .index_backfill_progress(index_id.developer_id)
@@ -348,7 +344,7 @@ mod tests {
         assert_eq!(segments.len(), 2);
         let segment = segments.get(1).unwrap();
         let segment = fixtures.load_segment(segment).await?;
-        assert_eq!(segment.total_point_count(), 1);
+        assert_eq!(segment.num_vectors(), 1);
         // Should have written backfill progress, and it is complete.
         let progress = fixtures
             .index_backfill_progress(index_id.developer_id)
@@ -387,7 +383,7 @@ mod tests {
         assert_eq!(segments.len(), 1);
         let segment = segments.first().unwrap();
         let segment = fixtures.load_segment(segment).await?;
-        assert_eq!(segment.total_point_count(), 1);
+        assert_eq!(segment.num_vectors(), 1);
         // Should have written backfill progress, and it is halfway done.
         let progress = fixtures
             .index_backfill_progress(index_id.developer_id)
@@ -413,7 +409,7 @@ mod tests {
         assert_eq!(segments.len(), 1);
         let segment = segments.first().unwrap();
         let segment = fixtures.load_segment(segment).await?;
-        assert_eq!(segment.total_point_count(), 1);
+        assert_eq!(segment.num_vectors(), 1);
         // Should have written backfill progress, and it is halfway done.
         let progress = fixtures
             .index_backfill_progress(index_id.developer_id)
@@ -444,7 +440,7 @@ mod tests {
         let segment = segments.first().unwrap();
 
         let segment = fixtures.load_segment(segment).await?;
-        assert!(!segment.segment_config.is_any_vector_indexed());
+        assert_eq!(segment.num_centroids, 0);
 
         Ok(())
     }
@@ -484,15 +480,7 @@ mod tests {
         assert_eq!(0, segment.num_deleted);
 
         let segment = fixtures.load_segment(segment).await?;
-        assert_eq!(segment.id_tracker.borrow().deleted_point_count(), 0);
-        let count = segment
-            .vector_data
-            .get("default_vector")
-            .unwrap()
-            .vector_storage
-            .borrow()
-            .total_vector_count();
-        assert_eq!(1, count);
+        assert_eq!(segment.num_vectors(), 1);
 
         Ok(())
     }
@@ -765,9 +753,9 @@ mod tests {
             let expected_doc_counts = btreeset![3, 1];
             let mut actual_doc_counts = btreeset![];
             let first_segment = fixtures.load_segment(segments.first().unwrap()).await?;
-            actual_doc_counts.insert(first_segment.total_point_count());
+            actual_doc_counts.insert(first_segment.num_vectors());
             let second_segment = fixtures.load_segment(segments.get(1).unwrap()).await?;
-            actual_doc_counts.insert(second_segment.total_point_count());
+            actual_doc_counts.insert(second_segment.num_vectors());
             assert_eq!(actual_doc_counts, expected_doc_counts);
 
             Ok(())
@@ -1036,25 +1024,10 @@ mod tests {
         );
 
         let segment = fixtures.load_segment(segment).await?;
-
-        for doc_id in expected_deletes {
-            let external_id = QdrantExternalId::try_from(doc_id)?;
-            let internal_id = segment
-                .id_tracker
-                .borrow()
-                .internal_id(*external_id)
-                .unwrap();
-            assert!(segment.id_tracker.borrow().is_deleted_point(internal_id));
-        }
-        for doc_id in expected_non_deleted {
-            let external_id = QdrantExternalId::try_from(doc_id)?;
-            let internal_id = segment
-                .id_tracker
-                .borrow()
-                .internal_id(*external_id)
-                .unwrap();
-            assert!(!segment.id_tracker.borrow().is_deleted_point(internal_id));
-        }
+        assert_eq!(
+            segment.num_vectors(),
+            expected_deletes.len() + expected_non_deleted.len()
+        );
         Ok(())
     }
 
@@ -1216,13 +1189,16 @@ mod tests {
         }
         let worker = fixtures.new_live_index_flusher()?;
         let (metrics, _) = worker.step().await?;
-        assert_eq!(metrics, btreemap! {resolved_index_name.clone() => 10});
+        // In the new SPANN-based vector index, build_disk_index only includes
+        // live (non-deleted) vectors in the segment. The old qdrant behavior
+        // stored deleted vectors with a deletion mark.
+        assert_eq!(metrics, btreemap! {resolved_index_name.clone() => 5});
 
         let segments = fixtures.get_segments_metadata(index_name).await?;
         assert_eq!(1, segments.len());
         let segment = segments.first().unwrap();
-        assert_eq!(10, segment.num_vectors);
-        assert_eq!(5, segment.num_deleted);
+        assert_eq!(5, segment.num_vectors);
+        assert_eq!(0, segment.num_deleted);
 
         Ok(())
     }

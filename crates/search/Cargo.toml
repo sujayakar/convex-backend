@@ -47,7 +47,6 @@ pb = { workspace = true }
 prometheus = { workspace = true }
 proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }
-qdrant_segment = { workspace = true }
 rand = { workspace = true }
 ref-cast = { workspace = true }
 serde = { workspace = true }

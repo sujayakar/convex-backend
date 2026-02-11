@@ -36,10 +36,7 @@ use events::testing::TestUsageEventLogger;
 use maplit::btreeset;
 use must_let::must_let;
 use pb::searchlight::FragmentedVectorSegmentPaths;
-use qdrant_segment::{
-    segment::Segment,
-    types::VECTOR_ELEMENT_SIZE,
-};
+use vector::{qdrant_segments::SpannSegment, VECTOR_ELEMENT_SIZE};
 use runtime::testing::TestRuntime;
 use search::{
     disk_index::{
@@ -363,7 +360,10 @@ impl VectorFixtures {
         Ok(segments.clone())
     }
 
-    pub async fn load_segment(&self, segment: &FragmentedVectorSegment) -> anyhow::Result<Segment> {
+    pub async fn load_segment(
+        &self,
+        segment: &FragmentedVectorSegment,
+    ) -> anyhow::Result<SpannSegment> {
         let tmp_dir = TempDir::new()?;
         let segment_path = tmp_dir.path().join("segment_tmp.tar");
         download_single_file_original(
