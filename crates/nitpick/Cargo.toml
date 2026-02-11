@@ -1,0 +1,43 @@
+[package]
+name = "nitpick"
+version = "0.1.0"
+authors = ["Convex, Inc. <no-reply@convex.dev>"]
+edition = "2024"
+license = "LicenseRef-FSL-1.1-Apache-2.0"
+
+[lib]
+doctest = false
+
+[[bin]]
+name = "nitpick"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+application = { workspace = true, features = ["testing"] }
+clap = { workspace = true }
+cmd_util = { path = "../cmd_util" }
+async-trait = { workspace = true }
+common = { workspace = true, features = ["testing"] }
+database = { workspace = true, features = ["testing"] }
+deno_core = { workspace = true }
+errors = { workspace = true, features = ["testing"] }
+futures = { workspace = true }
+isolate = { workspace = true, features = ["testing"] }
+keybroker = { workspace = true, features = ["testing"] }
+metrics = { workspace = true, features = ["testing"] }
+model = { workspace = true, features = ["testing"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+rand_distr = { workspace = true }
+runtime = { workspace = true, features = ["testing"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sync = { workspace = true, features = ["testing"] }
+sync_types = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

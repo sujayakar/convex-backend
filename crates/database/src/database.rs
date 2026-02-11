@@ -1673,6 +1673,11 @@ impl<RT: Runtime> Database<RT> {
     }
 
     pub async fn begin(&self, identity: Identity) -> anyhow::Result<Transaction<RT>> {
+        self.runtime
+            .event_recorder()
+            .record(common::event_recorder::Event::TransactionBegin {
+                identity: format!("{identity:?}"),
+            });
         self.begin_with_usage(identity, FunctionUsageTracker::new())
             .await
     }
@@ -1805,7 +1810,23 @@ impl<RT: Runtime> Database<RT> {
         let result = self
             .committer
             .commit(transaction, write_source.into())
-            .await?;
+            .await;
+        match &result {
+            Ok(_ts) => {
+                if !readonly {
+                    self.runtime
+                        .event_recorder()
+                        .record(common::event_recorder::Event::TransactionCommit);
+                }
+            },
+            Err(e) if errors::ErrorMetadataAnyhowExt::is_occ(e) => {
+                self.runtime
+                    .event_recorder()
+                    .record(common::event_recorder::Event::TransactionConflict);
+            },
+            _ => {},
+        }
+        let result = result?;
         if !readonly {
             self.write_commits_since_load.fetch_add(1, Ordering::SeqCst);
         }
