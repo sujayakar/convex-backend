@@ -21,6 +21,7 @@ use crate::{
     bundled_js::system_udf_file,
     helpers,
     isolate::SETUP_URL,
+    isolate2::callback_context::CallbackContext,
     strings,
 };
 
@@ -70,12 +71,31 @@ fn illegal_constructor<'s>(
     }
 }
 
-fn external_references() -> Vec<v8::ExternalReference> {
-    // TODO: make sure that everything is included in the list of external
-    // references
-    vec![v8::ExternalReference {
-        function: illegal_constructor.map_fn_to(),
-    }]
+pub(crate) fn external_references() -> Vec<v8::ExternalReference> {
+    vec![
+        v8::ExternalReference {
+            function: illegal_constructor.map_fn_to(),
+        },
+        v8::ExternalReference {
+            function: CallbackContext::syscall.map_fn_to(),
+        },
+        v8::ExternalReference {
+            function: CallbackContext::async_syscall.map_fn_to(),
+        },
+        v8::ExternalReference {
+            function: CallbackContext::op.map_fn_to(),
+        },
+        v8::ExternalReference {
+            function: CallbackContext::start_async_op.map_fn_to(),
+        },
+    ]
+}
+
+/// Returns the base snapshot blob bytes. Must be called after `initialize()`.
+pub(crate) fn base_snapshot() -> &'static [u8] {
+    BASE_SNAPSHOT
+        .get()
+        .expect("udf_runtime::initialize not called")
 }
 
 fn create_base_snapshot() -> anyhow::Result<v8::StartupData> {
