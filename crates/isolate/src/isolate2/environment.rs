@@ -19,7 +19,7 @@ pub struct EnvironmentOutcome {
     pub observed_time: bool,
 }
 
-pub trait Environment {
+pub trait Environment: Send {
     fn syscall(&mut self, name: &str, args: JsonValue) -> anyhow::Result<JsonValue>;
 
     fn trace(&mut self, level: LogLevel, messages: Vec<String>) -> anyhow::Result<()>;

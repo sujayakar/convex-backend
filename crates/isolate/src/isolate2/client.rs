@@ -27,7 +27,10 @@ use value::{
 };
 
 use super::{
-    environment::EnvironmentOutcome,
+    environment::{
+        Environment,
+        EnvironmentOutcome,
+    },
     FunctionId,
     PromiseId,
 };
@@ -63,6 +66,11 @@ pub enum IsolateThreadRequest {
     },
     Shutdown {
         response: oneshot::Sender<anyhow::Result<EnvironmentOutcome>>,
+    },
+    /// Reset the context for a new execution, preserving compiled modules.
+    NewExecution {
+        environment: Box<dyn Environment>,
+        response: oneshot::Sender<anyhow::Result<()>>,
     },
 }
 
@@ -280,4 +288,20 @@ impl<RT: Runtime> IsolateThreadClient<RT> {
         self.send(IsolateThreadRequest::Shutdown { response: tx }, rx)
             .await
     }
+
+    pub async fn new_execution(
+        &mut self,
+        environment: Box<dyn Environment>,
+    ) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send(
+            IsolateThreadRequest::NewExecution {
+                environment,
+                response: tx,
+            },
+            rx,
+        )
+        .await
+    }
+
 }
