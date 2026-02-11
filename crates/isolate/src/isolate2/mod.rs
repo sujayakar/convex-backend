@@ -6,6 +6,7 @@ pub mod entered_context;
 pub mod environment;
 pub mod runner;
 pub mod session;
+pub mod snapshot;
 pub mod thread;
 
 pub type PromiseId = u64;
