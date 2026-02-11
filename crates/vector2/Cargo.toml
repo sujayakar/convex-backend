@@ -1,0 +1,69 @@
+[package]
+name = "vector"
+version = "0.1.0"
+authors = ["Convex, Inc. <no-reply@convex.dev>"]
+edition = "2024"
+license = "LicenseRef-FSL-1.1-Apache-2.0"
+
+[lib]
+doctest = false
+
+[features]
+testing = [
+    "common/testing",
+    "errors/testing",
+    "indexing/testing",
+    "metrics/testing",
+    "value/testing",
+    "storage/testing",
+    "proptest",
+    "proptest-derive",
+]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bitvec = { workspace = true }
+common = { workspace = true }
+errors = { workspace = true }
+futures = { workspace = true }
+half = { workspace = true }
+imbl = { workspace = true }
+indexing = { workspace = true }
+maplit = { workspace = true }
+memmap2 = { workspace = true }
+metrics = { workspace = true }
+pb = { workspace = true }
+proptest = { workspace = true, optional = true }
+proptest-derive = { workspace = true, optional = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+storage = { workspace = true }
+tar = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+value = { workspace = true }
+
+[dev-dependencies]
+cmd_util = { workspace = true }
+common = { workspace = true, features = ["testing"] }
+criterion = { workspace = true }
+errors = { workspace = true, features = ["testing"] }
+indexing = { workspace = true, features = ["testing"] }
+metrics = { workspace = true, features = ["testing"] }
+must-let = { workspace = true }
+proptest = { workspace = true }
+proptest-derive = { workspace = true }
+storage = { workspace = true, features = ["testing"] }
+tokio = { workspace = true }
+value = { workspace = true, features = ["testing"] }
+
+[[bench]]
+name = "spann_bench"
+harness = false
+
+[lints]
+workspace = true
