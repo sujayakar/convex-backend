@@ -32,9 +32,9 @@ pub struct FaultConfig {
 impl Default for FaultConfig {
     fn default() -> Self {
         Self {
-            error_probability: 0.05,
-            delay_probability: 0.10,
-            max_delay: Duration::from_millis(500),
+            error_probability: 0.02,
+            delay_probability: 0.05,
+            max_delay: Duration::from_millis(10),
         }
     }
 }

@@ -346,14 +346,96 @@ fn test_elle_with_fault_injection() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_counter_determinism_with_fault_injection() -> anyhow::Result<()> {
+fn test_link_ring_with_fault_injection() -> anyhow::Result<()> {
     common::testing::init_test_logging();
     let config = Config {
         transactions: 10,
         concurrency: 3,
-        seed: 12345,
+        seed: 42,
         fault_config: Some(FaultConfig::default()),
     };
-    run_scenario_deterministic(CounterScenario, config)?;
+    run_scenario(LinkRingScenario::default(), config)?;
     Ok(())
+}
+
+/// Verify that `DstPauseController` actually injects faults and tracks hits.
+#[test]
+fn test_dst_pause_controller_injects_faults() {
+    use std::time::Duration;
+
+    use common::{
+        pause::Fault,
+        runtime::Runtime,
+    };
+    use runtime::testing::TestDriver;
+
+    use crate::framework::fault_injection::DstPauseController;
+
+    common::testing::init_test_logging();
+
+    // 100% error probability: every breakpoint should inject an error.
+    let error_config = FaultConfig {
+        error_probability: 1.0,
+        delay_probability: 0.0,
+        max_delay: Duration::ZERO,
+    };
+    let (controller, client) = DstPauseController::new(42, error_config);
+    let td = TestDriver::new_with_config(42, client);
+    td.run_until(async {
+        let fault = td.rt().pause_client().wait("test_breakpoint").await;
+        assert!(
+            matches!(fault, Fault::Error(_)),
+            "Expected Fault::Error, got Fault::Noop"
+        );
+        let fault2 = td.rt().pause_client().wait("test_breakpoint").await;
+        assert!(
+            matches!(fault2, Fault::Error(_)),
+            "Expected Fault::Error on second hit"
+        );
+        let fault3 = td.rt().pause_client().wait("other_breakpoint").await;
+        assert!(
+            matches!(fault3, Fault::Error(_)),
+            "Expected Fault::Error on different label"
+        );
+    });
+    let hits = controller.hits();
+    assert_eq!(hits.get("test_breakpoint"), Some(&2));
+    assert_eq!(hits.get("other_breakpoint"), Some(&1));
+    assert_eq!(controller.total_hits(), 3);
+
+    // 0% error, 100% delay: every breakpoint should inject a delay (no error).
+    let delay_config = FaultConfig {
+        error_probability: 0.0,
+        delay_probability: 1.0,
+        max_delay: Duration::from_millis(5),
+    };
+    let (controller, client) = DstPauseController::new(42, delay_config);
+    let td = TestDriver::new_with_config(42, client);
+    td.run_until(async {
+        let fault = td.rt().pause_client().wait("delay_bp").await;
+        assert!(
+            matches!(fault, Fault::Noop),
+            "Delay should return Noop, not Error"
+        );
+    });
+    assert_eq!(controller.hits().get("delay_bp"), Some(&1));
+
+    // 0% everything: should pass through.
+    let noop_config = FaultConfig {
+        error_probability: 0.0,
+        delay_probability: 0.0,
+        max_delay: Duration::ZERO,
+    };
+    let (controller, client) = DstPauseController::new(42, noop_config);
+    let td = TestDriver::new_with_config(42, client);
+    td.run_until(async {
+        let fault = td.rt().pause_client().wait("noop_bp").await;
+        assert!(
+            matches!(fault, Fault::Noop),
+            "Expected Noop pass-through"
+        );
+    });
+    // Even with no faults, hits should still be tracked.
+    assert_eq!(controller.hits().get("noop_bp"), Some(&1));
+    assert_eq!(controller.total_hits(), 1);
 }
