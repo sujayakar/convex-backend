@@ -62,7 +62,7 @@ async fn test_crypto(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_crypto_in_action(rt: TestRuntime) -> anyhow::Result<()> {
-    UdfTest::run_test_with_isolate(rt, async move |t: UdfTestType| {
+    UdfTest::run_test_with_isolate2(rt, async move |t: UdfTestType| {
         must_let!(let ConvexValue::String(r) = t.action("js_builtins/crypto:testAction", assert_obj!()).await?);
         assert_eq!(String::from(r), "success".to_string());
         Ok(())
@@ -180,8 +180,7 @@ async fn test_request(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_response(rt: TestRuntime) -> anyhow::Result<()> {
-    // TODO: Enable when we implement actions.
-    UdfTest::run_test_with_isolate(rt, async move |t: UdfTestType| {
+    UdfTest::run_test_with_isolate2(rt, async move |t: UdfTestType| {
         must_let!(let ConvexValue::String(r) = t.query("js_builtins/response", assert_obj!()).await?);
         assert_eq!(String::from(r), "success".to_string());
         must_let!(let ConvexValue::String(r) = t.action("js_builtins/response:responseAction", assert_obj!()).await?);
@@ -229,8 +228,7 @@ async fn test_event_target(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_set_timeout(rt: TestRuntime) -> anyhow::Result<()> {
-    // TODO: Enable when we implement actions.
-    UdfTest::run_test_with_isolate(rt, async move |t: UdfTestType| {
+    UdfTest::run_test_with_isolate2(rt, async move |t: UdfTestType| {
         let start = t.rt.monotonic_now();
         must_let!(let ConvexValue::String(r) = t.action("js_builtins/setTimeout:sleep", assert_obj!("ms" => 3000.0)).await?);
         assert_eq!(String::from(r), "success".to_string());

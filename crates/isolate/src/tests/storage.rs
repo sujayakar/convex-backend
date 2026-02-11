@@ -19,13 +19,20 @@ use crate::{
 
 #[convex_macro::test_runtime]
 async fn test_storage_store_get(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = action_udf_test(rt).await?;
-
+    let t = action_udf_test(rt.clone()).await?;
     let data = ConvexValue::Bytes("data".as_bytes().to_vec().try_into()?);
     let id = t
         .action("storage:storeFile", assert_obj!("data" => data.clone()))
         .await?;
+    let retrieved = t.action("storage:getFile", assert_obj!("id" => id)).await?;
+    assert_eq!(data, retrieved);
 
+    let mut t = action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let data = ConvexValue::Bytes("data".as_bytes().to_vec().try_into()?);
+    let id = t
+        .action("storage:storeFile", assert_obj!("data" => data.clone()))
+        .await?;
     let retrieved = t.action("storage:getFile", assert_obj!("id" => id)).await?;
     assert_eq!(data, retrieved);
     Ok(())
@@ -50,17 +57,25 @@ async fn check_storage_url(
 
 #[convex_macro::test_runtime]
 async fn test_storage_get_url(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = action_udf_test(rt).await?;
-
+    let t = action_udf_test(rt.clone()).await?;
     let data = ConvexValue::Bytes("data".as_bytes().to_vec().try_into()?);
     let id = t
         .action("storage:storeFile", assert_obj!("data" => data.clone()))
         .await?;
-
     let url = t
         .query("storage:getFileUrl", assert_obj!("id" => id.clone()))
         .await?;
+    check_storage_url(&t, &url, &id).await?;
 
+    let mut t = action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let data = ConvexValue::Bytes("data".as_bytes().to_vec().try_into()?);
+    let id = t
+        .action("storage:storeFile", assert_obj!("data" => data.clone()))
+        .await?;
+    let url = t
+        .query("storage:getFileUrl", assert_obj!("id" => id.clone()))
+        .await?;
     check_storage_url(&t, &url, &id).await?;
 
     Ok(())
@@ -68,11 +83,28 @@ async fn test_storage_get_url(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_storage_get_url_parallel(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = action_udf_test(rt).await?;
-
+    let t = action_udf_test(rt.clone()).await?;
     let data = ConvexValue::Bytes("data".as_bytes().to_vec().try_into()?);
     let mut ids = Vec::new();
     // Default parallel chunk size is 16.
+    for _ in 0..20 {
+        ids.push(
+            t.action("storage:storeFile", assert_obj!("data" => data.clone()))
+                .await?,
+        );
+    }
+    let urls = t
+        .query("storage:getFileUrls", assert_obj!("ids" => ids.clone()))
+        .await?;
+    must_let!(let ConvexValue::Array(urls) = urls);
+    for idx in 0..20 {
+        check_storage_url(&t, &urls[idx], &ids[idx]).await?;
+    }
+
+    let mut t = action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let data = ConvexValue::Bytes("data".as_bytes().to_vec().try_into()?);
+    let mut ids = Vec::new();
     for _ in 0..20 {
         ids.push(
             t.action("storage:storeFile", assert_obj!("data" => data.clone()))

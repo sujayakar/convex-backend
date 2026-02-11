@@ -80,7 +80,7 @@ async fn test_conditionally_observed_identity(rt: TestRuntime) -> anyhow::Result
 
 #[convex_macro::test_runtime]
 async fn test_conditionally_observed_identity_in_subquery(rt: TestRuntime) -> anyhow::Result<()> {
-    UdfTest::run_test_with_isolate(rt, async move |t| {
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
         test_conditionally_observed_identity_inner(t, true).await
     })
     .await
