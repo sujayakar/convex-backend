@@ -286,6 +286,7 @@ pub struct UdfTest<RT: Runtime, P: Persistence> {
     environment_data: EnvironmentData<RT>,
 
     isolate_v2_enabled: bool,
+    snapshot_cache: Option<crate::isolate2::snapshot::SnapshotCache>,
 }
 
 impl<RT: Runtime, P: Persistence> Clone for UdfTest<RT, P> {
@@ -301,6 +302,7 @@ impl<RT: Runtime, P: Persistence> Clone for UdfTest<RT, P> {
             file_storage: self.file_storage.clone(),
             environment_data: self.environment_data.clone(),
             isolate_v2_enabled: self.isolate_v2_enabled,
+            snapshot_cache: self.snapshot_cache.clone(),
         }
     }
 }
@@ -421,6 +423,7 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
             file_storage,
             environment_data,
             isolate_v2_enabled: false,
+            snapshot_cache: None,
         }))
     }
 
@@ -444,6 +447,7 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
 
     pub fn enable_isolate_v2(&mut self) {
         self.isolate_v2_enabled = true;
+        self.snapshot_cache = Some(crate::isolate2::snapshot::SnapshotCache::new());
     }
 
     pub async fn create_index(&self, name: &str, field: &str) -> anyhow::Result<()> {
@@ -596,8 +600,8 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
                 self.key_broker.clone(),
                 ExecutionContext::new_for_test(),
                 QueryJournal::new(),
-                None,
-                None,
+                self.snapshot_cache.clone(),
+                Some("test".to_string()),
             )
             .await?;
             let path: UdfPath = udf_path.parse()?;
@@ -751,8 +755,8 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
                 self.key_broker.clone(),
                 ExecutionContext::new_for_test(),
                 journal.unwrap_or_else(QueryJournal::new),
-                None,
-                None,
+                self.snapshot_cache.clone(),
+                Some("test".to_string()),
             )
             .await?;
             // Ensure the transaction is readonly by turning it into a subscription token.
@@ -822,8 +826,8 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
                 self.key_broker.clone(),
                 ExecutionContext::new_for_test(),
                 QueryJournal::new(),
-                None,
-                None,
+                self.snapshot_cache.clone(),
+                Some("test".to_string()),
             )
             .await?;
             Ok(outcome.result.unwrap_err())
