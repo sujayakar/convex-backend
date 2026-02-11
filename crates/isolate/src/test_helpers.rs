@@ -178,6 +178,8 @@ use crate::{
     },
     concurrency_limiter::ConcurrencyLimiter,
     isolate2::runner::{
+        run_isolate_v2_action,
+        run_isolate_v2_http_action,
         run_isolate_v2_udf,
         SeedData,
     },
@@ -594,6 +596,8 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
                 UdfType::Mutation,
                 path_and_args,
                 self.key_broker.clone(),
+                self.environment_data.default_system_env_vars.clone(),
+                self.file_storage.clone(),
                 ExecutionContext::new_for_test(),
                 QueryJournal::new(),
             )
@@ -747,6 +751,8 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
                 UdfType::Query,
                 path_and_args,
                 self.key_broker.clone(),
+                self.environment_data.default_system_env_vars.clone(),
+                self.file_storage.clone(),
                 ExecutionContext::new_for_test(),
                 journal.unwrap_or_else(QueryJournal::new),
             )
@@ -816,6 +822,8 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
                 UdfType::Query,
                 path_and_args,
                 self.key_broker.clone(),
+                self.environment_data.default_system_env_vars.clone(),
+                self.file_storage.clone(),
                 ExecutionContext::new_for_test(),
                 QueryJournal::new(),
             )
@@ -1006,6 +1014,33 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
 
         let fetch_client = Arc::new(ProxiedFetchClient::new(None, DEV_INSTANCE_NAME.to_owned()));
         let (log_line_sender, mut log_line_receiver) = mpsc::unbounded_channel();
+
+        if self.isolate_v2_enabled {
+            let routed_path = RoutedHttpPath(http_request.head.url.path().to_string());
+            let outcome = run_isolate_v2_http_action(
+                self.rt.clone(),
+                tx,
+                self.module_loader.clone(),
+                validated_path.path().udf_path.clone(),
+                routed_path,
+                http_request,
+                self.environment_data.default_system_env_vars.clone(),
+                identity,
+                app.clone(),
+                fetch_client,
+                self.file_storage.clone(),
+                log_line_sender,
+                http_response_streamer,
+                ExecutionContext::new_for_test(),
+            )
+            .await?;
+            let mut log_lines = vec![];
+            while let Some(log_line) = log_line_receiver.recv().await {
+                log_lines.push(log_line);
+            }
+            return Ok((outcome.result, log_lines.into()));
+        }
+
         let outcome = self
             .isolate
             .execute_http_action(
@@ -1147,7 +1182,28 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
         let fetch_client = Arc::new(ProxiedFetchClient::new(None, DEV_INSTANCE_NAME.to_owned()));
         let (log_line_sender, mut log_line_receiver) = mpsc::unbounded_channel();
 
-        // TODO(presley): Make this also be able to use local executor.
+        if self.isolate_v2_enabled {
+            let outcome = run_isolate_v2_action(
+                self.rt.clone(),
+                tx,
+                self.module_loader.clone(),
+                path_and_args,
+                self.environment_data.default_system_env_vars.clone(),
+                identity,
+                Arc::new(self.clone()),
+                fetch_client,
+                self.file_storage.clone(),
+                log_line_sender,
+                ExecutionContext::new_for_test(),
+            )
+            .await?;
+            let mut log_lines = vec![];
+            while let Some(log_line) = log_line_receiver.recv().await {
+                log_lines.push(log_line);
+            }
+            return Ok((outcome, log_lines.into()));
+        }
+
         let outcome = self
             .isolate
             .execute_action(
