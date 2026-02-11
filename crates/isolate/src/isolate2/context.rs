@@ -45,8 +45,12 @@ impl Context {
             let mut scope = v8::ContextScope::new(handle_scope, context);
 
             let state = ContextState::new(environment);
-            // TODO: this uses isolate-global slots, ideally it should use context-keyed
-            // slots
+            // This uses isolate-global slots via set_slot(), which means only one
+            // ContextState can exist per isolate at a time. For future multi-context
+            // support (e.g., subtransactions running in separate contexts), this
+            // should be migrated to context-keyed slots using v8::Context::set_slot()
+            // or a similar mechanism. For now, isolate2 only uses one context per
+            // isolate, so this is safe.
             scope.set_slot(state);
 
             let global = context.global(&scope);
@@ -118,8 +122,14 @@ impl Context {
             ctx.start_evaluate_function(udf_type, &udf_path, arguments)
         })?;
         if let EvaluateResult::Pending { .. } = result {
-            self.pending_functions
-                .insert(function_id, PendingFunction { udf_path, promise });
+            self.pending_functions.insert(
+                function_id,
+                PendingFunction {
+                    udf_path,
+                    promise,
+                    is_http_action: false,
+                },
+            );
         };
         Ok((function_id, result))
     }
@@ -146,4 +156,67 @@ impl Context {
 pub struct PendingFunction {
     pub udf_path: CanonicalizedUdfPath,
     pub promise: v8::Global<v8::Promise>,
+    /// HTTP actions return raw JSON strings instead of serialized Convex values.
+    pub is_http_action: bool,
+}
+
+impl Context {
+    pub fn start_http_action(
+        &mut self,
+        session: &mut super::session::Session,
+        http_module_path: &CanonicalizedUdfPath,
+        routed_path: &str,
+        request_json: &str,
+        method: &str,
+        body: Option<bytes::Bytes>,
+    ) -> anyhow::Result<super::client::HttpActionStartResult> {
+        use super::client::{
+            HttpActionStartResult,
+            HttpActionStartResultInner,
+        };
+
+        let inner = match self.enter(session, |mut ctx| {
+            ctx.start_http_action(http_module_path, routed_path, request_json, method, body)
+        }) {
+            Ok(inner) => inner,
+            Err(e) => {
+                // If the V8 code threw (e.g., endpoint error), convert to
+                // HttpActionStartResult::Error instead of propagating as system error.
+                let js_error = match e.downcast::<common::errors::JsError>() {
+                    Ok(js_error) => js_error,
+                    Err(e) => common::errors::JsError::from_message(e.to_string()),
+                };
+                return Ok(HttpActionStartResult::Error(js_error));
+            },
+        };
+
+        match inner {
+            HttpActionStartResultInner::Started {
+                promise,
+                udf_path,
+                result,
+                route,
+            } => {
+                let function_id = self.next_function_id;
+                self.next_function_id += 1;
+                if let super::client::EvaluateResult::Pending { .. } = result {
+                    self.pending_functions.insert(
+                        function_id,
+                        PendingFunction {
+                            udf_path,
+                            promise,
+                            is_http_action: true,
+                        },
+                    );
+                }
+                Ok(HttpActionStartResult::Started {
+                    function_id,
+                    result,
+                    route,
+                })
+            },
+            HttpActionStartResultInner::NoRoute => Ok(HttpActionStartResult::NoRoute),
+            HttpActionStartResultInner::Error(e) => Ok(HttpActionStartResult::Error(e)),
+        }
+    }
 }

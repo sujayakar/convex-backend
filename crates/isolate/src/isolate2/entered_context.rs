@@ -122,8 +122,14 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
                     },
                 }
             } else if self.heap_context.oomed() {
-                // TODO: do the rest of the logging that isolate1 does
                 log_isolate_out_of_memory();
+                let stats = self.scope.get_heap_statistics();
+                tracing::warn!(
+                    used_heap_size = stats.used_heap_size(),
+                    total_heap_size = stats.total_heap_size(),
+                    heap_size_limit = stats.heap_size_limit(),
+                    "isolate2: out of memory"
+                );
                 anyhow::bail!(JsError::from_message(format!("{OutOfMemoryError}")));
             } else {
                 anyhow::bail!("Execution terminated");
@@ -319,8 +325,17 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
 
         let global = self.scope.get_current_context().global(self.scope);
 
+        // Actions take (requestId, argsStr) while queries/mutations take (argsStr).
+        let v8_args: Vec<v8::Local<v8::Value>> = if udf_type == UdfType::Action {
+            let request_id_str = v8::String::new(self.scope, "dummy_request_id")
+                .ok_or_else(|| anyhow!("Failed to create request id string"))?;
+            vec![request_id_str.into(), args_v8_str.into()]
+        } else {
+            vec![args_v8_str.into()]
+        };
+
         let promise: v8::Local<v8::Promise> = self
-            .execute_user_code(|scope| invoke.call(scope, global.into(), &[args_v8_str.into()]))?
+            .execute_user_code(|scope| invoke.call(scope, global.into(), &v8_args))?
             .ok_or_else(|| anyhow!("Failed to call invoke function"))?
             .try_into()?;
 
@@ -369,6 +384,16 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
                 );
                 anyhow::bail!(JsError::from_message(message));
             },
+            (UdfType::Action, false, false, true) => {
+                strings::invokeAction.create(self.scope)?
+            },
+            (UdfType::Action, _, _, false) => {
+                let message = format!(
+                    "Function {udf_path:?} is not registered as an action. Did you forget to wrap \
+                     it with `action`?"
+                );
+                anyhow::bail!(JsError::from_message(message));
+            },
             (UdfType::Query | UdfType::Mutation, false, false, _) => {
                 let message = format!(
                     "Function {udf_path:?} is neither a query or mutation. Did you forget to wrap \
@@ -376,11 +401,10 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
                 );
                 anyhow::bail!(JsError::from_message(message));
             },
-            // TODO: Action support.
             _ => {
                 anyhow::bail!(
                     "Unexpected function classification: {udf_type} vs. (is_query: {is_query}, \
-                     is_mutation: {is_mutation}, is_actino: {is_action})"
+                     is_mutation: {is_mutation}, is_action: {is_action})"
                 );
             },
         };
@@ -407,6 +431,7 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
         pending_function: &PendingFunction,
         completions: Completions,
     ) -> anyhow::Result<EvaluateResult> {
+        let stream_parts = completions.stream_parts;
         let (async_syscalls, async_ops) = {
             let context_state = self.context_state_mut()?;
             let mut async_syscalls = vec![];
@@ -429,13 +454,38 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
             };
             resolve_promise(scope, resolver, result_v8)?;
         }
+        // Deliver stream data before resolving async op promises so stream
+        // content is available when the promise handler runs (e.g., for fetch
+        // response bodies).
+        for (stream_id, chunk) in stream_parts {
+            let context_state = self.context_state_mut()?;
+            match chunk {
+                Ok(data) => {
+                    let done = data.is_none();
+                    context_state.extend_stream(stream_id, data, done)?;
+                },
+                Err(_e) => {
+                    // Stream error: mark the stream as done with no more data.
+                    context_state.extend_stream(stream_id, None, true)?;
+                },
+            }
+        }
+
+        // Resolve each async op completion individually with microtask
+        // checkpoints between each. This ensures timer callbacks and their
+        // microtasks execute in the correct order (matching isolate1 behavior
+        // where each task response is processed one at a time).
         for (resolver, result) in async_ops {
-            scope!(let scope, self.scope);
-            let result_v8 = match result {
-                Ok(v) => Ok(v.into_v8(scope)?),
-                Err(e) => Err(e),
-            };
-            resolve_promise(scope, resolver, result_v8)?;
+            {
+                scope!(let scope, self.scope);
+                let result_v8 = match result {
+                    Ok(v) => Ok(v.into_v8(scope)?),
+                    Err(e) => Err(e),
+                };
+                resolve_promise(scope, resolver, result_v8)?;
+            }
+            self.execute_user_code(|s| s.perform_microtask_checkpoint())?;
+            pump_message_loop(self.scope);
         }
 
         self.execute_user_code(|s| s.perform_microtask_checkpoint())?;
@@ -447,7 +497,11 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
             udf_path: pending_function.udf_path.clone(),
             component_path: Some(ComponentPath::root()),
         };
-        self.check_promise_result(&path, &promise)
+        if pending_function.is_http_action {
+            self.check_http_promise_result(&path, &promise)
+        } else {
+            self.check_promise_result(&path, &promise)
+        }
     }
 
     fn check_promise_result(
@@ -467,7 +521,15 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
                 let e = promise.result(self.scope);
                 anyhow::bail!(self.format_traceback(e)?);
             },
-            v8::PromiseState::Fulfilled if pending.is_empty() => {
+            v8::PromiseState::Fulfilled
+                if pending.is_empty()
+                    || (pending.async_syscalls.is_empty()
+                        && pending.dynamic_imports.is_empty()) =>
+            {
+                // Return Ready when the promise is fulfilled, even if there
+                // are dangling async ops (timers). This matches isolate1's
+                // behavior where the action loop discards remaining tasks
+                // once the main promise resolves.
                 let v8_result: v8::Local<v8::String> = promise.result(self.scope).try_into()?;
                 let result_str = helpers::to_rust_string(self.scope, &v8_result)?;
                 let result = deserialize_udf_result(path, &result_str)??;
@@ -483,6 +545,208 @@ impl<'enter, 'scope: 'enter, 'i> EnteredContext<'enter, 'scope, 'i> {
         let context_state = self.context_state_mut()?;
         let outcome = context_state.environment.finish_execution()?;
         Ok(outcome)
+    }
+
+    /// Start an HTTP action by looking up the router in the HTTP module,
+    /// calling `router.lookup(path, method)`, and then `router.runRequest(request, route)`.
+    pub fn start_http_action(
+        &mut self,
+        http_module_path: &CanonicalizedUdfPath,
+        routed_path: &str,
+        request_json: &str,
+        method: &str,
+        body: Option<bytes::Bytes>,
+    ) -> anyhow::Result<super::client::HttpActionStartResultInner> {
+        use super::client::HttpActionStartResultInner as HttpActionStartResult;
+        use crate::strings;
+
+        {
+            let context_state = self.context_state_mut()?;
+            context_state.environment.start_execution()?;
+        }
+
+        let module_url = module_specifier_from_path(http_module_path.module())?;
+        let module_global = {
+            let context_state = self.context_state_mut()?;
+            context_state
+                .module_map
+                .lookup_module(&module_url)
+                .ok_or_else(|| {
+                    let err = ModuleNotFoundError::new(http_module_path.module().as_str());
+                    JsError::from_message(err.to_string())
+                })?
+                .clone()
+        };
+        let module = v8::Local::new(self.scope, module_global);
+        if module.get_status() != v8::ModuleStatus::Evaluated {
+            anyhow::bail!("HTTP module not evaluated");
+        }
+        let namespace = module.get_module_namespace();
+        let namespace = v8::Local::new(self.scope, namespace)
+            .to_object(self.scope)
+            .ok_or_else(|| anyhow!("Module namespace not an object"))?;
+
+        let default_str = v8::String::new(self.scope, "default")
+            .ok_or_else(|| anyhow!("Failed to create string"))?;
+        if namespace.has(self.scope, default_str.into()) != Some(true) {
+            return Ok(HttpActionStartResult::Error(JsError::from_message(
+                format!(
+                    "Couldn't find default export in module \"{:?}\".",
+                    http_module_path.module()
+                ),
+            )));
+        }
+        let router: v8::Local<v8::Object> = namespace
+            .get(self.scope, default_str.into())
+            .ok_or_else(|| anyhow!("Missing default export"))?
+            .try_into()?;
+
+        let is_router_str = strings::isRouter.create(self.scope)?.into();
+        let is_router = router.has(self.scope, is_router_str) == Some(true)
+            && router
+                .get(self.scope, is_router_str)
+                .map(|v| v.is_true())
+                .unwrap_or(false);
+        if !is_router {
+            return Ok(HttpActionStartResult::Error(JsError::from_message(
+                "The default export of `convex/http.js` is not a Router.".to_string(),
+            )));
+        }
+
+        let lookup_str = strings::lookup.create(self.scope)?.into();
+        let lookup_fn: v8::Local<v8::Function> = router
+            .get(self.scope, lookup_str)
+            .ok_or_else(|| anyhow!("Missing lookup method on router"))?
+            .try_into()?;
+        let path_v8 = v8::String::new(self.scope, routed_path)
+            .ok_or_else(|| anyhow!("Failed to create path string"))?;
+        let method_v8 = v8::String::new(self.scope, method)
+            .ok_or_else(|| anyhow!("Failed to create method string"))?;
+        let global = self.scope.get_current_context().global(self.scope);
+        let lookup_result = self.execute_user_code(|scope| {
+            lookup_fn.call(scope, global.into(), &[path_v8.into(), method_v8.into()])
+        })?;
+        let lookup_result = match lookup_result {
+            Some(v) if !v.is_null() && !v.is_undefined() => v,
+            _ => return Ok(HttpActionStartResult::NoRoute),
+        };
+
+        let lookup_obj = lookup_result
+            .to_object(self.scope)
+            .ok_or_else(|| anyhow!("lookup result not an object"))?;
+        let route_method_v8: v8::Local<v8::String> = lookup_obj
+            .get_index(self.scope, 1)
+            .ok_or_else(|| anyhow!("Missing index 1 in lookup result"))?
+            .try_into()?;
+        let route_method_s = helpers::to_rust_string(self.scope, &route_method_v8)?;
+        let route_path_v8: v8::Local<v8::String> = lookup_obj
+            .get_index(self.scope, 2)
+            .ok_or_else(|| anyhow!("Missing index 2 in lookup result"))?
+            .try_into()?;
+        let route_path_s = helpers::to_rust_string(self.scope, &route_path_v8)?;
+        let route = format!("{route_method_s} {route_path_s}");
+
+        let (signal_stream_id, body_stream_id) = {
+            let context_state = self.context_state_mut()?;
+            let signal_id = context_state.create_stream()?;
+            let body_id = if body.is_some() {
+                let id = context_state.create_stream()?;
+                if let Some(body_data) = &body {
+                    context_state.extend_stream(id, Some(body_data.clone()), true)?;
+                }
+                Some(id)
+            } else {
+                None
+            };
+            (signal_id, body_id)
+        };
+
+        let patched_request_json = {
+            let mut request_value: serde_json::Value = serde_json::from_str(request_json)?;
+            if let Some(obj) = request_value.as_object_mut() {
+                obj.insert(
+                    "signal".to_string(),
+                    serde_json::Value::String(signal_stream_id.to_string()),
+                );
+                if let Some(body_id) = body_stream_id {
+                    obj.insert(
+                        "streamId".to_string(),
+                        serde_json::Value::String(body_id.to_string()),
+                    );
+                }
+            }
+            request_value.to_string()
+        };
+
+        let run_request_str = strings::runRequest.create(self.scope)?.into();
+        let run_request_fn: v8::Local<v8::Function> = router
+            .get(self.scope, run_request_str)
+            .ok_or_else(|| anyhow!("Missing runRequest method on router"))?
+            .try_into()?;
+        let args_v8 = v8::String::new(self.scope, &patched_request_json)
+            .ok_or_else(|| anyhow!("Failed to create request string"))?;
+        let route_v8 = v8::String::new(self.scope, routed_path)
+            .ok_or_else(|| anyhow!("Failed to create route string"))?;
+        let promise: v8::Local<v8::Promise> = self
+            .execute_user_code(|scope| {
+                run_request_fn.call(scope, global.into(), &[args_v8.into(), route_v8.into()])
+            })?
+            .ok_or_else(|| anyhow!("runRequest returned None"))?
+            .try_into()?;
+
+        self.execute_user_code(|s| s.perform_microtask_checkpoint())?;
+        pump_message_loop(self.scope);
+
+        let path = ResolvedComponentFunctionPath {
+            component: ComponentId::Root,
+            udf_path: http_module_path.clone(),
+            component_path: Some(ComponentPath::root()),
+        };
+        let promise_global = v8::Global::new(self.scope, promise);
+        let evaluate_result = self.check_http_promise_result(&path, &promise)?;
+
+        Ok(HttpActionStartResult::Started {
+            promise: promise_global,
+            udf_path: http_module_path.clone(),
+            result: evaluate_result,
+            route,
+        })
+    }
+
+    /// Check the promise result for HTTP actions. Unlike UDFs, the result is
+    /// a raw JSON string (not a Convex value), so we don't deserialize it.
+    fn check_http_promise_result(
+        &mut self,
+        _path: &ResolvedComponentFunctionPath,
+        promise: &v8::Local<v8::Promise>,
+    ) -> anyhow::Result<EvaluateResult> {
+        let context = self.context_state_mut()?;
+        let pending = context.take_pending();
+        match promise.state() {
+            v8::PromiseState::Pending if pending.is_empty() => {
+                anyhow::bail!(JsError::from_message(
+                    "Returned promise will never resolve".to_string()
+                ))
+            },
+            v8::PromiseState::Rejected => {
+                let e = promise.result(self.scope);
+                anyhow::bail!(self.format_traceback(e)?);
+            },
+            v8::PromiseState::Fulfilled
+                if pending.is_empty()
+                    || (pending.async_syscalls.is_empty()
+                        && pending.dynamic_imports.is_empty()) =>
+            {
+                let v8_result: v8::Local<v8::String> = promise.result(self.scope).try_into()?;
+                let result_str = helpers::to_rust_string(self.scope, &v8_result)?;
+                Ok(EvaluateResult::Ready(
+                    value::ConvexValue::try_from(result_str)?,
+                ))
+            },
+            v8::PromiseState::Pending | v8::PromiseState::Fulfilled => {
+                Ok(EvaluateResult::Pending(pending))
+            },
+        }
     }
 
     pub fn format_traceback(&mut self, exception: v8::Local<v8::Value>) -> anyhow::Result<JsError> {
