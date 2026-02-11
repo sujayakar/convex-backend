@@ -12,6 +12,7 @@ use clap::{
     Subcommand,
 };
 use cmd_util::env::config_test;
+use isolate::configure_v8_for_determinism;
 use nitpick::{
     framework::{
         batch::run_batch,
@@ -84,6 +85,11 @@ const SCENARIOS: &[&str] = &[
 
 fn main() -> anyhow::Result<()> {
     config_test();
+    // Enable deterministic V8 execution before any V8 initialization occurs.
+    // This disables background JIT compilation and concurrent GC sweeping,
+    // eliminating non-determinism from V8's shared platform thread pool when
+    // multiple simulations run in parallel.
+    configure_v8_for_determinism();
     let cli = Cli::parse();
 
     match cli.command {

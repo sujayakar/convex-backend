@@ -7,6 +7,10 @@ use std::{
     },
     env,
     sync::{
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
         Arc,
         Once,
     },
@@ -540,11 +544,26 @@ impl<RT: Runtime> Clone for IsolateClient<RT> {
     }
 }
 
+/// Request deterministic V8 execution for simulation testing.
+///
+/// Must be called **before** `initialize_v8()`. Enables V8's `--predictable`
+/// flag (disabling background JIT compilation, concurrent GC sweeping, and
+/// randomized hash seeds) and forces a single V8 platform thread. This
+/// eliminates non-determinism caused by V8's shared background thread pool
+/// when multiple simulations run in parallel.
+static V8_DETERMINISTIC: AtomicBool = AtomicBool::new(false);
+
+pub fn configure_v8_for_determinism() {
+    V8_DETERMINISTIC.store(true, Ordering::SeqCst);
+}
+
 pub fn initialize_v8() {
     ensure_utc().expect("Failed to setup timezone");
     static V8_INIT: Once = Once::new();
     V8_INIT.call_once(|| {
         let _s = static_span!("initialize_v8");
+
+        let deterministic = V8_DETERMINISTIC.load(Ordering::SeqCst);
 
         // `deno_core_icudata` internally loads this with proper 16-byte alignment.
         assert!(v8::icu::set_common_data_74(deno_core_icudata::ICU_DATA).is_ok());
@@ -566,7 +585,14 @@ pub fn initialize_v8() {
         // not compatible with how Rust tests run and additionally, the version of V8
         // used at the time of this comment has a bug with PKU on certain Intel CPUs.
         // See https://github.com/denoland/rusty_v8/issues/1381
-        let platform = v8::new_unprotected_default_platform(*V8_THREADS, false).make_shared();
+        //
+        // In deterministic mode we force a single platform thread. V8's
+        // `--predictable` flag disables background compilation and concurrent GC,
+        // so no background work is generated, but constraining the thread pool
+        // to 1 is belt-and-suspenders against any remaining platform tasks.
+        let thread_pool_size = if deterministic { 1 } else { *V8_THREADS };
+        let platform =
+            v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
 
         // Calls into `v8::V8::InitializePlatform`, sets global platform.
         V8::initialize_platform(platform);
@@ -589,6 +615,13 @@ pub fn initialize_v8() {
             "--stack-size=2048".to_string(),
             "--js-base-64".to_string(),
         ];
+        // In deterministic mode, disable background compilation, concurrent
+        // sweeping, and randomized hash seeds so V8 execution is fully
+        // reproducible across runs.
+        if deterministic {
+            argv.push("--predictable".to_string());
+            tracing::info!("V8 deterministic mode enabled (--predictable, thread_pool_size=1)");
+        }
         if let Ok(flags) = env::var("ISOLATE_V8_FLAGS") {
             argv.extend(
                 flags
