@@ -186,6 +186,15 @@ fn handle_request(
             let r = context.enter(session, |mut ctx| ctx.shutdown());
             response.send(r).map_err(|_| anyhow::anyhow!("Canceled"))?;
         },
+        IsolateThreadRequest::NewExecution {
+            environment,
+            response,
+        } => {
+            context.reset(session, environment);
+            response
+                .send(Ok(()))
+                .map_err(|_| anyhow::anyhow!("Canceled"))?;
+        },
     }
     Ok(())
 }
@@ -193,10 +202,19 @@ fn handle_request(
 async fn v8_thread(
     mut receiver: mpsc::Receiver<IsolateThreadRequest>,
     environment: Box<dyn Environment>,
+    snapshot: Option<Arc<super::snapshot::EntrypointSnapshot>>,
 ) -> anyhow::Result<()> {
-    let mut thread = Thread::new();
+    // Create Thread based on whether we have a snapshot.
+    let mut thread = match snapshot {
+        Some(ref snap) => Thread::new_from_snapshot(snap),
+        None => Thread::new(),
+    };
     let mut session = Session::new(&mut thread);
-    let mut context = Context::new(&mut session, environment)?;
+    // Create Context based on whether we have a snapshot.
+    let mut context = match snapshot {
+        Some(ref snap) => Context::new_from_snapshot(&mut session, environment, snap)?,
+        None => Context::new(&mut session, environment)?,
+    };
 
     while let Some(request) = receiver.recv().await {
         handle_request(&mut session, &mut context, request)?;
@@ -473,6 +491,21 @@ impl<RT: Runtime> Environment for UdfEnvironment<RT> {
     }
 }
 
+/// Source collected during module loading, used for snapshot creation.
+struct CollectedModule {
+    url: String,
+    source: String,
+    source_map: Option<String>,
+}
+
+/// Result of run_request including collected module sources for snapshot creation.
+struct RunRequestResult {
+    outcome: UdfOutcome,
+    /// Modules loaded during this request (empty if snapshot was used).
+    /// The last entry is the entrypoint module.
+    collected_modules: Vec<CollectedModule>,
+}
+
 async fn run_request<RT: Runtime>(
     rt: RT,
     tx: &mut Transaction<RT>,
@@ -486,7 +519,8 @@ async fn run_request<RT: Runtime>(
     key_broker: FunctionRunnerKeyBroker,
     execution_context: ExecutionContext,
     query_journal: QueryJournal,
-) -> anyhow::Result<UdfOutcome> {
+    used_snapshot: bool,
+) -> anyhow::Result<RunRequestResult> {
     let (path, arguments, udf_server_version) = path_and_args.consume();
     anyhow::ensure!(
         path.component.is_root(),
@@ -494,7 +528,6 @@ async fn run_request<RT: Runtime>(
     );
     let udf_path = &path.udf_path;
 
-    // Spawn a separate Tokio thread to receive log lines.
     let (log_line_tx, log_line_rx) = oneshot::channel();
     let log_line_processor = rt.spawn("log_line_processor", async move {
         let mut log_lines: Vec<LogLine> = vec![];
@@ -504,35 +537,44 @@ async fn run_request<RT: Runtime>(
         let _ = log_line_tx.send(log_lines);
     });
 
-    // Phase 1: Load and register all source needed, and evaluate the UDF's module.
+    let mut collected_modules: Vec<CollectedModule> = Vec::new();
     let r: anyhow::Result<_> = try {
-        let mut stack = vec![udf_path.module().clone()];
+        if !used_snapshot {
+            let mut stack = vec![udf_path.module().clone()];
 
-        while let Some(module_path) = stack.pop() {
-            let module_specifier = module_specifier_from_path(&module_path)?;
-            let path = CanonicalizedComponentModulePath {
-                component: ComponentId::Root,
-                module_path: module_path.clone(),
-            };
-            let Some(module_metadata) = module_loader.get_module(tx, path).await? else {
-                let err = ModuleNotFoundError::new(module_path.as_str());
-                Err(JsError::from_message(format!("{err}")))?
-            };
-            let requests = client
-                .register_module(
-                    module_specifier,
-                    module_metadata.source.to_string(),
-                    module_metadata.source_map.clone(),
-                )
-                .await?;
-            for requested_module_specifier in requests {
-                let module_path = path_from_module_specifier(&requested_module_specifier)?;
-                stack.push(module_path);
+            while let Some(module_path) = stack.pop() {
+                let module_specifier = module_specifier_from_path(&module_path)?;
+                let path = CanonicalizedComponentModulePath {
+                    component: ComponentId::Root,
+                    module_path: module_path.clone(),
+                };
+                let Some(module_metadata) = module_loader.get_module(tx, path).await? else {
+                    let err = ModuleNotFoundError::new(module_path.as_str());
+                    Err(JsError::from_message(format!("{err}")))?
+                };
+                let source_str = module_metadata.source.to_string();
+                let source_map_clone = module_metadata.source_map.clone();
+                let requests = client
+                    .register_module(
+                        module_specifier.clone(),
+                        source_str.clone(),
+                        source_map_clone.clone(),
+                    )
+                    .await?;
+                collected_modules.push(CollectedModule {
+                    url: module_path.as_str().to_string(),
+                    source: source_str,
+                    source_map: source_map_clone,
+                });
+                for requested_module_specifier in requests {
+                    let module_path = path_from_module_specifier(&requested_module_specifier)?;
+                    stack.push(module_path);
+                }
             }
-        }
 
-        let udf_module_specifier = module_specifier_from_path(udf_path.module())?;
-        client.evaluate_module(udf_module_specifier.clone()).await?;
+            let udf_module_specifier = module_specifier_from_path(udf_path.module())?;
+            client.evaluate_module(udf_module_specifier.clone()).await?;
+        }
         anyhow::Ok(())
     };
     if let Err(e) = r {
@@ -558,7 +600,10 @@ async fn run_request<RT: Runtime>(
             // Bogus value because we are removing isolate2
             user_execution_time: Some(Duration::ZERO),
         };
-        return Ok(outcome);
+        return Ok(RunRequestResult {
+            outcome,
+            collected_modules: vec![],
+        });
     }
 
     // Phase 2: Start the UDF, execute its async syscalls, and poll until
@@ -706,7 +751,10 @@ async fn run_request<RT: Runtime>(
         // Bogus value because we are removing isolate2
         user_execution_time: Some(Duration::ZERO),
     };
-    Ok(outcome)
+    Ok(RunRequestResult {
+        outcome,
+        collected_modules,
+    })
 }
 
 struct UdfShared<RT: Runtime> {
@@ -996,6 +1044,8 @@ async fn tokio_thread<RT: Runtime>(
     key_broker: FunctionRunnerKeyBroker,
     execution_context: ExecutionContext,
     query_journal: QueryJournal,
+    used_snapshot: bool,
+    snapshot_cache: Option<(super::snapshot::SnapshotCache, super::snapshot::SnapshotCacheKey)>,
 ) {
     let request = run_request(
         rt.clone(),
@@ -1010,6 +1060,7 @@ async fn tokio_thread<RT: Runtime>(
         key_broker,
         execution_context,
         query_journal,
+        used_snapshot,
     );
 
     let r = tokio::select! {
@@ -1019,7 +1070,54 @@ async fn tokio_thread<RT: Runtime>(
         _ = rt.wait(total_timeout) => Err(anyhow::anyhow!("Total timeout exceeded")),
         _ = sender.closed() => Err(anyhow::anyhow!("Cancelled")),
     };
-    let _ = sender.send(r.map(|r| (tx, r)));
+
+    let r = match r {
+        Ok(run_result) => {
+            if !used_snapshot
+                && run_result.outcome.result.is_ok()
+                && !run_result.collected_modules.is_empty()
+            {
+                if let Some((cache, cache_key)) = snapshot_cache {
+                    let modules = run_result.collected_modules;
+                    let entrypoint_url = cache_key.entrypoint_module.as_str().to_string();
+                    let _ = rt.spawn("create_snapshot", async move {
+                        let entrypoint_idx = modules
+                            .iter()
+                            .position(|m| m.url == entrypoint_url)
+                            .unwrap_or(modules.len().saturating_sub(1));
+                        let deps: Vec<super::snapshot::SnapshotModule<'_>> = modules
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| *i != entrypoint_idx)
+                            .map(|(_, m)| super::snapshot::SnapshotModule {
+                                url: &m.url,
+                                source: &m.source,
+                                source_map: m.source_map.as_deref(),
+                            })
+                            .collect();
+                        let entrypoint = &modules[entrypoint_idx];
+                        let entry = super::snapshot::SnapshotModule {
+                            url: &entrypoint.url,
+                            source: &entrypoint.source,
+                            source_map: entrypoint.source_map.as_deref(),
+                        };
+                        match super::snapshot::create_entrypoint_snapshot(&deps, &entry) {
+                            Ok(snapshot) => {
+                                cache.insert(cache_key, Arc::new(snapshot));
+                            },
+                            Err(e) => {
+                                tracing::warn!("Failed to create snapshot: {e:?}");
+                            },
+                        }
+                    });
+                }
+            }
+            Ok(run_result.outcome)
+        },
+        Err(e) => Err(e),
+    };
+
+    let _ = sender.send(r.map(|outcome| (tx, outcome)));
     drop(client);
 }
 
@@ -1033,6 +1131,8 @@ pub async fn run_isolate_v2_udf<RT: Runtime>(
     key_broker: FunctionRunnerKeyBroker,
     context: ExecutionContext,
     query_journal: QueryJournal,
+    snapshot_cache: Option<super::snapshot::SnapshotCache>,
+    client_id: Option<String>,
 ) -> anyhow::Result<(Transaction<RT>, UdfOutcome)> {
     initialize_v8();
 
@@ -1061,6 +1161,20 @@ pub async fn run_isolate_v2_udf<RT: Runtime>(
     };
     let env_vars = EnvironmentVariablesModel::new(&mut tx).preload().await?;
 
+    let cache_key = super::snapshot::SnapshotCacheKey {
+        client_id: client_id.unwrap_or_default(),
+        entrypoint_module: path_and_args.path().udf_path.module().clone(),
+    };
+    let snapshot = snapshot_cache
+        .as_ref()
+        .and_then(|cache| cache.get(&cache_key));
+    let used_snapshot = snapshot.is_some();
+    let snapshot_cache_for_tokio = if !used_snapshot {
+        snapshot_cache.map(|cache| (cache, cache_key))
+    } else {
+        None
+    };
+
     // TODO: This unconditionally takes a table mapping dep.
     let shared = UdfShared::new(tx.table_mapping().clone());
     let (log_line_sender, log_line_receiver) = spsc::channel(32);
@@ -1078,7 +1192,7 @@ pub async fn run_isolate_v2_udf<RT: Runtime>(
     // one pending request at a time.
     let (sender, receiver) = mpsc::channel(1);
     let v8_handle = rt.spawn_thread("isolate2", || async {
-        if let Err(e) = v8_thread(receiver, Box::new(environment)).await {
+        if let Err(e) = v8_thread(receiver, Box::new(environment), snapshot).await {
             println!("Error in isolate thread: {e:?}");
         }
     });
@@ -1102,6 +1216,8 @@ pub async fn run_isolate_v2_udf<RT: Runtime>(
             key_broker,
             context,
             query_journal,
+            used_snapshot,
+            snapshot_cache_for_tokio,
         ),
     );
 
