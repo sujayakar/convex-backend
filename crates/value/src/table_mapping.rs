@@ -43,14 +43,13 @@ impl TableNamespace {
     /// Use this to make it clear that a table pertains to the root component.
     /// It doesn't extend between components like a plain Global.
     /// This is useful for code searching.
+    ///
+    /// When adding child component support, code using `root_component()` may
+    /// need to accept a `ComponentId` parameter and use `component.into()`
+    /// instead. Known remaining gap:
+    /// - Pagination blocked in child components (`async_syscall.rs`) due to
+    ///   QueryJournal sync design
     pub const fn root_component() -> Self {
-        Self::Global
-    }
-
-    /// Namespace that should be replaced with RootComponent or ByComponent,
-    /// but for now uses Global. For easy searching.
-    #[allow(non_snake_case)]
-    pub const fn by_component_TODO() -> Self {
         Self::Global
     }
 }

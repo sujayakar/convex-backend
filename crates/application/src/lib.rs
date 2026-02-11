@@ -2587,7 +2587,7 @@ impl<RT: Runtime> Application<RT> {
         indexes: BTreeMap<IndexName, IndexedFields>,
     ) -> anyhow::Result<()> {
         let mut tx = self.begin(identity.clone()).await?;
-        let namespace = TableNamespace::by_component_TODO();
+        let namespace = TableNamespace::root_component();
         for (index_name, index_fields) in indexes.into_iter() {
             let index_fields = self._validate_user_defined_index_fields(index_fields)?;
             let index_metadata =
@@ -3300,7 +3300,7 @@ impl<RT: Runtime> Application<RT> {
         stream: &ValidatedAirbyteStream,
     ) -> anyhow::Result<()> {
         let table_name = record.table_name().clone();
-        let namespace = TableNamespace::by_component_TODO();
+        let namespace = TableNamespace::root_component();
         let deleted = record.deleted();
         let object = record.into_object();
         match stream {

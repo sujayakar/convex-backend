@@ -784,7 +784,7 @@ impl<RT: Runtime> UdfShared<RT> {
         let inner = self.inner.lock();
         inner
             .table_mapping
-            .namespace(TableNamespace::by_component_TODO())
+            .namespace(TableNamespace::root_component())
     }
 }
 
