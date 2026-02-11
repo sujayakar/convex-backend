@@ -27,6 +27,7 @@ isolate = { workspace = true, features = ["testing"] }
 keybroker = { workspace = true, features = ["testing"] }
 metrics = { workspace = true, features = ["testing"] }
 model = { workspace = true, features = ["testing"] }
+parking_lot = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rand_distr = { workspace = true }

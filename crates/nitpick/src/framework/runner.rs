@@ -31,9 +31,15 @@ use runtime::testing::{
     TestRuntime,
 };
 
-use super::scenario::{
-    Scenario,
-    TestRun,
+use super::{
+    fault_injection::{
+        DstPauseController,
+        FaultConfig,
+    },
+    scenario::{
+        Scenario,
+        TestRun,
+    },
 };
 
 const VERIFY_PROBABILITY: f64 = 0.01;
@@ -51,6 +57,26 @@ pub struct Config {
 
     /// Seed the test's randomness with the given seed.
     pub seed: u64,
+
+    /// If set, enable randomized fault injection at breakpoints.
+    pub fault_config: Option<FaultConfig>,
+}
+
+/// Constant mixed into the seed to derive a separate RNG stream for the
+/// fault injector, so it doesn't correlate with the TestDriver's RNG.
+const FAULT_SEED_MIX: u64 = 0xDEAD_BEEF_CAFE_BABE;
+
+/// Create a `TestDriver`, optionally wired up with a `DstPauseController`.
+fn create_test_driver(config: &Config) -> (TestDriver, Option<DstPauseController>) {
+    if let Some(fault_config) = config.fault_config {
+        let dst_seed = config.seed ^ FAULT_SEED_MIX;
+        let (controller, pause_client) = DstPauseController::new(dst_seed, fault_config);
+        let td = TestDriver::new_with_config(config.seed, pause_client);
+        (td, Some(controller))
+    } else {
+        let td = TestDriver::new_with_seed(config.seed);
+        (td, None)
+    }
 }
 
 /// Result of a single simulation run, used for determinism comparison.
@@ -231,9 +257,12 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
             let (run1, should_check) = {
-                let td = TestDriver::new_with_seed(config.seed);
+                let (td, dst_controller) = create_test_driver(&config);
                 let run1 = run_once(&scenario, &td, config)?;
                 let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
+                if let Some(controller) = &dst_controller {
+                    log_breakpoint_coverage(controller);
+                }
                 (run1, should_check)
             };
 
@@ -257,8 +286,12 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
             let run1 = {
-                let td = TestDriver::new_with_seed(config.seed);
-                run_once(&scenario, &td, config)?
+                let (td, dst_controller) = create_test_driver(&config);
+                let run1 = run_once(&scenario, &td, config)?;
+                if let Some(controller) = &dst_controller {
+                    log_breakpoint_coverage(controller);
+                }
+                run1
             };
             check_determinism(&scenario, config, &run1)?;
             anyhow::Ok(())
@@ -276,7 +309,7 @@ fn check_determinism<S: Scenario>(
         "[nitpick] Running determinism check for seed {}",
         config.seed
     );
-    let td = TestDriver::new_with_seed(config.seed);
+    let (td, _dst_controller) = create_test_driver(&config);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
         anyhow::bail!(
@@ -288,4 +321,21 @@ fn check_determinism<S: Scenario>(
     }
     tracing::info!("[nitpick] Determinism check passed");
     Ok(())
+}
+
+/// Log breakpoint coverage from a `DstPauseController` run.
+fn log_breakpoint_coverage(controller: &DstPauseController) {
+    let hits = controller.hits();
+    let total = controller.total_hits();
+    if hits.is_empty() {
+        tracing::info!("[nitpick] No breakpoints hit during this run");
+    } else {
+        tracing::info!(
+            "[nitpick] Breakpoint coverage: {total} hits across {} labels",
+            hits.len()
+        );
+        for (label, count) in &hits {
+            tracing::info!("[nitpick]   {label}: {count} hits");
+        }
+    }
 }
