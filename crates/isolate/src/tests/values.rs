@@ -3,6 +3,7 @@ use core::f64;
 use cmd_util::env::env_config;
 use common::{
     assert_obj,
+    testing::TestPersistence,
     value::ConvexValue,
 };
 use must_let::must_let;
@@ -53,16 +54,16 @@ async fn test_empty_key(rt: TestRuntime) -> anyhow::Result<()> {
     .await
 }
 
-async fn test_compare(rt: TestRuntime, values: Vec<ConvexValue>) -> anyhow::Result<()> {
-    let udf = UdfTest::default(rt).await?;
-    let values = values.clone();
-    let mut sorted_values = values.clone();
+async fn test_compare_impl(
+    t: &UdfTest<TestRuntime, TestPersistence>,
+    values: &[ConvexValue],
+) -> anyhow::Result<()> {
+    let mut sorted_values = values.to_vec();
     sorted_values.sort();
-    let value = udf
-        .query("values:compare", assert_obj!("values" => values))
+    let value = t
+        .query("values:compare", assert_obj!("values" => values.to_vec()))
         .await?;
     must_let!(let ConvexValue::Array(sorted_result) = value);
-
     let sorted_result_vec = sorted_result.to_vec();
     for (i, value) in sorted_result_vec.iter().enumerate() {
         if value != &sorted_values[i] {
@@ -73,6 +74,15 @@ async fn test_compare(rt: TestRuntime, values: Vec<ConvexValue>) -> anyhow::Resu
         }
         assert_eq!(value, &sorted_values[i]);
     }
+    Ok(())
+}
+
+async fn test_compare(rt: TestRuntime, values: Vec<ConvexValue>) -> anyhow::Result<()> {
+    let t = UdfTest::default(rt.clone()).await?;
+    test_compare_impl(&t, &values).await?;
+    let mut t = UdfTest::default(rt).await?;
+    t.enable_isolate_v2();
+    test_compare_impl(&t, &values).await?;
     Ok(())
 }
 

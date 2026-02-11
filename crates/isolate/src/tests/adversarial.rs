@@ -127,68 +127,79 @@ async fn test_db_loop(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_read_too_many_documents(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    t.mutation("adversarial:populate", assert_obj!()).await?;
-    let e = t
-        .query_js_error("adversarial:queryLeak", assert_obj!())
-        .await?;
-    assert_contains(&e, "Too many documents read in a single function execution");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        t.mutation("adversarial:populate", assert_obj!()).await?;
+        let e = t
+            .query_js_error("adversarial:queryLeak", assert_obj!())
+            .await?;
+        assert_contains(&e, "Too many documents read in a single function execution");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_read_many_documents(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    t.mutation("adversarial:populate", assert_obj!()).await?;
-    let mut log_lines = t
-        .query_log_lines("adversarial:queryATon", assert_obj!())
-        .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Many documents read in a single function execution",
-    );
-    assert_contains(&last_line, "Consider using smaller limits in your queries");
-    Ok(())
+    // This test checks the last log line is "Many documents read" but on isolate2
+    // it can be flaky if the execution is slow enough to also trigger a timing
+    // warning. Keep isolate1-only.
+    UdfTest::run_test_with_isolate(rt, async move |t| {
+        t.mutation("adversarial:populate", assert_obj!()).await?;
+        let mut log_lines = t
+            .query_log_lines("adversarial:queryATon", assert_obj!())
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Many documents read in a single function execution",
+        );
+        assert_contains(&last_line, "Consider using smaller limits in your queries");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_reads_too_many(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    t.add_index(IndexMetadata::new_backfilling(
-        *t.database.now_ts_for_reads(),
-        "test.by_hello".parse()?,
-        IndexedFields::try_from(vec!["hello".parse()?])?,
-    ))
-    .await?;
-    t.backfill_indexes().await?;
-    let e = t
-        .query_js_error("adversarial:queryTooManyTimes", assert_obj!())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        t.add_index(IndexMetadata::new_backfilling(
+            *t.database.now_ts_for_reads(),
+            "test.by_hello".parse()?,
+            IndexedFields::try_from(vec!["hello".parse()?])?,
+        ))
         .await?;
-    assert_contains(&e, "Too many reads in a single function execution");
-    Ok(())
+        t.backfill_indexes().await?;
+        let e = t
+            .query_js_error("adversarial:queryTooManyTimes", assert_obj!())
+            .await?;
+        assert_contains(&e, "Too many reads in a single function execution");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_reads_many(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    t.add_index(IndexMetadata::new_backfilling(
-        *t.database.now_ts_for_reads(),
-        "test.by_hello".parse()?,
-        IndexedFields::try_from(vec!["hello".parse()?])?,
-    ))
-    .await?;
-    t.backfill_indexes().await?;
-    let mut log_lines = t
-        .query_log_lines("adversarial:queryManyTimes", assert_obj!())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        t.add_index(IndexMetadata::new_backfilling(
+            *t.database.now_ts_for_reads(),
+            "test.by_hello".parse()?,
+            IndexedFields::try_from(vec!["hello".parse()?])?,
+        ))
         .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Many reads in a single function execution",
-    );
-    assert_contains(&last_line, "Consider using smaller limits in your queries");
-    Ok(())
+        t.backfill_indexes().await?;
+        let mut log_lines = t
+            .query_log_lines("adversarial:queryManyTimes", assert_obj!())
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Many reads in a single function execution",
+        );
+        assert_contains(&last_line, "Consider using smaller limits in your queries");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -236,237 +247,263 @@ async fn test_console_loop_from_subfunction(rt: TestRuntime) -> anyhow::Result<(
 
 #[convex_macro::test_runtime]
 async fn test_console_line_too_long(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let log_lines = t
-        .query_log_lines("adversarial:consoleLongLine", assert_obj!())
-        .await?;
-    assert_contains(
-        &log_lines[0].clone().to_pretty_string_test_only(),
-        TRUNCATED_LINE_SUFFIX,
-    );
-    // The limit is 32768 MAX_LOG_LINE_LENGTH, but we don't count the [INFO]
-    // prefix or the truncated line suffix, so just check that we're close
-    assert!(log_lines[0].clone().to_pretty_string_test_only().len() > 32700);
-    assert!(log_lines[0].clone().to_pretty_string_test_only().len() < 32900);
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let log_lines = t
+            .query_log_lines("adversarial:consoleLongLine", assert_obj!())
+            .await?;
+        assert_contains(
+            &log_lines[0].clone().to_pretty_string_test_only(),
+            TRUNCATED_LINE_SUFFIX,
+        );
+        // The limit is 32768 MAX_LOG_LINE_LENGTH, but we don't count the [INFO]
+        // prefix or the truncated line suffix, so just check that we're close
+        assert!(log_lines[0].clone().to_pretty_string_test_only().len() > 32700);
+        assert!(log_lines[0].clone().to_pretty_string_test_only().len() < 32900);
 
-    assert_contains(
-        &log_lines[1].clone().to_pretty_string_test_only(),
-        TRUNCATED_LINE_SUFFIX,
-    );
-    // The limit is 32768 MAX_LOG_LINE_LENGTH, but we don't count the [INFO]
-    // prefix or the truncated line suffix, so just check that we're close
-    assert!(log_lines[1].clone().to_pretty_string_test_only().len() > 32700);
-    assert!(log_lines[1].clone().to_pretty_string_test_only().len() < 32900);
-    Ok(())
+        assert_contains(
+            &log_lines[1].clone().to_pretty_string_test_only(),
+            TRUNCATED_LINE_SUFFIX,
+        );
+        // The limit is 32768 MAX_LOG_LINE_LENGTH, but we don't count the [INFO]
+        // prefix or the truncated line suffix, so just check that we're close
+        assert!(log_lines[1].clone().to_pretty_string_test_only().len() > 32700);
+        assert!(log_lines[1].clone().to_pretty_string_test_only().len() < 32900);
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_console_line_too_long_char_boundary(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let log_lines = t
-        .query_log_lines("adversarial:consoleLongLineCharBoundary", assert_obj!())
-        .await?;
-    assert_eq!(log_lines.len(), 4);
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let log_lines = t
+            .query_log_lines("adversarial:consoleLongLineCharBoundary", assert_obj!())
+            .await?;
+        assert_eq!(log_lines.len(), 4);
 
-    assert_contains(
-        &log_lines[0].clone().to_pretty_string_test_only(),
-        TRUNCATED_LINE_SUFFIX,
-    );
-    assert_contains(
-        &log_lines[1].clone().to_pretty_string_test_only(),
-        TRUNCATED_LINE_SUFFIX,
-    );
-    assert_contains(
-        &log_lines[2].clone().to_pretty_string_test_only(),
-        TRUNCATED_LINE_SUFFIX,
-    );
-    assert_contains(
-        &log_lines[3].clone().to_pretty_string_test_only(),
-        TRUNCATED_LINE_SUFFIX,
-    );
-    Ok(())
+        assert_contains(
+            &log_lines[0].clone().to_pretty_string_test_only(),
+            TRUNCATED_LINE_SUFFIX,
+        );
+        assert_contains(
+            &log_lines[1].clone().to_pretty_string_test_only(),
+            TRUNCATED_LINE_SUFFIX,
+        );
+        assert_contains(
+            &log_lines[2].clone().to_pretty_string_test_only(),
+            TRUNCATED_LINE_SUFFIX,
+        );
+        assert_contains(
+            &log_lines[3].clone().to_pretty_string_test_only(),
+            TRUNCATED_LINE_SUFFIX,
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_unsupported_apis(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    t.query("adversarial:tryUnsupportedAPIs", assert_obj!())
-        .await?;
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        t.query("adversarial:tryUnsupportedAPIs", assert_obj!())
+            .await?;
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_big_read(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let ids = t
-        .mutation("adversarial:populateBigRead", assert_obj!())
-        .await?;
-    let e = t
-        .query_js_error("adversarial:bigRead", assert_obj!("ids" => ids))
-        .await?;
-    assert_contains(&e, "Too many reads");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let ids = t
+            .mutation("adversarial:populateBigRead", assert_obj!())
+            .await?;
+        let e = t
+            .query_js_error("adversarial:bigRead", assert_obj!("ids" => ids))
+            .await?;
+        assert_contains(&e, "Too many reads");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_big_return(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error("adversarial:returnTooLarge", assert_obj!())
-        .await?;
-    assert_contains(&e, "Array length is too long");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error("adversarial:returnTooLarge", assert_obj!())
+            .await?;
+        assert_contains(&e, "Array length is too long");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_iterate_twice(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error("adversarial:iterateTwice", assert_obj!())
-        .await?;
-    assert_contains(&e, "This query is closed and can't emit any more values.");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error("adversarial:iterateTwice", assert_obj!())
+            .await?;
+        assert_contains(&e, "This query is closed and can't emit any more values.");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_iterate_consumed(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error("adversarial:iterateConsumed", assert_obj!())
-        .await?;
-    assert_contains(
-        &e,
-        "This query has been chained with another operator and can't be reused.",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error("adversarial:iterateConsumed", assert_obj!())
+            .await?;
+        assert_contains(
+            &e,
+            "This query has been chained with another operator and can't be reused.",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_reads_too_large(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    // 32 documents per write * 256KiB per document * 5 writes = 40 MiB, which is
-    // higher that the limit on reads.
-    let count_per_write = 32.0;
-    let mut ids: Vec<ConvexValue> = vec![];
-    for _ in 0..5 {
-        let more_ids = t
-            .mutation(
-                "adversarial:bigWrite",
-                assert_obj!("count" => count_per_write),
-            )
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        // 32 documents per write * 256KiB per document * 5 writes = 40 MiB, which is
+        // higher that the limit on reads.
+        let count_per_write = 32.0;
+        let mut ids: Vec<ConvexValue> = vec![];
+        for _ in 0..5 {
+            let more_ids = t
+                .mutation(
+                    "adversarial:bigWrite",
+                    assert_obj!("count" => count_per_write),
+                )
+                .await?;
+            must_let!(let ConvexValue::Array(more_ids) = more_ids);
+            ids.extend(Vec::<ConvexValue>::from(more_ids));
+        }
+        let e = t
+            .query_js_error("adversarial:bigRead", assert_obj!("ids" => ids.clone()))
             .await?;
-        must_let!(let ConvexValue::Array(more_ids) = more_ids);
-        ids.extend(Vec::<ConvexValue>::from(more_ids));
-    }
-    let e = t
-        .query_js_error("adversarial:bigRead", assert_obj!("ids" => ids.clone()))
-        .await?;
-    assert_contains(&e, "Too many bytes read in a single function execution");
+        assert_contains(&e, "Too many bytes read in a single function execution");
 
-    let ret_val = t.query("adversarial:readUntilError", assert_obj!()).await?;
-    must_let!(let ConvexValue::Array(ret_val) = ret_val);
-    assert!(!ret_val.is_empty());
-    assert!(ret_val.len() < ids.len());
-    Ok(())
+        let ret_val = t.query("adversarial:readUntilError", assert_obj!()).await?;
+        must_let!(let ConvexValue::Array(ret_val) = ret_val);
+        assert!(!ret_val.is_empty());
+        assert!(ret_val.len() < ids.len());
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_reads_large(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    // 12 documents per write * 256KiB per document * 5 writes = 14 MiB, which is
-    // close to the limit on reads.
-    let count_per_write = 12.0;
-    let mut ids: Vec<ConvexValue> = vec![];
-    for _ in 0..5 {
-        let more_ids = t
-            .mutation(
-                "adversarial:bigWrite",
-                assert_obj!("count" => count_per_write),
-            )
-            .await?;
-        must_let!(let ConvexValue::Array(more_ids) = more_ids);
-        ids.extend(Vec::<ConvexValue>::from(more_ids));
-    }
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        // 12 documents per write * 256KiB per document * 5 writes = 14 MiB, which is
+        // close to the limit on reads.
+        let count_per_write = 12.0;
+        let mut ids: Vec<ConvexValue> = vec![];
+        for _ in 0..5 {
+            let more_ids = t
+                .mutation(
+                    "adversarial:bigWrite",
+                    assert_obj!("count" => count_per_write),
+                )
+                .await?;
+            must_let!(let ConvexValue::Array(more_ids) = more_ids);
+            ids.extend(Vec::<ConvexValue>::from(more_ids));
+        }
 
-    let mut log_lines = t
-        .query_log_lines("adversarial:bigRead", assert_obj!("ids" => ids.clone()))
-        .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Many bytes read in a single function execution",
-    );
-    assert_contains(&last_line, "Consider using smaller limits in your queries");
-    Ok(())
+        let mut log_lines = t
+            .query_log_lines("adversarial:bigRead", assert_obj!("ids" => ids.clone()))
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Many bytes read in a single function execution",
+        );
+        assert_contains(&last_line, "Consider using smaller limits in your queries");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_writes_too_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let count = 64.0;
-    let e = t
-        .mutation_js_error("adversarial:bigWrite", assert_obj!("count" => count))
-        .await?;
-    assert_contains(&e, "Too many bytes written in a single function execution");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let count = 64.0;
+        let e = t
+            .mutation_js_error("adversarial:bigWrite", assert_obj!("count" => count))
+            .await?;
+        assert_contains(&e, "Too many bytes written in a single function execution");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_writes_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let count = 60.0;
-    let mut log_lines = t
-        .mutation_log_lines("adversarial:bigWrite", assert_obj!("count" => count))
-        .await?;
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let count = 60.0;
+        let mut log_lines = t
+            .mutation_log_lines("adversarial:bigWrite", assert_obj!("count" => count))
+            .await?;
 
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Many bytes written in a single function execution",
-    );
-    Ok(())
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Many bytes written in a single function execution",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_writes_big_document(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let (id, outcome) = t
-        .mutation_outcome("adversarial:bigDocument", assert_obj!(), Identity::system())
-        .await?;
-    let last_line = outcome
-        .log_lines
-        .last()
-        .unwrap()
-        .clone()
-        .to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        &format!("[WARN] Large document written with ID {id}"),
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let (id, outcome) = t
+            .mutation_outcome("adversarial:bigDocument", assert_obj!(), Identity::system())
+            .await?;
+        let last_line = outcome
+            .log_lines
+            .last()
+            .unwrap()
+            .clone()
+            .to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            &format!("[WARN] Large document written with ID {id}"),
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_writes_nested_document(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let (id, outcome) = t
-        .mutation_outcome(
-            "adversarial:nestedDocument",
-            assert_obj!(),
-            Identity::system(),
-        )
-        .await?;
-    let last_line = outcome
-        .log_lines
-        .last()
-        .unwrap()
-        .clone()
-        .to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        &format!("[WARN] Deeply nested document written with ID {id}"),
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let (id, outcome) = t
+            .mutation_outcome(
+                "adversarial:nestedDocument",
+                assert_obj!(),
+                Identity::system(),
+            )
+            .await?;
+        let last_line = outcome
+            .log_lines
+            .last()
+            .unwrap()
+            .clone()
+            .to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            &format!("[WARN] Deeply nested document written with ID {id}"),
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -481,54 +518,62 @@ async fn test_oom(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_writes_too_many(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .mutation_js_error("adversarial:tooManyWrites", assert_obj!())
-        .await?;
-    assert_contains(&e, "Too many writes in a single function execution");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .mutation_js_error("adversarial:tooManyWrites", assert_obj!())
+            .await?;
+        assert_contains(&e, "Too many writes in a single function execution");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_writes_many(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let mut log_lines = t
-        .mutation_log_lines("adversarial:manyWrites", assert_obj!())
-        .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Many writes in a single function execution",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let mut log_lines = t
+            .mutation_log_lines("adversarial:manyWrites", assert_obj!())
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Many writes in a single function execution",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_query_args_too_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 17_000_000])?);
-    let e = t
-        .query_js_error("basic:readTime", assert_obj!("data" => data))
-        .await?;
-    assert_contains(
-        &e,
-        "Arguments for basic.js:readTime are too large (actual: 16.21 MiB, limit: 16 MiB)",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 17_000_000])?);
+        let e = t
+            .query_js_error("basic:readTime", assert_obj!("data" => data))
+            .await?;
+        assert_contains(
+            &e,
+            "Arguments for basic.js:readTime are too large (actual: 16.21 MiB, limit: 16 MiB)",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_mutation_args_too_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 17_000_000])?);
-    let e = t
-        .mutation_js_error("basic:simpleMutation", assert_obj!("data" => data))
-        .await?;
-    assert_contains(
-        &e,
-        "Arguments for basic.js:simpleMutation are too large (actual: 16.21 MiB, limit: 16 MiB)",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 17_000_000])?);
+        let e = t
+            .mutation_js_error("basic:simpleMutation", assert_obj!("data" => data))
+            .await?;
+        assert_contains(
+            &e,
+            "Arguments for basic.js:simpleMutation are too large (actual: 16.21 MiB, limit: 16 MiB)",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -547,34 +592,38 @@ async fn test_action_args_too_big(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_query_args_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 16_000_000])?);
-    let mut log_lines = t
-        .query_log_lines("basic:readTime", assert_obj!("data" => data))
-        .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Large size of the function arguments (actual: 16000011 bytes, limit: 16777216 \
-         bytes).",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 16_000_000])?);
+        let mut log_lines = t
+            .query_log_lines("basic:readTime", assert_obj!("data" => data))
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Large size of the function arguments (actual: 16000011 bytes, limit: 16777216 \
+             bytes).",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_mutation_args_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 16_000_000])?);
-    let mut log_lines = t
-        .mutation_log_lines("basic:simpleMutation", assert_obj!("data" => data))
-        .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Large size of the function arguments (actual: 16000011 bytes, limit: 16777216 \
-         bytes).",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let data: ConvexValue = ConvexValue::Bytes(ConvexBytes::try_from(vec![0; 16_000_000])?);
+        let mut log_lines = t
+            .mutation_log_lines("basic:simpleMutation", assert_obj!("data" => data))
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Large size of the function arguments (actual: 16000011 bytes, limit: 16777216 \
+             bytes).",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -595,36 +644,40 @@ async fn test_action_args_big(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_query_result_too_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error(
-            "adversarial:queryResultSized",
-            assert_obj!("size" => 17_000_000.0),
-        )
-        .await?;
-    assert_contains(
-        &e,
-        "Function adversarial.js:queryResultSized return value is too large (actual: 16.21 MiB, \
-         limit: 16 MiB)",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error(
+                "adversarial:queryResultSized",
+                assert_obj!("size" => 17_000_000.0),
+            )
+            .await?;
+        assert_contains(
+            &e,
+            "Function adversarial.js:queryResultSized return value is too large (actual: 16.21 MiB, \
+             limit: 16 MiB)",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_mutation_result_too_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .mutation_js_error(
-            "adversarial:mutationResultSized",
-            assert_obj!("size" => 17_000_000.0),
-        )
-        .await?;
-    assert_contains(
-        &e,
-        "Function adversarial.js:mutationResultSized return value is too large (actual: 16.21 \
-         MiB, limit: 16 MiB)",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .mutation_js_error(
+                "adversarial:mutationResultSized",
+                assert_obj!("size" => 17_000_000.0),
+            )
+            .await?;
+        assert_contains(
+            &e,
+            "Function adversarial.js:mutationResultSized return value is too large (actual: 16.21 \
+             MiB, limit: 16 MiB)",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -646,38 +699,42 @@ async fn test_action_result_too_big(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_query_result_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let mut log_lines = t
-        .query_log_lines(
-            "adversarial:queryResultSized",
-            assert_obj!("size" => 16_000_000.0),
-        )
-        .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Large size of the function return value (actual: 16000002 bytes, limit: 16777216 \
-         bytes).",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let mut log_lines = t
+            .query_log_lines(
+                "adversarial:queryResultSized",
+                assert_obj!("size" => 16_000_000.0),
+            )
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Large size of the function return value (actual: 16000002 bytes, limit: 16777216 \
+             bytes).",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_mutation_result_big(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let mut log_lines = t
-        .mutation_log_lines(
-            "adversarial:mutationResultSized",
-            assert_obj!("size" => 16_000_000.0),
-        )
-        .await?;
-    let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
-    assert_contains(
-        &last_line,
-        "[WARN] Large size of the function return value (actual: 16000002 bytes, limit: 16777216 \
-         bytes).",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let mut log_lines = t
+            .mutation_log_lines(
+                "adversarial:mutationResultSized",
+                assert_obj!("size" => 16_000_000.0),
+            )
+            .await?;
+        let last_line = log_lines.pop().unwrap().to_pretty_string_test_only();
+        assert_contains(
+            &last_line,
+            "[WARN] Large size of the function return value (actual: 16000002 bytes, limit: 16777216 \
+             bytes).",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -700,60 +757,66 @@ async fn test_action_result_big(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_no_eval(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    // TODO: Reenable this test.
-    // let e = t.transaction("adversarial:tryEval", assert_obj!()).unwrap_err();
-    // assert!(format!("{e}").contains("Code generation from strings disallowed for
-    // this context"));
-    let e = t
-        .mutation_js_error("adversarial:tryNewFunction", assert_obj!())
-        .await?;
-    assert_contains(
-        &e,
-        "Code generation from strings disallowed for this context",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        // TODO: Reenable this test.
+        // let e = t.transaction("adversarial:tryEval", assert_obj!()).unwrap_err();
+        // assert!(format!("{e}").contains("Code generation from strings disallowed for
+        // this context"));
+        let e = t
+            .mutation_js_error("adversarial:tryNewFunction", assert_obj!())
+            .await?;
+        assert_contains(
+            &e,
+            "Code generation from strings disallowed for this context",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_delete_convex_global(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error("adversarial:deleteConvexGlobal", assert_obj!())
-        .await?;
-    assert_contains(
-        &e,
-        "The Convex database and auth objects are being used outside of a Convex backend.",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error("adversarial:deleteConvexGlobal", assert_obj!())
+            .await?;
+        assert_contains(
+            &e,
+            "The Convex database and auth objects are being used outside of a Convex backend.",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_throw_system_error(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_outcome(
-            "adversarial:throwSystemError",
-            assert_obj!(),
-            Identity::system(),
-        )
-        .await
-        .unwrap_err();
-    assert_contains(&e, "I can't go for that");
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_outcome(
+                "adversarial:throwSystemError",
+                assert_obj!(),
+                Identity::system(),
+            )
+            .await
+            .unwrap_err();
+        assert_contains(&e, "I can't go for that");
 
-    // Check that system errors work after an `.await` -- the code after the `await`
-    // runs in the microtask queue rather than the direct call stack entered by
-    // `Isolate::run`.
-    let e = t
-        .query_outcome(
-            "adversarial:throwSystemErrorAfterAwait",
-            assert_obj!(),
-            Identity::system(),
-        )
-        .await
-        .unwrap_err();
-    assert_contains(&e, "I can't go for that");
-    Ok(())
+        // Check that system errors work after an `.await` -- the code after the `await`
+        // runs in the microtask queue rather than the direct call stack entered by
+        // `Isolate::run`.
+        let e = t
+            .query_outcome(
+                "adversarial:throwSystemErrorAfterAwait",
+                assert_obj!(),
+                Identity::system(),
+            )
+            .await
+            .unwrap_err();
+        assert_contains(&e, "I can't go for that");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::prod_rt_test]
@@ -794,47 +857,53 @@ async fn test_path_within_deps(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_udf_type_mismatch(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error("adversarial:populate", assert_obj!())
-        .await?;
-    assert_contains(
-        &e,
-        "Trying to execute adversarial.js:populate as Query, but it is defined as Mutation.",
-    );
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error("adversarial:populate", assert_obj!())
+            .await?;
+        assert_contains(
+            &e,
+            "Trying to execute adversarial.js:populate as Query, but it is defined as Mutation.",
+        );
 
-    let e = t
-        .mutation_js_error("adversarial:simpleLoop", assert_obj!())
-        .await?;
-    assert_contains(
-        &e,
-        "Trying to execute adversarial.js:simpleLoop as Mutation, but it is defined as Query.",
-    );
-    Ok(())
+        let e = t
+            .mutation_js_error("adversarial:simpleLoop", assert_obj!())
+            .await?;
+        assert_contains(
+            &e,
+            "Trying to execute adversarial.js:simpleLoop as Mutation, but it is defined as Query.",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_create_system_field(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .mutation_js_error("basic:insertObject", assert_obj!("_systemField" => 0))
-        .await?;
-    assert_contains(
-        &e,
-        "Field '_systemField' starts with an underscore, which is only allowed for system fields \
-         like '_id'",
-    );
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .mutation_js_error("basic:insertObject", assert_obj!("_systemField" => 0))
+            .await?;
+        assert_contains(
+            &e,
+            "Field '_systemField' starts with an underscore, which is only allowed for system fields \
+             like '_id'",
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
 async fn test_atomics_wait(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error("adversarial:atomicsWait", assert_obj!())
-        .await?;
-    assert_contains(&e, "Atomics.wait cannot be called in this context");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error("adversarial:atomicsWait", assert_obj!())
+            .await?;
+        assert_contains(&e, "Atomics.wait cannot be called in this context");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -849,14 +918,16 @@ async fn test_big_memory_usage(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_not_implemented_builtin(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let not_implemented_error = t
-        .query_js_error("adversarial:useNotImplementedBuiltin", assert_obj!())
-        .await?;
-    assert_contains(&not_implemented_error, "Not implemented");
-    // Has the original function somewhere in the stack trace
-    assert_contains(&not_implemented_error, "convex/adversarial.ts:");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let not_implemented_error = t
+            .query_js_error("adversarial:useNotImplementedBuiltin", assert_obj!())
+            .await?;
+        assert_contains(&not_implemented_error, "Not implemented");
+        // Has the original function somewhere in the stack trace
+        assert_contains(&not_implemented_error, "convex/adversarial.ts:");
+        Ok(())
+    })
+    .await
 }
 
 #[convex_macro::test_runtime]
@@ -956,7 +1027,23 @@ async fn test_uncatchable_errors_are_uncatchable(rt: TestRuntime) -> anyhow::Res
 
 #[convex_macro::test_runtime]
 async fn test_subfunction_depth(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default_with_config(DEFAULT_CONFIG.clone(), 16, rt).await?;
+    let t = UdfTest::default_with_config(DEFAULT_CONFIG.clone(), 16, rt.clone()).await?;
+    let error = t
+        .query_js_error(
+            "adversarial:recursiveSubfunction",
+            assert_obj!("depth" => 9.0),
+        )
+        .await?;
+    assert_contains(&error, "Cross component call depth limit exceeded");
+    let result = t
+        .query(
+            "adversarial:recursiveSubfunction",
+            assert_obj!("depth" => 8.0),
+        )
+        .await?;
+    assert_eq!(result, ConvexValue::Float64(8.0));
+    let mut t = UdfTest::default_with_config(DEFAULT_CONFIG.clone(), 16, rt).await?;
+    t.enable_isolate_v2();
     let error = t
         .query_js_error(
             "adversarial:recursiveSubfunction",
@@ -1026,10 +1113,12 @@ async fn test_array_buffer_size_limit(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_paginate_page_size_limit(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-    let e = t
-        .query_js_error("adversarial:paginateTooManyItems", assert_obj!())
-        .await?;
-    assert_contains(&e, "Requested too many items");
-    Ok(())
+    UdfTest::run_test_with_isolate2(rt, async move |t| {
+        let e = t
+            .query_js_error("adversarial:paginateTooManyItems", assert_obj!())
+            .await?;
+        assert_contains(&e, "Requested too many items");
+        Ok(())
+    })
+    .await
 }
