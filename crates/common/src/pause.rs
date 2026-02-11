@@ -4,6 +4,7 @@ mod test_pause {
         collections::BTreeMap,
         mem,
         sync::Arc,
+        time::Duration,
     };
 
     use parking_lot::Mutex;
@@ -16,9 +17,16 @@ mod test_pause {
         RendezvousSender,
     };
 
+    /// A fault injector decides what happens when a breakpoint is hit but no
+    /// `PauseController` has `hold()`-ed it. Returns an optional delay (which
+    /// advances simulated time) and the [`Fault`] to deliver.
+    pub type FaultInjector =
+        Arc<dyn Fn(&'static str) -> (Option<Duration>, Fault) + Send + Sync>;
+
     #[derive(Default, Clone)]
     pub struct PauseClient {
         channels: Arc<Mutex<BTreeMap<&'static str, RendezvousReceiver<oneshot::Receiver<Fault>>>>>,
+        fault_injector: Option<FaultInjector>,
     }
 
     impl PauseClient {
@@ -27,15 +35,39 @@ mod test_pause {
         pub fn new() -> Self {
             Self {
                 channels: Arc::new(Mutex::new(BTreeMap::new())),
+                fault_injector: None,
+            }
+        }
+
+        /// Create a `PauseClient` with a fault injector callback.
+        ///
+        /// When `wait()` is called on a label that has no registered
+        /// `PauseController` hold, the injector is called to decide
+        /// whether to inject a delay, an error, or pass through.
+        pub fn new_with_fault_injector(injector: FaultInjector) -> Self {
+            Self {
+                channels: Arc::new(Mutex::new(BTreeMap::new())),
+                fault_injector: Some(injector),
             }
         }
 
         /// Wait for the named breakpoint, blocking until the controller
         /// `unpause`s it.
         pub async fn wait(&self, label: &'static str) -> Fault {
-            let mut rendezvous = match self.channels.lock().remove(&label) {
+            // Extract the channel under the lock, then drop the lock before
+            // any `.await` point so the future remains `Send`.
+            let found = self.channels.lock().remove(&label);
+            let mut rendezvous = match found {
                 Some(r) => r,
                 None => {
+                    // No controller hold -- check for a fault injector.
+                    if let Some(injector) = &self.fault_injector {
+                        let (delay, fault) = injector(label);
+                        if let Some(d) = delay {
+                            tokio::time::sleep(d).await;
+                        }
+                        return fault;
+                    }
                     tracing::debug!("Waiting on unregistered label: {label:?}");
                     return Fault::Noop;
                 },
@@ -128,6 +160,7 @@ mod test_pause {
         pub fn new() -> (Self, PauseClient) {
             let client = PauseClient {
                 channels: Default::default(),
+                fault_injector: None,
             };
             let controller = Self {
                 client: client.clone(),
@@ -146,6 +179,7 @@ mod test_pause {
 }
 #[cfg(any(test, feature = "testing"))]
 pub use self::test_pause::{
+    FaultInjector,
     HoldGuard,
     PauseClient,
     PauseController,

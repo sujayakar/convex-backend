@@ -98,6 +98,7 @@ fn main() -> anyhow::Result<()> {
                 transactions: cli.transactions,
                 concurrency: cli.concurrency,
                 seed,
+                fault_config: None,
             };
             run_scenario_by_name(&scenario, config)?;
         },

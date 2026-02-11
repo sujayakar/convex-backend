@@ -83,6 +83,7 @@ pub fn run_batch<S: Scenario + Clone>(
                     transactions,
                     concurrency,
                     seed,
+                    fault_config: None,
                 };
 
                 if let Err(e) = run_scenario(scenario.clone(), config) {

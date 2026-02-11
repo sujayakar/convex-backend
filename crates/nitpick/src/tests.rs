@@ -1,6 +1,7 @@
 use crate::{
     framework::{
         batch::run_batch,
+        fault_injection::FaultConfig,
         runner::{
             run_scenario,
             run_scenario_deterministic,
@@ -29,6 +30,7 @@ fn test_counter_smoke() -> anyhow::Result<()> {
         transactions: 10,
         concurrency: 3,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(CounterScenario, config)?;
     Ok(())
@@ -41,6 +43,7 @@ fn test_counter_determinism() -> anyhow::Result<()> {
         transactions: 20,
         concurrency: 5,
         seed: 12345,
+        fault_config: None,
     };
     run_scenario_deterministic(CounterScenario, config)?;
     Ok(())
@@ -53,6 +56,7 @@ fn test_elle_smoke() -> anyhow::Result<()> {
         transactions: 20,
         concurrency: 4,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(ElleScenario::default(), config)?;
     Ok(())
@@ -65,6 +69,7 @@ fn test_elle_determinism() -> anyhow::Result<()> {
         transactions: 16,
         concurrency: 4,
         seed: 99,
+        fault_config: None,
     };
     run_scenario_deterministic(ElleScenario::default(), config)?;
     Ok(())
@@ -169,6 +174,7 @@ fn test_link_ring_smoke() -> anyhow::Result<()> {
         transactions: 20,
         concurrency: 5,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(LinkRingScenario::default(), config)?;
     Ok(())
@@ -181,6 +187,7 @@ fn test_link_ring_determinism() -> anyhow::Result<()> {
         transactions: 15,
         concurrency: 5,
         seed: 777,
+        fault_config: None,
     };
     run_scenario_deterministic(LinkRingScenario::default(), config)?;
     Ok(())
@@ -213,6 +220,7 @@ fn test_elle_js_smoke() -> anyhow::Result<()> {
         transactions: 10,
         concurrency: 3,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(ElleJsScenario, config)?;
     Ok(())
@@ -225,6 +233,7 @@ fn test_counter_js_smoke() -> anyhow::Result<()> {
         transactions: 10,
         concurrency: 3,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(CounterJsScenario, config)?;
     Ok(())
@@ -237,6 +246,7 @@ fn test_link_ring_js_smoke() -> anyhow::Result<()> {
         transactions: 10,
         concurrency: 3,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(LinkRingJsScenario::default(), config)?;
     Ok(())
@@ -249,6 +259,7 @@ fn test_index_query_js_smoke() -> anyhow::Result<()> {
         transactions: 20,
         concurrency: 4,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(IndexQueryJsScenario, config)?;
     Ok(())
@@ -261,6 +272,7 @@ fn test_scheduled_js_smoke() -> anyhow::Result<()> {
         transactions: 5,
         concurrency: 2,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(ScheduledJsScenario, config)?;
     Ok(())
@@ -273,6 +285,7 @@ fn test_pagination_js_smoke() -> anyhow::Result<()> {
         transactions: 20,
         concurrency: 4,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(PaginationJsScenario, config)?;
     Ok(())
@@ -285,6 +298,7 @@ fn test_text_search_js_smoke() -> anyhow::Result<()> {
         transactions: 15,
         concurrency: 3,
         seed: 42,
+        fault_config: None,
     };
     run_scenario(TextSearchJsScenario, config)?;
     Ok(())
@@ -297,7 +311,49 @@ fn test_subscription_js_smoke() -> anyhow::Result<()> {
         transactions: 5,
         concurrency: 1, // sequential mutations so we can predict the final value
         seed: 42,
+        fault_config: None,
     };
     run_scenario(SubscriptionJsScenario, config)?;
+    Ok(())
+}
+
+// ---- Fault injection tests ----
+
+#[test]
+fn test_counter_with_fault_injection() -> anyhow::Result<()> {
+    common::testing::init_test_logging();
+    let config = Config {
+        transactions: 10,
+        concurrency: 3,
+        seed: 42,
+        fault_config: Some(FaultConfig::default()),
+    };
+    run_scenario(CounterScenario, config)?;
+    Ok(())
+}
+
+#[test]
+fn test_elle_with_fault_injection() -> anyhow::Result<()> {
+    common::testing::init_test_logging();
+    let config = Config {
+        transactions: 10,
+        concurrency: 3,
+        seed: 42,
+        fault_config: Some(FaultConfig::default()),
+    };
+    run_scenario(ElleScenario::default(), config)?;
+    Ok(())
+}
+
+#[test]
+fn test_counter_determinism_with_fault_injection() -> anyhow::Result<()> {
+    common::testing::init_test_logging();
+    let config = Config {
+        transactions: 10,
+        concurrency: 3,
+        seed: 12345,
+        fault_config: Some(FaultConfig::default()),
+    };
+    run_scenario_deterministic(CounterScenario, config)?;
     Ok(())
 }
