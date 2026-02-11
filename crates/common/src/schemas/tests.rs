@@ -685,6 +685,64 @@ fn test_json_backwards_compatibility() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn test_monotonic_creation_time_json_roundtrip() -> anyhow::Result<()> {
+    // Test that monotonic_creation_time serializes and deserializes correctly
+    let schema_json = json!({
+        "tables": [
+            {
+                "tableName": "testTable",
+                "indexes": [],
+                "searchIndexes": [],
+                "monotonicCreationTime": true
+            },
+        ],
+        "schemaValidation": true
+    });
+    let schema = DatabaseSchema::json_deserialize_value(schema_json.clone())?;
+    assert!(
+        schema
+            .tables
+            .get(&"testTable".parse()?)
+            .unwrap()
+            .monotonic_creation_time
+    );
+
+    // Test roundtrip - verify the serialized JSON contains the flag
+    let serialized = schema.json_serialize()?;
+    let deserialized_schema =
+        DatabaseSchema::json_deserialize_value(serde_json::from_str(&serialized)?)?;
+    assert!(
+        deserialized_schema
+            .tables
+            .get(&"testTable".parse()?)
+            .unwrap()
+            .monotonic_creation_time
+    );
+
+    // Test that false/omitted values work
+    let schema_json_no_flag = json!({
+        "tables": [
+            {
+                "tableName": "testTable2",
+                "indexes": [],
+                "searchIndexes": []
+            },
+        ],
+        "schemaValidation": true
+    });
+    let schema2 = DatabaseSchema::json_deserialize_value(schema_json_no_flag)?;
+    assert!(
+        !schema2
+            .tables
+            .get(&"testTable2".parse()?)
+            .unwrap()
+            .monotonic_creation_time
+    );
+
+    Ok(())
+}
+
 fn empty_table_mapping() -> NamespacedTableMapping {
     TableMapping::new().namespace(TableNamespace::test_user())
 }

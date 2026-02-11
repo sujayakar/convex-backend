@@ -43,6 +43,9 @@ pub struct TableRegistry {
     tablet_states: OrdMap<TabletId, TableState>,
     table_mapping: TableMapping,
     persistence_version: PersistenceVersion,
+    /// Cache of which tables have monotonic creation times enabled.
+    /// This is populated from TableMetadata when tables are created or updated.
+    monotonic_tables: OrdMap<TabletId, bool>,
 }
 
 impl TableRegistry {
@@ -60,6 +63,7 @@ impl TableRegistry {
             table_mapping,
             tablet_states: table_states,
             persistence_version,
+            monotonic_tables: OrdMap::new(),
         })
     }
 
@@ -107,6 +111,12 @@ impl TableRegistry {
                             &metadata.name,
                         )?;
                     }
+                    // Update monotonic_tables cache
+                    if let Some(monotonic) = metadata.monotonic_creation_time {
+                        if monotonic {
+                            self.monotonic_tables.insert(tablet_id, true);
+                        }
+                    }
                     Some(TableUpdate {
                         namespace: metadata.namespace,
                         table_id_and_number: table_id_and_code,
@@ -146,6 +156,15 @@ impl TableRegistry {
                         "Cannot change the table number in a table edit: {old_metadata:?} => \
                          {new_metadata:?}"
                     );
+                    // Update monotonic_tables cache
+                    match new_metadata.monotonic_creation_time {
+                        Some(true) => {
+                            self.monotonic_tables.insert(tablet_id, true);
+                        },
+                        Some(false) | None => {
+                            self.monotonic_tables.remove(&tablet_id);
+                        },
+                    }
 
                     if old_metadata.is_active()
                         && matches!(new_metadata.state, TableState::Deleting)
@@ -254,6 +273,30 @@ impl TableRegistry {
 
     pub fn persistence_version(&self) -> PersistenceVersion {
         self.persistence_version
+    }
+
+    /// Check if a table has monotonic creation times enabled.
+    pub fn has_monotonic_creation_time(&self, tablet_id: TabletId) -> bool {
+        self.monotonic_tables
+            .get(&tablet_id)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Populate the monotonic_tables cache from table documents.
+    /// This is called during bootstrap to initialize the cache.
+    pub(crate) fn populate_monotonic_tables(
+        &mut self,
+        table_documents: &[common::document::ParsedDocument<TableMetadata>],
+    ) {
+        for table_doc in table_documents {
+            let tablet_id = TabletId(table_doc.id().internal_id());
+            if let Some(monotonic) = table_doc.monotonic_creation_time {
+                if monotonic {
+                    self.monotonic_tables.insert(tablet_id, true);
+                }
+            }
+        }
     }
 }
 

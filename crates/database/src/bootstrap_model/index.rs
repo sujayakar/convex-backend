@@ -312,6 +312,21 @@ impl<'a, RT: Runtime> IndexModel<'a, RT> {
             .commit_indexes_for_schema(namespace, tables_in_schema)
             .await?;
 
+        // Propagate monotonic_creation_time flag from schema to TableMetadata
+        // We need to update both tables that have the flag enabled AND tables that
+        // have the flag disabled (in case it was previously enabled and is now removed)
+        if let Some(schema) = next_schema {
+            for (table_name, table_def) in &schema.tables {
+                TableModel::new(self.tx)
+                    .update_monotonic_creation_time(
+                        namespace,
+                        table_name,
+                        table_def.monotonic_creation_time,
+                    )
+                    .await?;
+            }
+        }
+
         tracing::info!(
             "Committed indexes for {namespace:?}: (added {}. dropped {})",
             index_diff.added.len(),

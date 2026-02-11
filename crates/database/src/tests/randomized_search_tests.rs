@@ -93,6 +93,10 @@ use vector::{
     VectorSearcher,
 };
 
+use super::randomized_framework::{
+    run_randomized_actions,
+    RandomizedScenario,
+};
 use crate::{
     committer::AFTER_PENDING_WRITE_SNAPSHOT,
     query::{
@@ -606,17 +610,22 @@ enum TestAction {
     QueryAndCheckScores(TestQuery),
     Compact,
 }
+
+#[async_trait]
+impl RandomizedScenario for Scenario {
+    type Action = TestAction;
+
+    async fn init(rt: TestRuntime) -> anyhow::Result<Self> {
+        Self::new(rt).await
+    }
+
+    async fn apply_action(&mut self, action: Self::Action) -> anyhow::Result<()> {
+        self.execute(action).await
+    }
+}
+
 fn test_search_actions(actions: Vec<TestAction>) {
-    let td = TestDriver::new();
-    let rt = td.rt();
-    let future = async move {
-        let mut scenario = Scenario::new(rt).await?;
-        for action in actions {
-            scenario.execute(action).await?;
-        }
-        anyhow::Ok(())
-    };
-    td.run_until(future).unwrap();
+    run_randomized_actions::<Scenario>(actions);
 }
 
 proptest! {

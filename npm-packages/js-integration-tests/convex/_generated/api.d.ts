@@ -37,6 +37,7 @@ import type * as largeResponse from "../largeResponse.js";
 import type * as logging from "../logging.js";
 import type * as maps from "../maps.js";
 import type * as messages from "../messages.js";
+import type * as monotonicCreationTime from "../monotonicCreationTime.js";
 import type * as mountedSearch from "../mountedSearch.js";
 import type * as nodeError from "../nodeError.js";
 import type * as references from "../references.js";
@@ -89,6 +90,7 @@ declare const fullApi: ApiFromModules<{
   logging: typeof logging;
   maps: typeof maps;
   messages: typeof messages;
+  monotonicCreationTime: typeof monotonicCreationTime;
   mountedSearch: typeof mountedSearch;
   nodeError: typeof nodeError;
   references: typeof references;

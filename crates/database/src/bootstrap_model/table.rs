@@ -251,6 +251,7 @@ impl<'a, RT: Runtime> TableModel<'a, RT> {
             number: table_metadata.number,
             state: TableState::Deleting,
             namespace: table_metadata.namespace,
+            monotonic_creation_time: table_metadata.monotonic_creation_time,
         };
         SystemMetadataModel::new_global(self.tx)
             .replace(table_doc_id, updated_table_metadata.try_into()?)
@@ -284,6 +285,43 @@ impl<'a, RT: Runtime> TableModel<'a, RT> {
             .await?
             .context(format!("Couldn't find table metadata for {tablet_id}"))?
             .parse()
+    }
+
+    /// Update the monotonic_creation_time flag for a table.
+    /// This is called when a schema is applied to propagate the flag from
+    /// TableDefinition to TableMetadata.
+    pub async fn update_monotonic_creation_time(
+        &mut self,
+        namespace: TableNamespace,
+        table: &TableName,
+        monotonic_creation_time: bool,
+    ) -> anyhow::Result<()> {
+        if !self.table_exists(namespace, table) {
+            // Table doesn't exist yet, it will be created with the flag when indexes are
+            // added
+            return Ok(());
+        }
+
+        let tablet_id = self
+            .tx
+            .table_mapping()
+            .namespace(namespace)
+            .id(table)?
+            .tablet_id;
+        let table_metadata_doc = self.get_table_metadata(tablet_id).await?;
+        let mut table_metadata = table_metadata_doc.into_value();
+
+        // Only update if the flag is changing
+        let current_flag = table_metadata.monotonic_creation_time.unwrap_or(false);
+        if current_flag != monotonic_creation_time {
+            table_metadata.monotonic_creation_time = Some(monotonic_creation_time);
+            let table_doc_id = self.tx.bootstrap_tables().table_resolved_doc_id(tablet_id);
+            SystemMetadataModel::new_global(self.tx)
+                .replace(table_doc_id, table_metadata.try_into()?)
+                .await?;
+        }
+
+        Ok(())
     }
 
     #[cfg(any(test, feature = "testing"))]
@@ -554,8 +592,21 @@ impl<'a, RT: Runtime> TableModel<'a, RT> {
             } else {
                 self.next_user_table_number(namespace).await?
             };
-            let table_metadata =
+            let mut table_metadata =
                 TableMetadata::new_with_state(namespace, table.clone(), table_number, state);
+
+            // Check if the active schema has monotonic_creation_time enabled for this table
+            if let Some((_schema_id, schema)) = self.tx.get_schema_by_state(
+                namespace,
+                common::bootstrap_model::schema::SchemaState::Active,
+            )? {
+                if let Some(table_def) = schema.tables.get(table) {
+                    if table_def.monotonic_creation_time {
+                        table_metadata.monotonic_creation_time = Some(true);
+                    }
+                }
+            }
+
             let table_doc_id = SystemMetadataModel::new_global(self.tx)
                 .insert_metadata(&TABLES_TABLE, table_metadata.try_into()?)
                 .await?;

@@ -177,6 +177,7 @@ macro_rules! db_schema {
                         vector_indexes: Default::default(),
                         staged_vector_indexes: Default::default(),
                         document_type: Some($document_schema),
+                        monotonic_creation_time: false,
                     };
                     tables.insert(table_name, table_def);
                 )*
@@ -211,6 +212,7 @@ macro_rules! db_schema_not_validated {
                         vector_indexes: Default::default(),
                         staged_vector_indexes: Default::default(),
                         document_type: Some($document_schema),
+                        monotonic_creation_time: false,
                     };
                     tables.insert(table_name, table_def);
                 )*
@@ -508,6 +510,7 @@ pub struct TableDefinition {
     pub document_type: Option<DocumentSchema>, /* FIXME: `Option` could be removed here, since
                                                 * `None` is handled the same way as
                                                 * `Some(DocumentSchema::Any)`. */
+    pub monotonic_creation_time: bool,
 }
 
 impl TableDefinition {
@@ -582,6 +585,7 @@ impl proptest::arbitrary::Arbitrary for TableDefinition {
                 prop::option::Probability::default(),
                 all_table_names,
             )),
+            any::<bool>(), // monotonic_creation_time
         )
             .prop_filter_map(
                 "index names must be unique",
@@ -593,6 +597,7 @@ impl proptest::arbitrary::Arbitrary for TableDefinition {
                     vector_indexes,
                     staged_vector_indexes,
                     document_type,
+                    monotonic_creation_time,
                 )| {
                     // Can't have two indexes with same name
                     let index_descriptors: BTreeSet<_> = indexes
@@ -666,6 +671,7 @@ impl proptest::arbitrary::Arbitrary for TableDefinition {
                             .map(|i| (i.index_descriptor.clone(), i))
                             .collect(),
                         document_type,
+                        monotonic_creation_time,
                     })
                 },
             )

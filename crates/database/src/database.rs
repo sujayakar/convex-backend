@@ -462,6 +462,7 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
         Vec<(Timestamp, PackedDocument)>,
         Vec<(Timestamp, PackedDocument)>,
         BootstrapMetadata,
+        Vec<ParsedDocument<TableMetadata>>,
     )> {
         let _timer = metrics::load_table_and_index_metadata_timer();
         let bootstrap_metadata = Self::get_meta_ids(persistence_snapshot.persistence()).await?;
@@ -485,7 +486,8 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
         )
         .await?;
 
-        let (table_mapping, table_states) = Self::table_mapping_and_states(parsed_table_documents);
+        let (table_mapping, table_states) =
+            Self::table_mapping_and_states(parsed_table_documents.clone());
 
         let persistence_version = persistence_snapshot.persistence().version();
         let index_registry = IndexRegistry::bootstrap(
@@ -500,6 +502,7 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
             table_documents,
             index_documents,
             bootstrap_metadata,
+            parsed_table_documents,
         ))
     }
 
@@ -509,14 +512,79 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
         table_mapping: TableMapping,
         table_states: OrdMap<TabletId, TableState>,
         index_registry: &IndexRegistry,
+        table_documents: &[ParsedDocument<TableMetadata>],
     ) -> anyhow::Result<TableRegistry> {
-        let table_registry = TableRegistry::bootstrap(
+        let mut table_registry = TableRegistry::bootstrap(
             table_mapping,
             table_states,
             persistence_snapshot.persistence().version(),
         )?;
+        // Populate monotonic_tables cache from table_documents
+        table_registry.populate_monotonic_tables(table_documents);
         Self::verify_invariants(&table_registry, index_registry)?;
         Ok(table_registry)
+    }
+
+    /// Populate per-table lower bounds for monotonic creation time rewriting by
+    /// querying each monotonic table for its current maximum creation time.
+    /// This is called during bootstrap.
+    #[fastrace::trace]
+    pub async fn load_monotonic_creation_time_lower_bounds(
+        persistence_snapshot: &PersistenceSnapshot,
+        table_documents: &[ParsedDocument<TableMetadata>],
+        index_registry: &IndexRegistry,
+    ) -> anyhow::Result<OrdMap<TabletId, CreationTime>> {
+        use futures::TryStreamExt;
+
+        let mut lower_bounds = OrdMap::new();
+
+        for table_doc in table_documents {
+            // Check if this table has monotonic creation times enabled
+            if table_doc.monotonic_creation_time != Some(true) {
+                continue;
+            }
+
+            let tablet_id = TabletId(table_doc.id().internal_id());
+
+            // Find the by_creation_time index for this table
+            let by_creation_time_index =
+                match index_registry.get_enabled(&TabletIndexName::by_creation_time(tablet_id)) {
+                    Some(index) => index,
+                    None => {
+                        // Table might be newly created without the index yet
+                        tracing::warn!(
+                            "Table {:?} has monotonic_creation_time enabled but no \
+                             by_creation_time index",
+                            table_doc.name
+                        );
+                        continue;
+                    },
+                };
+
+            // Query the index in descending order to get the document with max creation
+            // time
+            let mut stream = persistence_snapshot.index_scan(
+                by_creation_time_index.id(),
+                tablet_id,
+                &Interval::all(),
+                Order::Desc,
+                1, // We only need the first document
+            );
+
+            if let Some((_index_key, latest_doc)) = stream.try_next().await? {
+                let creation_time = latest_doc.value.creation_time();
+                lower_bounds.insert(tablet_id, creation_time);
+                tracing::debug!(
+                    "Loaded monotonic lower bound {:?} for table {:?}",
+                    creation_time,
+                    table_doc.name
+                );
+            }
+            // If the table is empty, we don't add an entry. The first insertion
+            // becomes the initial lower bound.
+        }
+
+        Ok(lower_bounds)
     }
 
     pub fn table_iterator(&self) -> TableIterator<RT> {
@@ -729,6 +797,7 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
             table_documents,
             index_documents,
             bootstrap_metadata,
+            parsed_table_documents,
         ) = Self::load_table_and_index_metadata(&persistence_snapshot).await?;
 
         // Step 2: Load bootstrap tables indexes into memory.
@@ -771,6 +840,7 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
             table_mapping.clone(),
             table_states,
             &index_registry,
+            &parsed_table_documents,
         )?;
 
         let mut schema_docs = BTreeMap::new();
@@ -793,6 +863,16 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
             TableNamespace::Global,
         )?;
         let component_registry = ComponentRegistry::bootstrap(&table_mapping, component_docs)?;
+
+        // Step 4: Load monotonic lower bounds for tables with the flag enabled.
+        tracing::info!("Loading monotonic creation time lower bounds...");
+        let monotonic_creation_time_lower_bounds = Self::load_monotonic_creation_time_lower_bounds(
+            &persistence_snapshot,
+            &parsed_table_documents,
+            &index_registry,
+        )
+        .await?;
+
         Ok(Self {
             runtime,
             ts: persistence_snapshot.timestamp(),
@@ -807,6 +887,7 @@ impl<RT: Runtime> DatabaseSnapshot<RT> {
                 virtual_system_mapping,
                 text_indexes: search,
                 vector_indexes: vector,
+                monotonic_creation_time_lower_bounds,
             },
             persistence_snapshot,
 

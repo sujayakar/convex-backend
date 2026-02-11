@@ -1,6 +1,10 @@
 use std::{
+    borrow::Cow,
     cmp,
-    collections::BTreeSet,
+    collections::{
+        BTreeMap,
+        BTreeSet,
+    },
     ops::Bound,
     sync::Arc,
     time::Duration,
@@ -23,10 +27,12 @@ use common::{
         ComponentPath,
     },
     document::{
+        CreationTime,
         DocumentUpdateWithPrevTs,
         ParseDocument,
         ParsedDocument,
         ResolvedDocument,
+        CREATION_TIME_FIELD,
     },
     errors::{
         recapture_stacktrace,
@@ -37,6 +43,7 @@ use common::{
         initialize_root_from_parent,
         EncodedSpan,
     },
+    interval::Interval,
     knobs::{
         COMMITTER_QUEUE_SIZE,
         COMMIT_TRACE_THRESHOLD,
@@ -55,6 +62,7 @@ use common::{
         RetentionValidator,
         TimestampRange,
     },
+    query::Order,
     runtime::{
         block_in_place,
         tokio_spawn,
@@ -70,6 +78,7 @@ use common::{
         DatabaseIndexUpdate,
         DatabaseIndexValue,
         RepeatableTimestamp,
+        TabletIndexName,
         Timestamp,
         WriteTimestamp,
     },
@@ -109,6 +118,9 @@ use value::{
         WithHeapSize,
     },
     id_v6::DeveloperDocumentId,
+    ConvexObject,
+    ConvexValue,
+    FieldName,
     InternalDocumentId,
     TableMapping,
     TableName,
@@ -746,6 +758,212 @@ impl<RT: Runtime> Committer<RT> {
         })
     }
 
+    /// Rewrite creation times for documents being inserted into tables with
+    /// monotonic creation times enabled. This ensures that `_creationTime`
+    /// values within a table are strictly monotonically increasing in commit
+    /// order.
+    ///
+    /// Returns a vector of `Cow` wrappers - borrowed for unmodified updates,
+    /// owned for updates where the creation time was rewritten.
+    ///
+    /// This function also handles the edge case where new tables with
+    /// `monotonic_creation_time: true` are created in the same transaction.
+    /// Since `_tables` documents are sorted before data documents (via
+    /// `table_dependency_sort_key`), we can track new monotonic tables as we
+    /// process.
+    fn rewrite_monotonic_creation_times<'a>(
+        ordered_updates: &'a [&'a DocumentUpdateWithPrevTs],
+        snapshot: &mut Snapshot,
+        tables_table_id: TabletId,
+    ) -> anyhow::Result<Vec<Cow<'a, DocumentUpdateWithPrevTs>>> {
+        let mut result = Vec::with_capacity(ordered_updates.len());
+
+        // Track tables that become monotonic_creation_time-enabled within this
+        // transaction. Since _tables documents are sorted before data documents,
+        // we can detect these before processing data inserts.
+        let mut pending_monotonic_tables: BTreeSet<TabletId> = BTreeSet::new();
+
+        for &update in ordered_updates {
+            // Check if this is a _tables write. If the table is now monotonic,
+            // seed the per-table lower bound from the _tables document's
+            // creation time and mark it as pending for this transaction.
+            if update.id.tablet_id == tables_table_id {
+                if let Some(new_doc) = &update.new_document {
+                    if let Ok(new_table_metadata) =
+                        TableMetadata::try_from(new_doc.value().0.clone())
+                    {
+                        let new_monotonic =
+                            new_table_metadata.monotonic_creation_time == Some(true);
+                        let old_monotonic = update
+                            .old_document
+                            .as_ref()
+                            .and_then(|old_doc| {
+                                TableMetadata::try_from(old_doc.0.value().0.clone()).ok()
+                            })
+                            .map(|m| m.monotonic_creation_time == Some(true))
+                            .unwrap_or(false);
+
+                        if new_monotonic {
+                            let new_tablet_id = TabletId(update.id.internal_id());
+                            pending_monotonic_tables.insert(new_tablet_id);
+
+                            // Seed a lower bound from the metadata write itself.
+                            // If this is a transition from disabled->enabled,
+                            // best-effort tighten it with the current max
+                            // creation time visible from in-memory indexes.
+                            let mut lower_bound = new_doc.creation_time();
+                            if !old_monotonic {
+                                if let Some(max_existing) =
+                                    Self::query_max_creation_time(snapshot, new_tablet_id)?
+                                {
+                                    if max_existing > lower_bound {
+                                        lower_bound = max_existing;
+                                    }
+                                }
+                            }
+                            match snapshot
+                                .monotonic_creation_time_lower_bounds
+                                .get(&new_tablet_id)
+                                .copied()
+                            {
+                                Some(existing_bound) if existing_bound >= lower_bound => {},
+                                _ => {
+                                    snapshot
+                                        .monotonic_creation_time_lower_bounds
+                                        .insert(new_tablet_id, lower_bound);
+                                },
+                            }
+                        } else if old_monotonic {
+                            // We intentionally keep lower bounds when
+                            // disabling:
+                            // they are durable safety bounds, not current
+                            // maxima.
+                        }
+                    }
+                }
+            }
+
+            // Only process insertions (new document, no old document)
+            let needs_rewrite =
+                if let (Some(new_doc), None) = (&update.new_document, &update.old_document) {
+                    let tablet_id = update.id.tablet_id;
+
+                    // Check if this table has monotonic creation times enabled
+                    // (either from existing registry or from pending new tables)
+                    let has_monotonic = snapshot
+                        .table_registry
+                        .has_monotonic_creation_time(tablet_id)
+                        || pending_monotonic_tables.contains(&tablet_id);
+
+                    if has_monotonic {
+                        let current_time = new_doc.creation_time();
+
+                        // Enforce strictly greater than the current lower bound.
+                        // If no lower bound exists yet, this insert establishes it.
+                        let cached_lower_bound = snapshot
+                            .monotonic_creation_time_lower_bounds
+                            .get(&tablet_id)
+                            .copied();
+
+                        match cached_lower_bound {
+                            Some(lower_bound) if current_time <= lower_bound => {
+                                let mut new_time = lower_bound;
+                                new_time.increment()?;
+
+                                snapshot
+                                    .monotonic_creation_time_lower_bounds
+                                    .insert(tablet_id, new_time);
+
+                                Some((new_doc, new_time))
+                            },
+                            Some(_) => {
+                                snapshot
+                                    .monotonic_creation_time_lower_bounds
+                                    .insert(tablet_id, current_time);
+                                None
+                            },
+                            None => {
+                                snapshot
+                                    .monotonic_creation_time_lower_bounds
+                                    .insert(tablet_id, current_time);
+                                None
+                            },
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            match needs_rewrite {
+                Some((original_doc, new_creation_time)) => {
+                    // Create a modified document with the new creation time
+                    let modified_doc = Self::create_document_with_new_creation_time(
+                        original_doc,
+                        new_creation_time,
+                    )?;
+
+                    // Create a modified update with the new document
+                    let modified_update = DocumentUpdateWithPrevTs {
+                        id: update.id,
+                        old_document: update.old_document.clone(),
+                        new_document: Some(modified_doc),
+                    };
+                    result.push(Cow::Owned(modified_update));
+                },
+                None => {
+                    result.push(Cow::Borrowed(update));
+                },
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Query the maximum creation time for a table from in-memory indexes, if
+    /// the by_creation_time index is currently loaded.
+    fn query_max_creation_time(
+        snapshot: &Snapshot,
+        tablet_id: TabletId,
+    ) -> anyhow::Result<Option<CreationTime>> {
+        let index_name = TabletIndexName::by_creation_time(tablet_id);
+        let index = match snapshot.index_registry.get_enabled(&index_name) {
+            Some(idx) => idx,
+            None => return Ok(None),
+        };
+
+        let results =
+            snapshot
+                .in_memory_indexes
+                .range(index.id(), &Interval::all(), Order::Desc)?;
+
+        Ok(results.and_then(|entries| {
+            entries
+                .into_iter()
+                .next()
+                .map(|(_, _, memory_doc)| memory_doc.packed_document.unpack().creation_time())
+        }))
+    }
+
+    /// Create a new document with a modified creation time.
+    /// This involves removing the old `_creationTime` field and creating
+    /// a new document with the updated time.
+    fn create_document_with_new_creation_time(
+        original_doc: &ResolvedDocument,
+        new_creation_time: CreationTime,
+    ) -> anyhow::Result<ResolvedDocument> {
+        // Extract the value and remove the _creationTime field
+        let mut fields: BTreeMap<FieldName, ConvexValue> = original_doc.value().0.clone().into();
+        fields.remove(&FieldName::from(CREATION_TIME_FIELD.clone()));
+        let value: ConvexObject = fields
+            .try_into()
+            .context("Failed to convert fields back to ConvexObject")?;
+
+        // Create a new document with the modified creation time
+        ResolvedDocument::new(original_doc.id(), new_creation_time, value)
+    }
+
     #[fastrace::trace]
     fn compute_writes(
         &self,
@@ -769,9 +987,17 @@ impl<RT: Runtime> Committer<RT> {
             .pending_writes
             .latest_snapshot()
             .unwrap_or_else(|| self.snapshot_manager.read().latest_snapshot());
-        for &document_update in ordered_updates.iter() {
+
+        // Rewrite creation times for monotonic tables before processing updates
+        let processed_updates = Self::rewrite_monotonic_creation_times(
+            ordered_updates,
+            &mut latest_pending_snapshot,
+            self.tables_table_id,
+        )?;
+
+        for document_update in processed_updates.iter() {
             let (updates, vector_index_write_size, text_index_write_size) =
-                latest_pending_snapshot.update(document_update, commit_ts)?;
+                latest_pending_snapshot.update(document_update.as_ref(), commit_ts)?;
             index_writes.extend(updates);
             document_writes.push(ValidatedDocumentWrite {
                 commit_ts,

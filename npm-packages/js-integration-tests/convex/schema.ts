@@ -99,6 +99,11 @@ export default defineSchema({
       dimensions: 1536,
       staged: true,
     }),
+
+  // Table with monotonic creation times enabled for testing
+  monotonic_docs: defineTable({
+    value: v.number(),
+  }).monotonicCreationTime(),
 });
 
 // Keep this in sync with the schema! It's important for cleaning up data between tests.
@@ -113,4 +118,5 @@ export const ALL_TABLE_NAMES = [
   "testTypes",
   "foods",
   "stagedIndexes",
+  "monotonic_docs",
 ] as const;

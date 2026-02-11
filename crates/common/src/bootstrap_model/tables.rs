@@ -55,6 +55,7 @@ pub struct TableMetadata {
         proptest(value = "TableNamespace::Global")
     )]
     pub namespace: TableNamespace,
+    pub monotonic_creation_time: Option<bool>,
 }
 
 impl TableMetadata {
@@ -70,6 +71,7 @@ impl TableMetadata {
             number,
             state: TableState::Active,
             namespace,
+            monotonic_creation_time: None,
         }
     }
 
@@ -84,6 +86,7 @@ impl TableMetadata {
             number,
             state,
             namespace,
+            monotonic_creation_time: None,
         }
     }
 }
@@ -95,6 +98,8 @@ pub struct SerializedTableMetadata {
     state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     namespace: Option<SerializedTableNamespace>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monotonic_creation_time: Option<bool>,
 }
 
 impl TryFrom<TableMetadata> for SerializedTableMetadata {
@@ -110,6 +115,7 @@ impl TryFrom<TableMetadata> for SerializedTableMetadata {
                 TableState::Hidden => "hidden".to_owned(),
             },
             namespace: table_namespace_to_serialized(m.namespace)?,
+            monotonic_creation_time: m.monotonic_creation_time,
         })
     }
 }
@@ -128,6 +134,7 @@ impl TryFrom<SerializedTableMetadata> for TableMetadata {
                 s => anyhow::bail!("invalid table state {s}"),
             },
             namespace: table_namespace_from_serialized(m.namespace)?,
+            monotonic_creation_time: m.monotonic_creation_time,
         })
     }
 }
@@ -169,6 +176,7 @@ mod tests {
         assert_obj,
         obj,
         ConvexObject,
+        FieldName,
         TableNamespace,
     };
 
@@ -190,6 +198,7 @@ mod tests {
                 number: 1017.try_into()?,
                 state: TableState::Hidden,
                 namespace: TableNamespace::Global,
+                monotonic_creation_time: None,
             }
         );
         Ok(())
@@ -202,6 +211,7 @@ mod tests {
             number: 1017.try_into()?,
             state: TableState::Active,
             namespace: TableNamespace::Global,
+            monotonic_creation_time: None,
         };
         let serialized: ConvexObject = table.try_into()?;
         assert_eq!(
@@ -212,6 +222,61 @@ mod tests {
                 "number" => 1017,
             ),
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_monotonic_creation_time_serialization() -> anyhow::Result<()> {
+        // Test that monotonic_creation_time serializes when set
+        let table = TableMetadata {
+            name: "foo".parse()?,
+            number: 1017.try_into()?,
+            state: TableState::Active,
+            namespace: TableNamespace::Global,
+            monotonic_creation_time: Some(true),
+        };
+        let serialized: ConvexObject = table.try_into()?;
+        // Check both camelCase and snake_case field names
+        let field_name_camel: FieldName = "monotonicCreationTime".parse()?;
+        let field_name_snake: FieldName = "monotonic_creation_time".parse()?;
+        // The field should be present with one of these names
+        let value = serialized
+            .get(&field_name_camel)
+            .or_else(|| serialized.get(&field_name_snake));
+        assert_eq!(
+            value,
+            Some(&value::ConvexValue::Boolean(true)),
+            "Serialized object: {:?}",
+            serialized
+        );
+
+        // Test that it's omitted when None
+        let table_no_flag = TableMetadata {
+            name: "bar".parse()?,
+            number: 1018.try_into()?,
+            state: TableState::Active,
+            namespace: TableNamespace::Global,
+            monotonic_creation_time: None,
+        };
+        let serialized_no_flag: ConvexObject = table_no_flag.try_into()?;
+        // The field should be absent when None
+        assert_eq!(
+            serialized_no_flag
+                .get(&field_name_camel)
+                .or_else(|| serialized_no_flag.get(&field_name_snake)),
+            None
+        );
+
+        // Test deserialization - use snake_case to match SerializedTableMetadata
+        let serialized_with_flag = obj!(
+            "name" => "baz",
+            "state" => "active",
+            "number" => 1019,
+            "monotonic_creation_time" => true,
+        )?;
+        let deserialized: TableMetadata = serialized_with_flag.try_into()?;
+        assert_eq!(deserialized.monotonic_creation_time, Some(true));
+
         Ok(())
     }
 }
