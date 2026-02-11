@@ -51,16 +51,19 @@ impl<'i> Session<'i> {
     extern "C" fn near_heap_limit_callback(
         data: *mut ffi::c_void,
         current_heap_limit: usize,
-        _initial_heap_limit: usize,
+        initial_heap_limit: usize,
     ) -> usize {
         let heap_ctx = unsafe { &*(data as *const HeapContext) };
 
-        // XXX: heap_ctx.handle.terminate(TerminationReason::OutOfMemory);
-        tracing::debug!("near_heap_limit_callback");
+        tracing::warn!(
+            current_heap_limit,
+            initial_heap_limit,
+            "isolate2: near heap limit, terminating execution"
+        );
         heap_ctx.handle.terminate_execution();
         heap_ctx.oomed.store(true, Ordering::Relaxed);
 
-        // Double heap limit to avoid a hard OOM.
+        // Double heap limit to avoid a hard OOM while the isolate shuts down.
         current_heap_limit * 2
     }
 }

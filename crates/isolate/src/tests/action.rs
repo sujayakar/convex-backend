@@ -41,11 +41,16 @@ pub(crate) async fn action_udf_test(
 
 #[convex_macro::test_runtime]
 async fn test_action_env_var(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = action_udf_test(rt).await?;
-
+    let t = action_udf_test(rt.clone()).await?;
     let v = t.action("action:getCloudUrl", assert_obj!()).await?;
     assert_eq!(v, ConvexValue::try_from("https://carnitas.convex.cloud")?);
+    let v = t.action("action:getSiteUrl", assert_obj!()).await?;
+    assert_eq!(v, ConvexValue::try_from("https://carnitas.convex.site")?);
 
+    let mut t = action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let v = t.action("action:getCloudUrl", assert_obj!()).await?;
+    assert_eq!(v, ConvexValue::try_from("https://carnitas.convex.cloud")?);
     let v = t.action("action:getSiteUrl", assert_obj!()).await?;
     assert_eq!(v, ConvexValue::try_from("https://carnitas.convex.site")?);
 
@@ -55,6 +60,15 @@ async fn test_action_env_var(rt: TestRuntime) -> anyhow::Result<()> {
 #[convex_macro::test_runtime]
 async fn test_action_running_other_udfs(rt: TestRuntime) -> anyhow::Result<()> {
     let t = action_udf_test(rt).await?;
+    must_let!(let ConvexValue::Float64(v) = t.action("action:insertObject", assert_obj!()).await?);
+    assert!(v == 1.0);
+    Ok(())
+}
+
+#[convex_macro::test_runtime]
+async fn test_action_running_other_udfs_isolate2(rt: TestRuntime) -> anyhow::Result<()> {
+    let mut t = action_udf_test(rt).await?;
+    t.enable_isolate_v2();
     must_let!(let ConvexValue::Float64(v) = t.action("action:insertObject", assert_obj!()).await?);
     assert!(v == 1.0);
     Ok(())
@@ -111,7 +125,16 @@ async fn test_action_occ(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_action_inner_call_fails_with_system_error(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = action_udf_test(rt).await?;
+    let t = action_udf_test(rt.clone()).await?;
+    let e = t
+        .action_js_error("action:innerSystemErrorAction", assert_obj!())
+        .await?;
+    assert_contains(
+        &e,
+        "Uncaught Error: Your request couldn't be completed. Try again later.",
+    );
+    let mut t = action_udf_test(rt).await?;
+    t.enable_isolate_v2();
     let e = t
         .action_js_error("action:innerSystemErrorAction", assert_obj!())
         .await?;
@@ -124,6 +147,30 @@ async fn test_action_inner_call_fails_with_system_error(rt: TestRuntime) -> anyh
 }
 
 #[convex_macro::test_runtime]
+async fn test_action_inner_call_fails_with_uncatcatchable_developer_error(
+    rt: TestRuntime,
+) -> anyhow::Result<()> {
+    let t = action_udf_test(rt.clone()).await?;
+    let e = t
+        .action_js_error("action:innerUncatchableDeveloperErrorAction", assert_obj!())
+        .await?;
+    assert_contains(
+        &e,
+        "Uncaught Error: Unknown JS syscall: idonotexistandicannotlie",
+    );
+    let mut t = action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let e = t
+        .action_js_error("action:innerUncatchableDeveloperErrorAction", assert_obj!())
+        .await?;
+    assert_contains(
+        &e,
+        "Uncaught Error: Unknown JS syscall: idonotexistandicannotlie",
+    );
+    Ok(())
+}
+
+#[convex_macro::test_runtime]
 async fn test_action_fails_with_system_error(rt: TestRuntime) -> anyhow::Result<()> {
     let t = action_udf_test(rt).await?;
     let e = t
@@ -132,21 +179,6 @@ async fn test_action_fails_with_system_error(rt: TestRuntime) -> anyhow::Result<
         .unwrap_err();
     assert_contains(&e, "I can't go for that");
 
-    Ok(())
-}
-
-#[convex_macro::test_runtime]
-async fn test_action_inner_call_fails_with_uncatcatchable_developer_error(
-    rt: TestRuntime,
-) -> anyhow::Result<()> {
-    let t = action_udf_test(rt).await?;
-    let e = t
-        .action_js_error("action:innerUncatchableDeveloperErrorAction", assert_obj!())
-        .await?;
-    assert_contains(
-        &e,
-        "Uncaught Error: Unknown JS syscall: idonotexistandicannotlie",
-    );
     Ok(())
 }
 

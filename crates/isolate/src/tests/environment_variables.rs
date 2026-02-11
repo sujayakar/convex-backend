@@ -60,7 +60,7 @@ async fn test_get_environment_variable(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_get_environment_variable_null(rt: TestRuntime) -> anyhow::Result<()> {
-    UdfTest::run_test_with_isolate(rt, async |t| {
+    UdfTest::run_test_with_isolate2(rt, async |t| {
         let v = t
             .query("environmentVariables:getEnvironmentVariable", assert_obj!())
             .await?;
@@ -72,7 +72,7 @@ async fn test_get_environment_variable_null(rt: TestRuntime) -> anyhow::Result<(
 
 #[convex_macro::test_runtime]
 async fn test_console_log(rt: TestRuntime) -> anyhow::Result<()> {
-    UdfTest::run_test_with_isolate(rt, async |t| {
+    UdfTest::run_test_with_isolate2(rt, async |t| {
         let v = t
             .query_log_lines("environmentVariables:log", assert_obj!())
             .await?;
@@ -89,7 +89,7 @@ async fn test_console_log(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_system_environment_variables(rt: TestRuntime) -> anyhow::Result<()> {
-    UdfTest::run_test_with_isolate(rt, async |t| {
+    UdfTest::run_test_with_isolate2(rt, async |t| {
         let v = t
             .query("environmentVariables:getCloudUrl", assert_obj!())
             .await?;
@@ -104,6 +104,10 @@ async fn test_system_environment_variables(rt: TestRuntime) -> anyhow::Result<()
     .await
 }
 
+// NOTE: This test checks fine-grained transaction invalidation for env var
+// reads. Isolate2 currently uses get_all() which records a full table scan
+// dependency, so any env var change invalidates the token. This should be fixed
+// by tracking which env vars were accessed and replaying indexed lookups.
 async fn test_environment_variable_reads_recorded(
     rt: TestRuntime,
     env_var_name: &str,

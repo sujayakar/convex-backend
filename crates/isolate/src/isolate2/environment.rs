@@ -13,6 +13,8 @@ use rand_chacha::ChaCha12Rng;
 use serde_json::Value as JsonValue;
 use value::NamespacedTableMapping;
 
+use crate::environment::crypto_rng::CryptoRng;
+
 #[derive(Debug)]
 pub struct EnvironmentOutcome {
     pub observed_rng: bool,
@@ -36,6 +38,10 @@ pub trait Environment {
 
     fn get_environment_variable(&mut self, name: EnvVarName)
         -> anyhow::Result<Option<EnvVarValue>>;
+
+    /// Whether cryptographic RNG is available. Returns error for queries/mutations,
+    /// returns CryptoRng for actions.
+    fn crypto_rng(&mut self) -> anyhow::Result<CryptoRng>;
 
     // Signal that we've finished the import phase and are ready to start execution.
     fn start_execution(&mut self) -> anyhow::Result<()>;

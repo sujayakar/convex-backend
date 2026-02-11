@@ -107,8 +107,7 @@ pub async fn http_action_udf_test(
 
 #[convex_macro::test_runtime]
 async fn test_http_basic(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = http_action_udf_test(rt).await?;
-
+    let t = http_action_udf_test(rt.clone()).await?;
     let response = t
         .http_action(
             "http_action",
@@ -116,7 +115,6 @@ async fn test_http_basic(rt: TestRuntime) -> anyhow::Result<()> {
             Identity::system(),
         )
         .await?;
-
     must_let!(let Some(value) = response.body().clone());
     let expected = json!({
         "requestBody": "hi",
@@ -127,23 +125,35 @@ async fn test_http_basic(rt: TestRuntime) -> anyhow::Result<()> {
     });
     let actual: JsonValue = serde_json::from_slice(&value)?;
     assert_eq!(actual, expected);
+
+    let mut t = http_action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let response = t
+        .http_action(
+            "http_action",
+            http_post_request("basic", "hi".as_bytes().to_vec()),
+            Identity::system(),
+        )
+        .await?;
+    must_let!(let Some(value) = response.body().clone());
+    let actual: JsonValue = serde_json::from_slice(&value)?;
+    assert_eq!(actual, expected);
+
     Ok(())
 }
 
 #[convex_macro::test_runtime]
 async fn test_http_response_stream(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = http_action_udf_test(rt).await?;
-
+    let t = http_action_udf_test(rt.clone()).await?;
     let response = t
-        .http_action(
-            "http_action",
-            http_request("stream_response"),
-            Identity::system(),
-        )
+        .http_action("http_action", http_request("stream_response"), Identity::system())
         .await?;
-
     must_let!(let Some(value) = response.body().clone());
     assert_eq!(std::str::from_utf8(&value)?, "<html></html>");
+
+    // Note: isolate2 streaming response with setTimeout delays is complex --
+    // the stream body may not be fully written when the promise resolves.
+    // Keep isolate1-only for now.
     Ok(())
 }
 
@@ -183,8 +193,7 @@ async fn test_http_slow(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_http_echo(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = http_action_udf_test(rt).await?;
-
+    let t = http_action_udf_test(rt.clone()).await?;
     let response = t
         .http_action(
             "http_action",
@@ -192,7 +201,18 @@ async fn test_http_echo(rt: TestRuntime) -> anyhow::Result<()> {
             Identity::system(),
         )
         .await?;
+    must_let!(let Some(value) = response.body().clone());
+    assert_eq!(std::str::from_utf8(&value)?, "hi");
 
+    let mut t = http_action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let response = t
+        .http_action(
+            "http_action",
+            http_post_request("echo", "hi".as_bytes().to_vec()),
+            Identity::system(),
+        )
+        .await?;
     must_let!(let Some(value) = response.body().clone());
     assert_eq!(std::str::from_utf8(&value)?, "hi");
     Ok(())
@@ -201,7 +221,6 @@ async fn test_http_echo(rt: TestRuntime) -> anyhow::Result<()> {
 #[convex_macro::test_runtime]
 async fn test_http_scheduler(rt: TestRuntime) -> anyhow::Result<()> {
     let t = http_action_udf_test(rt.clone()).await?;
-
     let (http_response_sender, _http_response_receiver) = mpsc::unbounded_channel();
     let (result, _) = t
         .raw_http_action(
@@ -212,19 +231,35 @@ async fn test_http_scheduler(rt: TestRuntime) -> anyhow::Result<()> {
         )
         .await?;
     let http_finish_ts = rt.clone().unix_timestamp();
-
     assert_matches!(result, HttpActionResult::Streamed);
-
     let result = t.query("scheduler:getScheduledJobs", assert_obj!()).await?;
     must_let!(let ConvexValue::Array(scheduled_jobs) = result);
     assert_eq!(scheduled_jobs.len(), 1);
     must_let!(let ConvexValue::Object(job_obj) = scheduled_jobs[0].clone());
-
     let job = PublicScheduledJob::try_from(job_obj)?;
     assert_eq!(job.state, ScheduledJobState::Pending);
+    let expected_ts = (http_finish_ts + Duration::from_secs(2)).as_secs_f64() * 1000.0;
+    assert!((job.scheduled_time - expected_ts).abs() < 500.0);
 
-    // End time of the HTTP action + 2 seconds, which should be a little after when
-    // the job was scheduled for
+    let mut t = http_action_udf_test(rt.clone()).await?;
+    t.enable_isolate_v2();
+    let (http_response_sender, _http_response_receiver) = mpsc::unbounded_channel();
+    let (result, _) = t
+        .raw_http_action(
+            "http_action",
+            http_request("schedule"),
+            Identity::system(),
+            HttpActionResponseStreamer::new(http_response_sender),
+        )
+        .await?;
+    let http_finish_ts = rt.unix_timestamp();
+    assert_matches!(result, HttpActionResult::Streamed);
+    let result = t.query("scheduler:getScheduledJobs", assert_obj!()).await?;
+    must_let!(let ConvexValue::Array(scheduled_jobs) = result);
+    assert_eq!(scheduled_jobs.len(), 1);
+    must_let!(let ConvexValue::Object(job_obj) = scheduled_jobs[0].clone());
+    let job = PublicScheduledJob::try_from(job_obj)?;
+    assert_eq!(job.state, ScheduledJobState::Pending);
     let expected_ts = (http_finish_ts + Duration::from_secs(2)).as_secs_f64() * 1000.0;
     assert!((job.scheduled_time - expected_ts).abs() < 500.0);
     Ok(())
@@ -232,14 +267,17 @@ async fn test_http_scheduler(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_http_error_in_run(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = http_action_udf_test(rt).await?;
-
+    let t = http_action_udf_test(rt.clone()).await?;
     let err = t
-        .http_action_js_error(
-            "http_action",
-            http_request("errorInRun"),
-            Identity::system(),
-        )
+        .http_action_js_error("http_action", http_request("errorInRun"), Identity::system())
+        .await?;
+    must_let!(let JsError { message, .. } = err);
+    assert!(message.contains("Oh no! Called erroring query"));
+
+    let mut t = http_action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let err = t
+        .http_action_js_error("http_action", http_request("errorInRun"), Identity::system())
         .await?;
     must_let!(let JsError { message, .. } = err);
     assert!(message.contains("Oh no! Called erroring query"));
@@ -248,16 +286,18 @@ async fn test_http_error_in_run(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_http_no_router(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-
+    let t = UdfTest::default(rt.clone()).await?;
     let err = t
-        .http_action_js_error(
-            "http_no_default",
-            http_request("no routes here"),
-            Identity::system(),
-        )
+        .http_action_js_error("http_no_default", http_request("no routes here"), Identity::system())
         .await?;
+    must_let!(let JsError { message, .. } = err);
+    assert!(message.contains("Couldn't find default export in"));
 
+    let mut t = UdfTest::default(rt).await?;
+    t.enable_isolate_v2();
+    let err = t
+        .http_action_js_error("http_no_default", http_request("no routes here"), Identity::system())
+        .await?;
     must_let!(let JsError { message, .. } = err);
     assert!(message.contains("Couldn't find default export in"));
     Ok(())
@@ -265,16 +305,18 @@ async fn test_http_no_router(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_http_bad_router(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = UdfTest::default(rt).await?;
-
+    let t = UdfTest::default(rt.clone()).await?;
     let err = t
-        .http_action_js_error(
-            "http_object_default",
-            http_request("no routes here"),
-            Identity::system(),
-        )
+        .http_action_js_error("http_object_default", http_request("no routes here"), Identity::system())
         .await?;
+    must_let!(let JsError { message, .. } = err);
+    assert!(message.contains("The default export of `convex/http.js` is not a Router"));
 
+    let mut t = UdfTest::default(rt).await?;
+    t.enable_isolate_v2();
+    let err = t
+        .http_action_js_error("http_object_default", http_request("no routes here"), Identity::system())
+        .await?;
     must_let!(let JsError { message, .. } = err);
     assert!(message.contains("The default export of `convex/http.js` is not a Router"));
     Ok(())
@@ -282,9 +324,12 @@ async fn test_http_bad_router(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_http_error_in_run_catch(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = http_action_udf_test(rt).await?;
+    let t = http_action_udf_test(rt.clone()).await?;
+    t.http_action("http", http_request("errorInRunCatch"), Identity::system())
+        .await?;
 
-    // Test that this runs successfully and doesn't error
+    let mut t = http_action_udf_test(rt).await?;
+    t.enable_isolate_v2();
     t.http_action("http", http_request("errorInRunCatch"), Identity::system())
         .await?;
     Ok(())
@@ -292,14 +337,17 @@ async fn test_http_error_in_run_catch(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_http_error_in_endpoint(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = http_action_udf_test(rt).await?;
-
+    let t = http_action_udf_test(rt.clone()).await?;
     let err = t
-        .http_action_js_error(
-            "http_action",
-            http_request("errorInEndpoint"),
-            Identity::system(),
-        )
+        .http_action_js_error("http_action", http_request("errorInEndpoint"), Identity::system())
+        .await?;
+    must_let!(let JsError { message, .. } = err);
+    assert!(message.contains("Oh no!"));
+
+    let mut t = http_action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let err = t
+        .http_action_js_error("http_action", http_request("errorInEndpoint"), Identity::system())
         .await?;
     must_let!(let JsError { message, .. } = err);
     assert!(message.contains("Oh no!"));
@@ -308,24 +356,27 @@ async fn test_http_error_in_endpoint(rt: TestRuntime) -> anyhow::Result<()> {
 
 #[convex_macro::test_runtime]
 async fn test_http_env_var(rt: TestRuntime) -> anyhow::Result<()> {
-    let t = http_action_udf_test(rt).await?;
-
+    let t = http_action_udf_test(rt.clone()).await?;
     let response = t
-        .http_action(
-            "http_action",
-            http_request("convexCloudSystemVar"),
-            Identity::system(),
-        )
+        .http_action("http_action", http_request("convexCloudSystemVar"), Identity::system())
         .await?;
     must_let!(let Some(value) = response.body().clone());
     assert_eq!(String::from_utf8(value)?, "https://carnitas.convex.cloud");
-
     let response = t
-        .http_action(
-            "http_action",
-            http_request("convexSiteSystemVar"),
-            Identity::system(),
-        )
+        .http_action("http_action", http_request("convexSiteSystemVar"), Identity::system())
+        .await?;
+    must_let!(let Some(value) = response.body().clone());
+    assert_eq!(String::from_utf8(value)?, "https://carnitas.convex.site");
+
+    let mut t = http_action_udf_test(rt).await?;
+    t.enable_isolate_v2();
+    let response = t
+        .http_action("http_action", http_request("convexCloudSystemVar"), Identity::system())
+        .await?;
+    must_let!(let Some(value) = response.body().clone());
+    assert_eq!(String::from_utf8(value)?, "https://carnitas.convex.cloud");
+    let response = t
+        .http_action("http_action", http_request("convexSiteSystemVar"), Identity::system())
         .await?;
     must_let!(let Some(value) = response.body().clone());
     assert_eq!(String::from_utf8(value)?, "https://carnitas.convex.site");
@@ -359,7 +410,7 @@ async fn test_http_action_response_size_large(rt: TestRuntime) -> anyhow::Result
     let (_outcome, mut log_lines) = t
         .http_action_with_log_lines(
             "http_action",
-            // Ask for 23MiB
+            // Ask for 19MiB
             http_post_request("largeResponse", "19".as_bytes().to_vec()),
             Identity::system(),
         )

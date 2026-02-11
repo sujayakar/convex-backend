@@ -165,6 +165,31 @@ impl ContextState {
         Ok(())
     }
 
+    /// Drain all data from a stream, returning the buffered bytes.
+    /// Used to extract HTTP action response bodies after the handler completes.
+    pub fn drain_stream(&mut self, id: Uuid) -> anyhow::Result<Vec<Bytes>> {
+        let mut part_ids = vec![];
+        loop {
+            let part_id = self.streams.mutate(&id, |stream| -> anyhow::Result<Option<Uuid>> {
+                let Some(Ok(ReadableStream { parts, .. })) = stream else {
+                    anyhow::bail!("Stream {id} not found or errored");
+                };
+                Ok(parts.pop_front())
+            })?;
+            match part_id {
+                Some(pid) => part_ids.push(pid),
+                None => break,
+            }
+        }
+        let mut result = vec![];
+        for part_id in part_ids {
+            if let Some(bytes) = self.blob_parts.remove(&part_id) {
+                result.push(bytes);
+            }
+        }
+        Ok(result)
+    }
+
     pub fn new_stream_listener(
         &mut self,
         id: Uuid,

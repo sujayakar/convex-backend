@@ -10,7 +10,10 @@ use common::{
     runtime::Runtime,
     types::UdfType,
 };
-use deno_core::ModuleSpecifier;
+use deno_core::{
+    v8,
+    ModuleSpecifier,
+};
 use serde_json::Value as JsonValue;
 use sync_types::CanonicalizedUdfPath;
 use tokio::sync::{
@@ -56,6 +59,20 @@ pub enum IsolateThreadRequest {
         arguments: ConvexArray,
         response: oneshot::Sender<anyhow::Result<(FunctionId, EvaluateResult)>>,
     },
+    StartHttpAction {
+        http_module_path: CanonicalizedUdfPath,
+        routed_path: String,
+        request_json: String,
+        method: String,
+        body: Option<bytes::Bytes>,
+        response: oneshot::Sender<anyhow::Result<HttpActionStartResult>>,
+    },
+    /// Extract all data from a stream in the V8 context.
+    /// Used to get HTTP action response bodies after the handler completes.
+    ExtractStream {
+        stream_id: uuid::Uuid,
+        response: oneshot::Sender<anyhow::Result<Vec<bytes::Bytes>>>,
+    },
     PollFunction {
         function_id: FunctionId,
         completions: Completions,
@@ -64,6 +81,32 @@ pub enum IsolateThreadRequest {
     Shutdown {
         response: oneshot::Sender<anyhow::Result<EnvironmentOutcome>>,
     },
+}
+
+/// Result of starting an HTTP action from the V8 thread.
+pub enum HttpActionStartResultInner {
+    /// Router started the request. Contains the promise and route for tracking.
+    Started {
+        promise: v8::Global<v8::Promise>,
+        udf_path: CanonicalizedUdfPath,
+        result: EvaluateResult,
+        route: String,
+    },
+    /// No route matched (404).
+    NoRoute,
+    /// Error during router lookup or invocation.
+    Error(common::errors::JsError),
+}
+
+/// Result of starting an HTTP action, after Context tracking.
+pub enum HttpActionStartResult {
+    Started {
+        function_id: FunctionId,
+        result: EvaluateResult,
+        route: String,
+    },
+    NoRoute,
+    Error(common::errors::JsError),
 }
 
 pub enum EvaluateResult {
@@ -90,6 +133,9 @@ impl Pending {
 pub struct Completions {
     pub async_syscalls: Vec<AsyncSyscallCompletion>,
     pub async_ops: Vec<AsyncOpCompletion>,
+    /// Stream data to be delivered to V8 before resolving promises.
+    /// Each entry is (stream_id, chunk). `chunk == None` signals stream end.
+    pub stream_parts: Vec<(uuid::Uuid, anyhow::Result<Option<bytes::Bytes>>)>,
 }
 
 impl Completions {
@@ -97,6 +143,7 @@ impl Completions {
         Self {
             async_syscalls: vec![],
             async_ops: vec![],
+            stream_parts: vec![],
         }
     }
 }
@@ -258,6 +305,21 @@ impl<RT: Runtime> IsolateThreadClient<RT> {
         .await
     }
 
+    pub async fn extract_stream(
+        &mut self,
+        stream_id: uuid::Uuid,
+    ) -> anyhow::Result<Vec<bytes::Bytes>> {
+        let (tx, rx) = oneshot::channel();
+        self.send(
+            IsolateThreadRequest::ExtractStream {
+                stream_id,
+                response: tx,
+            },
+            rx,
+        )
+        .await
+    }
+
     pub async fn poll_function(
         &mut self,
         function_id: FunctionId,
@@ -268,6 +330,29 @@ impl<RT: Runtime> IsolateThreadClient<RT> {
             IsolateThreadRequest::PollFunction {
                 function_id,
                 completions,
+                response: tx,
+            },
+            rx,
+        )
+        .await
+    }
+
+    pub async fn start_http_action(
+        &mut self,
+        http_module_path: CanonicalizedUdfPath,
+        routed_path: String,
+        request_json: String,
+        method: String,
+        body: Option<bytes::Bytes>,
+    ) -> anyhow::Result<HttpActionStartResult> {
+        let (tx, rx) = oneshot::channel();
+        self.send(
+            IsolateThreadRequest::StartHttpAction {
+                http_module_path,
+                routed_path,
+                request_json,
+                method,
+                body,
                 response: tx,
             },
             rx,
