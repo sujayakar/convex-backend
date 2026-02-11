@@ -8,5 +8,6 @@ pub mod link_ring;
 pub mod link_ring_js;
 pub mod pagination_js;
 pub mod scheduled_js;
+pub mod sdk_client_poc;
 pub mod subscription_js;
 pub mod text_search_js;

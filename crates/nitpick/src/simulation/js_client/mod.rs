@@ -28,8 +28,8 @@ use super::server::ServerThread;
 
 mod environment;
 mod go;
-mod js_protocol;
-mod state;
+pub(crate) mod js_protocol;
+pub(crate) mod state;
 
 pub type QueryToken = String;
 pub type SyncQuerySubscriptionId = String;

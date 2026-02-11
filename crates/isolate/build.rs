@@ -297,20 +297,24 @@ fn main() -> anyhow::Result<()> {
     // Step 7: Record dependencies for the simulation test build. It's a bit of a
     // hack that it's in this build script, but we can't safely invoke Rush
     // across two build scripts since it'll fail if called concurrently.
-    let metafile = Path::new(PACKAGES_DIR).join("simulation/dist/metafile.json");
-    let metafile_contents = fs::read_to_string(metafile).context("Failed to read metafile")?;
-    let metafile: Metafile =
-        serde_json::from_str(&metafile_contents).context("Failed to parse metafile")?;
+    for metafile_name in ["metafile.json", "sdk_client_metafile.json"] {
+        let metafile_path = Path::new(PACKAGES_DIR).join(format!("simulation/dist/{metafile_name}"));
+        let metafile_contents = fs::read_to_string(&metafile_path)
+            .context(format!("Failed to read {metafile_name}"))?;
+        let metafile: Metafile =
+            serde_json::from_str(&metafile_contents)
+                .context(format!("Failed to parse {metafile_name}"))?;
 
-    for (rel_path, _) in metafile.inputs {
-        // TODO: Building `convex` seems to bump the files' mtime even on cache hit.
-        // [simulation 0.1.0] ==[ convex ]==============================[ 1 of 2 ]==
-        // [simulation 0.1.0] "convex" was restored from the build cache.
-        if rel_path.contains("convex/dist/esm") {
-            continue;
+        for (rel_path, _) in metafile.inputs {
+            // TODO: Building `convex` seems to bump the files' mtime even on cache hit.
+            // [simulation 0.1.0] ==[ convex ]==============================[ 1 of 2 ]==
+            // [simulation 0.1.0] "convex" was restored from the build cache.
+            if rel_path.contains("convex/dist/esm") {
+                continue;
+            }
+            let path = fs::canonicalize(Path::new(PACKAGES_DIR).join("simulation").join(&rel_path))?;
+            rerun_if_changed(path.as_os_str().to_str().unwrap())?;
         }
-        let path = fs::canonicalize(Path::new(PACKAGES_DIR).join("simulation").join(rel_path))?;
-        rerun_if_changed(path.as_os_str().to_str().unwrap())?;
     }
     for entry in WalkDir::new(Path::new(PACKAGES_DIR).join("simulation/convex")) {
         rerun_if_changed(entry?.path().to_str().expect("Invalid path"))?;
