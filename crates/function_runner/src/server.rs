@@ -126,7 +126,7 @@ pub struct RunRequestArgs {
     pub action_callbacks: Arc<dyn ActionCallbacks>,
     pub fetch_client: Arc<dyn FetchClient>,
     pub log_line_sender: Option<mpsc::UnboundedSender<LogLine>>,
-    pub function_started_sender: Option<oneshot::Sender<()>>,
+    pub function_started_sender: Option<isolate::client::ResponseSender<()>>,
     pub udf_type: UdfType,
     pub identity: Identity,
     pub ts: RepeatableTimestamp,

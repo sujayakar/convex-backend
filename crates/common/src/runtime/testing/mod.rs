@@ -1,8 +1,6 @@
 mod thread_future;
-pub use thread_future::{
-    defer_waker_to_tokio_thread,
-    reset_thread_future_poll_tracking,
-};
+// `defer_waker_to_tokio_thread` is still used by `DstOneshotSender`.
+pub use thread_future::defer_waker_to_tokio_thread;
 
 mod dst_oneshot;
 pub use dst_oneshot::{
@@ -137,7 +135,6 @@ impl Drop for TestDriver {
             .take()
             .expect("tokio_runtime disappeared?")
             .shutdown_timeout(std::time::Duration::from_secs(5));
-        thread_future::write_thread_future_poll_summary();
     }
 }
 

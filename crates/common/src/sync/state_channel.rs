@@ -1,7 +1,6 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     future::Future,
-    hash::Hash,
     pin::Pin,
     sync::Arc,
     task::{
@@ -20,15 +19,13 @@ use thiserror::Error;
 /// Receivers can asynchronously `wait_for` a particular value and receive a
 /// notification when the value matches or if the sender has closed (or dropped)
 /// its half.
-pub fn new_state_channel<T: Copy + Eq + Hash + Unpin>(
+pub fn new_state_channel<T: Copy + Eq + Ord + Unpin>(
     initial_value: T,
 ) -> (StateChannelSender<T>, StateChannelReceiver<T>) {
-    let mut visits = HashMap::new();
-    visits.insert(initial_value, 1);
     let inner = StateChannelInner {
         current_state: initial_value,
         version: 0,
-        wakers: HashMap::new(),
+        wakers: BTreeMap::new(),
         closed: false,
     };
     let inner = Arc::new(Mutex::new(inner));
@@ -45,11 +42,11 @@ pub fn new_state_channel<T: Copy + Eq + Hash + Unpin>(
 pub struct ClosedError;
 
 #[derive(Clone)]
-pub struct StateChannelReceiver<T: Copy + Eq + Hash + Unpin> {
+pub struct StateChannelReceiver<T: Copy + Eq + Ord + Unpin> {
     inner: Arc<Mutex<StateChannelInner<T>>>,
 }
 
-impl<T: Copy + Eq + Hash + Unpin> StateChannelReceiver<T> {
+impl<T: Copy + Eq + Ord + Unpin> StateChannelReceiver<T> {
     pub fn current_state(&self) -> Result<T, ClosedError> {
         let inner = self.inner.lock();
         if inner.closed {
@@ -60,7 +57,10 @@ impl<T: Copy + Eq + Hash + Unpin> StateChannelReceiver<T> {
 
     /// Wait for the state channel to have the given value, failing with a
     /// `ClosedError` if it's subsequently closed.
-    pub fn wait_for(&self, value: T) -> impl Future<Output = Result<(), ClosedError>> + use<T> {
+    pub fn wait_for(&self, value: T) -> impl Future<Output = Result<(), ClosedError>> + use<T>
+    where
+        T: Ord,
+    {
         StateChannelFuture {
             waiting_for: value,
             initial_version: None,
@@ -69,14 +69,14 @@ impl<T: Copy + Eq + Hash + Unpin> StateChannelReceiver<T> {
     }
 }
 
-struct StateChannelFuture<T: Copy + Eq + Hash + Unpin> {
+struct StateChannelFuture<T: Copy + Eq + Ord + Unpin> {
     waiting_for: T,
     // What was the version of the state channel when we were first polled?
     initial_version: Option<usize>,
     inner: Arc<Mutex<StateChannelInner<T>>>,
 }
 
-impl<T: Copy + Eq + Hash + Unpin> Future for StateChannelFuture<T> {
+impl<T: Copy + Eq + Ord + Unpin> Future for StateChannelFuture<T> {
     type Output = Result<(), ClosedError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -141,11 +141,11 @@ impl<T: Copy + Eq + Hash + Unpin> Future for StateChannelFuture<T> {
     }
 }
 
-pub struct StateChannelSender<T: Copy + Eq + Hash + Unpin> {
+pub struct StateChannelSender<T: Copy + Eq + Ord + Unpin> {
     inner: Arc<Mutex<StateChannelInner<T>>>,
 }
 
-impl<T: Copy + Eq + Hash + Unpin> StateChannelSender<T> {
+impl<T: Copy + Eq + Ord + Unpin> StateChannelSender<T> {
     pub fn set(&self, value: T) -> bool {
         let ready = {
             let mut inner = self.inner.lock();
@@ -175,7 +175,7 @@ impl<T: Copy + Eq + Hash + Unpin> StateChannelSender<T> {
     }
 }
 
-impl<T: Copy + Eq + Hash + Unpin> Drop for StateChannelSender<T> {
+impl<T: Copy + Eq + Ord + Unpin> Drop for StateChannelSender<T> {
     fn drop(&mut self) {
         // Wake up all of the wakers, but leave their waker lists intact since we're not
         // actually setting a new value.
@@ -200,10 +200,10 @@ struct WakerList {
     wakers: Vec<Waker>,
 }
 
-struct StateChannelInner<T: Copy + Eq + Hash + Unpin> {
+struct StateChannelInner<T: Copy + Eq + Ord + Unpin> {
     current_state: T,
     version: usize,
-    wakers: HashMap<T, WakerList>,
+    wakers: BTreeMap<T, WakerList>,
     closed: bool,
 }
 

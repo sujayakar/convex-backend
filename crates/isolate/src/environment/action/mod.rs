@@ -322,7 +322,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         http_module_path: ValidatedHttpPath,
         routed_path: RoutedHttpPath,
         request: HttpActionRequest,
-        function_started: Option<oneshot::Sender<()>>,
+        function_started: Option<crate::client::ResponseSender<()>>,
     ) -> anyhow::Result<HttpActionOutcome> {
         let start_unix_timestamp = self.rt.unix_timestamp();
 
@@ -662,7 +662,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         isolate_clean: &mut bool,
         request_params: ActionRequestParams,
         cancellation: BoxFuture<'_, ()>,
-        function_started: Option<oneshot::Sender<()>>,
+        function_started: Option<crate::client::ResponseSender<()>>,
     ) -> anyhow::Result<ActionOutcome> {
         let start_unix_timestamp = self.rt.unix_timestamp();
         let heap_stats = self.heap_stats.clone();

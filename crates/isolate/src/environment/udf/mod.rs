@@ -377,7 +377,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
         v8_context: v8::Global<v8::Context>,
         isolate_clean: &mut bool,
         cancellation: BoxFuture<'_, ()>,
-        function_started: Option<oneshot::Sender<()>>,
+        function_started: Option<crate::client::ResponseSender<()>>,
     ) -> anyhow::Result<(Transaction<RT>, FunctionOutcome)> {
         // Initialize the UDF's RNG from some high-quality entropy. As with
         // `unix_timestamp` below, the UDF is only deterministic modulo this

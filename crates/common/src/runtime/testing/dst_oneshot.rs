@@ -27,6 +27,10 @@ use super::defer_waker_to_tokio_thread;
 struct Shared<T> {
     value: Mutex<Option<T>>,
     waker: Mutex<Option<Waker>>,
+    /// Waker to fire when the receiver is dropped (for `closed()`).
+    closed_waker: Mutex<Option<Waker>>,
+    /// Set to true when the receiver is dropped.
+    receiver_dropped: Mutex<bool>,
 }
 
 pub struct DstOneshotSender<T> {
@@ -41,6 +45,8 @@ pub fn dst_oneshot_channel<T>() -> (DstOneshotSender<T>, DstOneshotReceiver<T>) 
     let shared = Arc::new(Shared {
         value: Mutex::new(None),
         waker: Mutex::new(None),
+        closed_waker: Mutex::new(None),
+        receiver_dropped: Mutex::new(false),
     });
     (
         DstOneshotSender {
@@ -61,6 +67,37 @@ impl<T> DstOneshotSender<T> {
         }
         Ok(())
     }
+
+    /// Returns a future that resolves when the receiver half is dropped.
+    /// Used as a cancellation signal.
+    pub fn closed(&mut self) -> DstOneshotClosed<T> {
+        DstOneshotClosed {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+/// Future that completes when the `DstOneshotReceiver` is dropped.
+pub struct DstOneshotClosed<T> {
+    shared: Arc<Shared<T>>,
+}
+
+impl<T> Future for DstOneshotClosed<T> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if *self.shared.receiver_dropped.lock().unwrap() {
+            Poll::Ready(())
+        } else {
+            *self.shared.closed_waker.lock().unwrap() = Some(cx.waker().clone());
+            // Double-check after storing waker.
+            if *self.shared.receiver_dropped.lock().unwrap() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
 }
 
 impl<T> Future for DstOneshotReceiver<T> {
@@ -78,6 +115,15 @@ impl<T> Future for DstOneshotReceiver<T> {
             return Poll::Ready(Ok(value));
         }
         Poll::Pending
+    }
+}
+
+impl<T> Drop for DstOneshotReceiver<T> {
+    fn drop(&mut self) {
+        *self.shared.receiver_dropped.lock().unwrap() = true;
+        if let Some(waker) = self.shared.closed_waker.lock().unwrap().take() {
+            waker.wake();
+        }
     }
 }
 

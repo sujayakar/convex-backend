@@ -1,20 +1,12 @@
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
-    fs::OpenOptions,
-    io::Write,
     pin::Pin,
-    sync::{
-        atomic::{
-            AtomicUsize,
-            Ordering,
-        },
-        LazyLock,
-        Mutex,
-    },
+    sync::Arc,
     task::{
         Context,
         Poll,
+        RawWaker,
+        RawWakerVTable,
         Waker,
     },
 };
@@ -37,68 +29,6 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-static NEXT_THREAD_FUTURE_ID: AtomicUsize = AtomicUsize::new(1);
-static THREAD_FUTURE_POLL_COUNTS: LazyLock<Mutex<BTreeMap<usize, usize>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
-
-fn nitpick_run_id() -> Option<usize> {
-    let run_id = std::env::var("NITPICK_RUN_ID").ok()?;
-    run_id.parse::<usize>().ok().filter(|id| *id > 0)
-}
-
-fn tf_log_path() -> Option<String> {
-    let run_id = nitpick_run_id()?;
-    Some(format!("/tmp/nitpick_tf_run{run_id}.log"))
-}
-
-fn append_tf_log(line: &str) {
-    let Some(path) = tf_log_path() else {
-        return;
-    };
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{line}");
-    }
-}
-
-pub fn reset_thread_future_poll_tracking() {
-    NEXT_THREAD_FUTURE_ID.store(1, Ordering::Relaxed);
-    THREAD_FUTURE_POLL_COUNTS
-        .lock()
-        .expect("thread future poll map lock poisoned")
-        .clear();
-    if let Some(path) = tf_log_path() {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-pub(crate) fn write_thread_future_poll_summary() {
-    let Some(run_id) = nitpick_run_id() else {
-        return;
-    };
-    let snapshot = THREAD_FUTURE_POLL_COUNTS
-        .lock()
-        .expect("thread future poll map lock poisoned")
-        .clone();
-    // #region agent log
-    append_tf_log(&format!(
-        "THREAD_FUTURE_SUMMARY_BEGIN run_id={} total_thread_futures={}",
-        run_id,
-        snapshot.len()
-    ));
-    // #endregion
-    for (thread_future_id, poll_count) in snapshot {
-        // #region agent log
-        append_tf_log(&format!(
-            "THREAD_FUTURE_SUMMARY id={} total_polls={}",
-            thread_future_id, poll_count
-        ));
-        // #endregion
-    }
-    // #region agent log
-    append_tf_log(&format!("THREAD_FUTURE_SUMMARY_END run_id={run_id}"));
-    // #endregion
-}
-
 /// Defer a waker fire so it happens on the Tokio runtime thread instead
 /// of the current OS thread.  If called outside a `ThreadFuture` context,
 /// the waker is fired immediately (production runtime path).
@@ -114,8 +44,59 @@ pub fn defer_waker_to_tokio_thread(waker: Waker) {
     });
 }
 
+/// Create a waker that, when woken, defers the real waker through the
+/// `DEFERRED_WAKER_TX` channel.  This intercepts ALL waker fires from
+/// the OS thread — including those from `tokio::sync` primitives like
+/// `mpsc::Sender::send()` and `oneshot::Sender::send()` — routing them
+/// to the Tokio runtime thread's deterministic local queue instead of
+/// the non-deterministic injection queue.
+fn make_deferring_waker(real_waker: Waker) -> Waker {
+    // We box the real waker and pass it through the RawWaker data pointer.
+    let data = Arc::new(real_waker);
+    let raw = RawWaker::new(
+        Arc::into_raw(data) as *const (),
+        &DEFERRING_VTABLE,
+    );
+    // SAFETY: raw waker follows the contract — clone increments refcount,
+    // wake/wake_by_ref defer the inner waker, drop decrements refcount.
+    unsafe { Waker::from_raw(raw) }
+}
+
+const DEFERRING_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    deferring_clone,
+    deferring_wake,
+    deferring_wake_by_ref,
+    deferring_drop,
+);
+
+unsafe fn deferring_clone(data: *const ()) -> RawWaker {
+    let arc = unsafe { Arc::from_raw(data as *const Waker) };
+    let cloned = arc.clone();
+    std::mem::forget(arc); // Don't decrement the original's refcount.
+    RawWaker::new(
+        Arc::into_raw(cloned) as *const (),
+        &DEFERRING_VTABLE,
+    )
+}
+
+unsafe fn deferring_wake(data: *const ()) {
+    let arc = unsafe { Arc::from_raw(data as *const Waker) };
+    defer_waker_to_tokio_thread((*arc).clone());
+    // arc is dropped here, decrementing the refcount.
+}
+
+unsafe fn deferring_wake_by_ref(data: *const ()) {
+    let arc = unsafe { Arc::from_raw(data as *const Waker) };
+    defer_waker_to_tokio_thread((*arc).clone());
+    std::mem::forget(arc); // Don't decrement the refcount.
+}
+
+unsafe fn deferring_drop(data: *const ()) {
+    let _arc = unsafe { Arc::from_raw(data as *const Waker) };
+    // arc is dropped here, decrementing the refcount.
+}
+
 pub struct ThreadFuture {
-    id: usize,
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
@@ -130,14 +111,6 @@ impl ThreadFuture {
         tokio_handle: tokio::runtime::Handle,
         f: F,
     ) -> Self {
-        let id = NEXT_THREAD_FUTURE_ID.fetch_add(1, Ordering::Relaxed);
-        THREAD_FUTURE_POLL_COUNTS
-            .lock()
-            .expect("thread future poll map lock poisoned")
-            .insert(id, 0);
-        // #region agent log
-        append_tf_log(&format!("THREAD_FUTURE_NEW id={id}"));
-        // #endregion
         let (poll_request_tx, poll_request_rx) = crossbeam_channel::bounded(1);
         let (poll_response_tx, poll_response_rx) = crossbeam_channel::bounded(1);
         let (deferred_waker_tx, deferred_waker_rx) = crossbeam_channel::unbounded();
@@ -152,11 +125,15 @@ impl ThreadFuture {
                 let fut = f();
                 tokio::pin!(fut);
                 loop {
-                    let Ok(waker) = poll_request_rx.recv() else {
+                    let Ok(real_waker) = poll_request_rx.recv() else {
                         tracing::debug!("ThreadFuture gone away, returning.");
                         return;
                     };
-                    let mut cx = Context::from_waker(&waker);
+                    // Wrap the real waker so that ANY waker.wake() call
+                    // from this poll (including tokio::sync internals)
+                    // goes through the deferred channel.
+                    let deferring_waker = make_deferring_waker(real_waker);
+                    let mut cx = Context::from_waker(&deferring_waker);
                     let response = match fut.poll_unpin(&mut cx) {
                         Poll::Ready(()) => Poll::Ready(false),
                         Poll::Pending => Poll::Pending,
@@ -172,7 +149,6 @@ impl ThreadFuture {
             })
             .expect("Failed to start new thread");
         Self {
-            id,
             std_handle: Some(std_handle),
             poll_request_tx: Some(poll_request_tx),
             poll_response_rx,
@@ -186,14 +162,6 @@ impl Future for ThreadFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let poll_number = {
-            let mut map = THREAD_FUTURE_POLL_COUNTS
-                .lock()
-                .expect("thread future poll map lock poisoned");
-            let entry = map.entry(this.id).or_insert(0);
-            *entry += 1;
-            *entry
-        };
 
         // Forward the poll request to the thread.
         if this
@@ -204,59 +172,34 @@ impl Future for ThreadFuture {
             .is_err()
         {
             tracing::error!("ThreadFuture worker thread terminated.");
-            // #region agent log
-            append_tf_log(&format!(
-                "THREAD_FUTURE_POLL id={} poll={} response=ReadyWorkerTerminatedOnSend",
-                this.id, poll_number
-            ));
-            // #endregion
             return Poll::Ready(());
         }
         let response = match this.poll_response_rx.recv() {
             Ok(response) => response,
             Err(..) => {
                 tracing::error!("ThreadFuture worker thread terminated.");
-                // #region agent log
-                append_tf_log(&format!(
-                    "THREAD_FUTURE_POLL id={} poll={} response=ReadyWorkerTerminatedOnRecv",
-                    this.id, poll_number
-                ));
-                // #endregion
                 return Poll::Ready(());
             },
         };
 
         // Fire any wakers that the OS thread deferred via
-        // `defer_waker_to_tokio_thread`.  Because we're on the Tokio
-        // runtime thread, `Waker::wake()` routes through
-        // `Schedule::schedule` → local queue (deterministic), instead of
-        // the injection queue (non-deterministic).
+        // `defer_waker_to_tokio_thread` or through the deferring waker.
+        // Because we're on the Tokio runtime thread,
+        // `Waker::wake()` routes through `Schedule::schedule` →
+        // local queue (deterministic), instead of the injection queue
+        // (non-deterministic).
         while let Ok(waker) = this.deferred_waker_rx.try_recv() {
             waker.wake();
         }
 
         match response {
             Poll::Ready(was_canceled) => {
-                // #region agent log
-                append_tf_log(&format!(
-                    "THREAD_FUTURE_POLL id={} poll={} response=Ready was_canceled={}",
-                    this.id, poll_number, was_canceled
-                ));
-                // #endregion
                 tracing::debug!(
                     "ThreadFuture completed (was_canceled: {was_canceled}), returning."
                 );
                 Poll::Ready(())
             },
-            Poll::Pending => {
-                // #region agent log
-                append_tf_log(&format!(
-                    "THREAD_FUTURE_POLL id={} poll={} response=Pending",
-                    this.id, poll_number
-                ));
-                // #endregion
-                Poll::Pending
-            },
+            Poll::Pending => Poll::Pending,
         }
     }
 }

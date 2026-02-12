@@ -2,7 +2,6 @@ use std::{
     collections::{
         BTreeMap,
         BTreeSet,
-        HashMap,
         VecDeque,
     },
     env,
@@ -383,38 +382,38 @@ pub enum RequestType<RT: Runtime> {
     Udf {
         request: UdfRequest<RT>,
         environment_data: EnvironmentData<RT>,
-        response: oneshot::Sender<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>,
+        response: ResponseSender<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>,
         queue_timer: Timer<VMHistogram>,
         reactor_depth: usize,
         udf_callback: Box<dyn UdfCallback<RT>>,
-        function_started_sender: Option<oneshot::Sender<()>>,
+        function_started_sender: Option<ResponseSender<()>>,
     },
     Action {
         request: ActionRequest<RT>,
         environment_data: EnvironmentData<RT>,
-        response: oneshot::Sender<anyhow::Result<ActionOutcome>>,
+        response: ResponseSender<anyhow::Result<ActionOutcome>>,
         queue_timer: Timer<VMHistogram>,
         action_callbacks: Arc<dyn ActionCallbacks>,
         fetch_client: Arc<dyn FetchClient>,
         log_line_sender: mpsc::UnboundedSender<LogLine>,
-        function_started_sender: Option<oneshot::Sender<()>>,
+        function_started_sender: Option<ResponseSender<()>>,
     },
     HttpAction {
         request: HttpActionRequest<RT>,
         environment_data: EnvironmentData<RT>,
-        response: oneshot::Sender<anyhow::Result<HttpActionOutcome>>,
+        response: ResponseSender<anyhow::Result<HttpActionOutcome>>,
         queue_timer: Timer<VMHistogram>,
         action_callbacks: Arc<dyn ActionCallbacks>,
         fetch_client: Arc<dyn FetchClient>,
         log_line_sender: mpsc::UnboundedSender<LogLine>,
         http_response_streamer: HttpActionResponseStreamer,
-        function_started_sender: Option<oneshot::Sender<()>>,
+        function_started_sender: Option<ResponseSender<()>>,
     },
     Analyze {
         udf_config: UdfConfig,
         modules: BTreeMap<CanonicalizedModulePath, ModuleConfig>,
         environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
-        response: oneshot::Sender<
+        response: ResponseSender<
             anyhow::Result<Result<BTreeMap<CanonicalizedModulePath, AnalyzedModule>, JsError>>,
         >,
     },
@@ -423,13 +422,13 @@ pub enum RequestType<RT: Runtime> {
         source_map: Option<SourceMap>,
         rng_seed: [u8; 32],
         unix_timestamp: UnixTimestamp,
-        response: oneshot::Sender<anyhow::Result<DatabaseSchema>>,
+        response: ResponseSender<anyhow::Result<DatabaseSchema>>,
     },
     EvaluateAuthConfig {
         auth_config_bundle: ModuleSource,
         source_map: Option<SourceMap>,
         environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
-        response: oneshot::Sender<anyhow::Result<AuthConfig>>,
+        response: ResponseSender<anyhow::Result<AuthConfig>>,
     },
     EvaluateAppDefinitions {
         app_definition: ModuleConfig,
@@ -437,7 +436,7 @@ pub enum RequestType<RT: Runtime> {
         dependency_graph: BTreeSet<(ComponentDefinitionPath, ComponentDefinitionPath)>,
         user_environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
         system_env_vars: BTreeMap<EnvVarName, EnvVarValue>,
-        response: oneshot::Sender<anyhow::Result<EvaluateAppDefinitionsResult>>,
+        response: ResponseSender<anyhow::Result<EvaluateAppDefinitionsResult>>,
     },
     EvaluateComponentInitializer {
         evaluated_definitions: BTreeMap<ComponentDefinitionPath, ComponentDefinitionMetadata>,
@@ -445,7 +444,7 @@ pub enum RequestType<RT: Runtime> {
         definition: ModuleConfig,
         args: BTreeMap<Identifier, Resource>,
         name: ComponentName,
-        response: oneshot::Sender<anyhow::Result<BTreeMap<Identifier, Resource>>>,
+        response: ResponseSender<anyhow::Result<BTreeMap<Identifier, Resource>>>,
     },
 }
 
@@ -595,7 +594,7 @@ pub fn initialize_v8() {
         // `--predictable` flag disables background compilation and concurrent GC,
         // so no background work is generated, but constraining the thread pool
         // to 1 is belt-and-suspenders against any remaining platform tasks.
-        let thread_pool_size = if deterministic { 1 } else { *V8_THREADS };
+        let thread_pool_size = if deterministic { 0 } else { *V8_THREADS };
         let platform =
             v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
 
@@ -730,9 +729,9 @@ impl<RT: Runtime> IsolateClient<RT> {
         environment_data: EnvironmentData<RT>,
         reactor_depth: usize,
         instance_name: String,
-        function_started_sender: Option<oneshot::Sender<()>>,
+        function_started_sender: Option<ResponseSender<()>>,
     ) -> anyhow::Result<(Transaction<RT>, FunctionOutcome)> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::Udf {
             request: UdfRequest {
                 path_and_args,
@@ -769,9 +768,9 @@ impl<RT: Runtime> IsolateClient<RT> {
         context: ExecutionContext,
         environment_data: EnvironmentData<RT>,
         instance_name: String,
-        function_started_sender: Option<oneshot::Sender<()>>,
+        function_started_sender: Option<ResponseSender<()>>,
     ) -> anyhow::Result<ActionOutcome> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::Action {
             request: ActionRequest {
                 params: ActionRequestParams { path_and_args },
@@ -816,9 +815,9 @@ impl<RT: Runtime> IsolateClient<RT> {
         context: ExecutionContext,
         environment_data: EnvironmentData<RT>,
         instance_name: String,
-        function_started_sender: Option<oneshot::Sender<()>>,
+        function_started_sender: Option<ResponseSender<()>>,
     ) -> anyhow::Result<HttpActionOutcome> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::HttpAction {
             request: HttpActionRequest {
                 http_module_path,
@@ -863,7 +862,7 @@ impl<RT: Runtime> IsolateClient<RT> {
                 .all(|m| m.environment == ModuleEnvironment::Isolate),
             "Can only analyze Isolate modules"
         );
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::Analyze {
             modules,
             response: tx,
@@ -901,7 +900,7 @@ impl<RT: Runtime> IsolateClient<RT> {
                 .all(|m| m.environment == ModuleEnvironment::Isolate),
             "Can only evaluate Isolate modules"
         );
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::EvaluateAppDefinitions {
             app_definition,
             component_definitions,
@@ -931,7 +930,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         name: ComponentName,
         instance_name: String,
     ) -> anyhow::Result<BTreeMap<Identifier, Resource>> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::EvaluateComponentInitializer {
             evaluated_definitions,
             path,
@@ -960,7 +959,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         unix_timestamp: UnixTimestamp,
         instance_name: String,
     ) -> anyhow::Result<DatabaseSchema> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::EvaluateSchema {
             schema_bundle,
             source_map,
@@ -988,7 +987,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         explanation: &str,
         instance_name: String,
     ) -> anyhow::Result<AuthConfig> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = dst_response_channel();
         let request = RequestType::EvaluateAuthConfig {
             auth_config_bundle,
             source_map,
@@ -1060,7 +1059,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         Ok(())
     }
 
-    async fn receive_response<T>(rx: oneshot::Receiver<T>) -> anyhow::Result<T> {
+    async fn receive_response<T>(rx: ResponseReceiver<T>) -> anyhow::Result<T> {
         // The only reason a oneshot response channel wil be dropped prematurely if the
         // isolate worker is shutting down.
         rx.await.map_err(|_| shutdown_error())
@@ -1120,6 +1119,32 @@ fn dst_done_channel() -> (DstDoneSender<ActiveWorkerState>, DoneReceiver) {
     }
 }
 
+/// Response channel types used for UDF/action request-response pairs.
+/// In testing/DST mode, these use `DstOneshot` to defer waker fires
+/// from V8 worker OS threads to the Tokio runtime thread, preventing
+/// wakers from entering Tokio's injection queue (which has
+/// non-deterministic drain timing).
+#[cfg(any(test, feature = "testing"))]
+pub type ResponseSender<T> = common::runtime::testing::DstOneshotSender<T>;
+#[cfg(not(any(test, feature = "testing")))]
+pub type ResponseSender<T> = oneshot::Sender<T>;
+
+#[cfg(any(test, feature = "testing"))]
+pub type ResponseReceiver<T> = common::runtime::testing::DstOneshotReceiver<T>;
+#[cfg(not(any(test, feature = "testing")))]
+pub type ResponseReceiver<T> = oneshot::Receiver<T>;
+
+pub fn dst_response_channel<T>() -> (ResponseSender<T>, ResponseReceiver<T>) {
+    #[cfg(any(test, feature = "testing"))]
+    {
+        common::runtime::testing::dst_oneshot_channel()
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        oneshot::channel()
+    }
+}
+
 pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     rt: RT,
     worker: W,
@@ -1132,12 +1157,12 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     /// `last_used_ts` older than `ISOLATE_IDLE_TIMEOUT` has already been
     /// recreated and there will be no penalty for reassigning this worker to a
     /// new client.
-    available_workers: HashMap<String, VecDeque<IdleWorkerState>>,
+    available_workers: BTreeMap<String, VecDeque<IdleWorkerState>>,
     /// Set of futures awaiting a response from an active worker.
     in_progress_workers: FuturesUnordered<DoneReceiver>,
     /// Counts the number of active workers per client. Should only contain a
     /// key if the value is greater than 0.
-    in_progress_count: HashMap<String, usize>,
+    in_progress_count: BTreeMap<String, usize>,
     /// The max number of workers this scheduler is permitted to create.
     max_workers: usize,
     handles: Arc<Mutex<Vec<IsolateWorkerHandle>>>,
@@ -1166,8 +1191,8 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             worker,
             worker_senders: Vec::new(),
             in_progress_workers: FuturesUnordered::new(),
-            in_progress_count: HashMap::new(),
-            available_workers: HashMap::new(),
+            in_progress_count: BTreeMap::new(),
+            available_workers: BTreeMap::new(),
             max_workers,
             handles,
             max_percent_per_client,
@@ -1242,13 +1267,6 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         completions.push(w);
                     }
                     completions.sort_by_key(|w| w.worker_id);
-                    // #region agent log
-                    {
-                        let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
-                        let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                        common::runtime::testing::dst_log(&format!("SCHED completed {:?} @{}", ids, wpc));
-                    }
-                    // #endregion
                     for w in completions {
                         self.handle_completed_worker(w);
                     }
@@ -1350,12 +1368,6 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 })
                 .expect("Available worker map should never contain an empty list");
             let worker = workers.remove(idx).expect("index is valid");
-            // #region agent log
-            {
-                let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                common::runtime::testing::dst_log(&format!("SCHED get_worker -> {} @{}", worker.worker_id, wpc));
-            }
-            // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
             }
@@ -1638,13 +1650,13 @@ mod tests {
         let DbFixtures { db, .. } = DbFixtures::new(&rt).await?;
         let client1 = "client1";
         let hold_guard = pause1.hold(PAUSE_REQUEST);
-        let (sender, _rx1) = oneshot::channel();
+        let (sender, _rx1) = dst_response_channel();
         let request = bogus_udf_request(&db, client1, sender).await?;
         function_runner_core.send_request(request)?;
         // Pausing a request while being executed should make the next request be
         // rejected because there are no available workers.
         let _guard = hold_guard.wait_for_blocked().await.unwrap();
-        let (sender, rx2) = oneshot::channel();
+        let (sender, rx2) = dst_response_channel();
         let request2 = bogus_udf_request(&db, client1, sender).await?;
         function_runner_core.send_request(request2)?;
         let response = IsolateClient::<TestRuntime>::receive_response(rx2).await?;
@@ -1664,13 +1676,13 @@ mod tests {
         let DbFixtures { db, .. } = DbFixtures::new_with_model(&rt).await?;
         let client1 = "client1";
         let hold_guard = pause1.hold(PAUSE_REQUEST);
-        let (sender, _rx1) = oneshot::channel();
+        let (sender, _rx1) = dst_response_channel();
         let request = bogus_udf_request(&db, client1, sender).await?;
         function_runner_core.send_request(request)?;
         // Pausing a request should not affect the next one because we have 2 workers
         // and 2 requests from different clients.
         let _guard = hold_guard.wait_for_blocked().await.unwrap();
-        let (sender, rx2) = oneshot::channel();
+        let (sender, rx2) = dst_response_channel();
         let client2 = "client2";
         let request2 = bogus_udf_request(&db, client2, sender).await?;
         function_runner_core.send_request(request2)?;
@@ -1688,13 +1700,13 @@ mod tests {
         let DbFixtures { db, .. } = DbFixtures::new_with_model(&rt).await?;
         let client = "client";
         let hold_guard = pause1.hold(PAUSE_REQUEST);
-        let (sender, _rx1) = oneshot::channel();
+        let (sender, _rx1) = dst_response_channel();
         let request = bogus_udf_request(&db, client, sender).await?;
         function_runner_core.send_request(request)?;
         // Pausing the first request and sending a second should make the second fail
         // because there's only one worker left and it is reserved for other clients.
         let _guard = hold_guard.wait_for_blocked().await.unwrap();
-        let (sender, rx2) = oneshot::channel();
+        let (sender, rx2) = dst_response_channel();
         let request2 = bogus_udf_request(&db, client, sender).await?;
         function_runner_core.send_request(request2)?;
         let response = IsolateClient::<TestRuntime>::receive_response(rx2).await?;
