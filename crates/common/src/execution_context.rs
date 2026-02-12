@@ -108,11 +108,7 @@ pub struct RequestId(String);
 impl RequestId {
     pub fn new() -> Self {
         let bytes = rand::rng().random::<[u8; 8]>();
-        let id = Self(hex::encode(bytes));
-        // #region agent log
-        crate::runtime::testing::dst_log(&format!("ReqId {}", id.0));
-        // #endregion
-        id
+        Self(hex::encode(bytes))
     }
 
     // This produces a RequestId based off of information provided by a WS client
@@ -247,11 +243,7 @@ impl<'de> Deserialize<'de> for ExecutionId {
 
 impl ExecutionId {
     pub fn new() -> Self {
-        let id = Self(Uuid::new_v4());
-        // #region agent log
-        crate::runtime::testing::dst_log(&format!("ExecId {}", id.0));
-        // #endregion
-        id
+        Self(Uuid::new_v4())
     }
 }
 

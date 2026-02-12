@@ -4,10 +4,6 @@ use std::{
     self,
     pin::Pin,
     sync::{
-        atomic::{
-            AtomicU32,
-            Ordering,
-        },
         Arc,
         LazyLock,
         Weak,
@@ -17,24 +13,6 @@ use std::{
         SystemTime,
     },
 };
-
-// #region agent log
-/// Current DST run number (1 = first, 2 = determinism check). 0 = disabled.
-pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
-/// Monotonic ThreadFuture instance counter, reset between runs.
-pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
-
-/// Write a line to `/tmp/nitpick_{pid}_run{N}.log`.
-pub fn dst_log(msg: &str) {
-    use std::io::Write;
-    let run_id = DST_RUN_ID.load(Ordering::Relaxed);
-    if run_id == 0 { return; }
-    let path = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), run_id);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{}", msg);
-    }
-}
-// #endregion
 
 use futures::{
     future::FusedFuture,
