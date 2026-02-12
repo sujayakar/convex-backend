@@ -13,7 +13,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{
-            AtomicU32,
+            AtomicU64,
             Ordering,
         },
         Arc,
@@ -26,16 +26,62 @@ use std::{
     },
 };
 
+pub const NITPICK_DETERMINISM_LOG_PATH: &str = "/tmp/nitpick_determinism.log";
+
 // #region agent log
-pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
-pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
-pub fn dst_log(msg: &str) {
+pub static DST_TF_ID: AtomicU64 = AtomicU64::new(1);
+pub static DST_TOKIO_WAKE_CALLS: AtomicU64 = AtomicU64::new(0);
+pub static DST_DEFERRED_WAKER_FIRES: AtomicU64 = AtomicU64::new(0);
+
+pub fn next_thread_future_id() -> u64 {
+    DST_TF_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+pub fn note_tokio_thread_wake_call() -> u64 {
+    DST_TOKIO_WAKE_CALLS.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+pub fn note_deferred_waker_fire() -> u64 {
+    DST_DEFERRED_WAKER_FIRES.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+pub fn waker_counters() -> (u64, u64) {
+    (
+        DST_TOKIO_WAKE_CALLS.load(Ordering::Relaxed),
+        DST_DEFERRED_WAKER_FIRES.load(Ordering::Relaxed),
+    )
+}
+
+fn current_poll_count() -> Option<u64> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|handle| handle.metrics().worker_poll_count(0))
+}
+
+pub fn dst_log_event(location: &'static str, message: &'static str, data: serde_json::Value) {
     use std::io::Write;
-    let r = DST_RUN_ID.load(Ordering::Relaxed);
-    if r == 0 { return; }
-    let p = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), r);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = writeln!(f, "{}", msg);
+    let timestamp_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
+    let (tokio_wake_calls, deferred_waker_fires) = waker_counters();
+    let line = serde_json::json!({
+        "timestamp_ms": timestamp_ms,
+        "location": location,
+        "message": message,
+        "pid": std::process::id(),
+        "thread_id": format!("{:?}", std::thread::current().id()),
+        "poll_count": current_poll_count(),
+        "tokio_wake_calls": tokio_wake_calls,
+        "deferred_waker_fires": deferred_waker_fires,
+        "data": data,
+    });
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(NITPICK_DETERMINISM_LOG_PATH)
+    {
+        let _ = writeln!(file, "{line}");
     }
 }
 // #endregion

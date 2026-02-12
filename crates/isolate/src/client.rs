@@ -1242,11 +1242,24 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         completions.push(w);
                     }
                     completions.sort_by_key(|w| w.worker_id);
+                    #[cfg(any(test, feature = "testing"))]
                     // #region agent log
                     {
                         let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
-                        let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                        common::runtime::testing::dst_log(&format!("SCHED completed {:?} @{}", ids, wpc));
+                        let clients: Vec<String> =
+                            completions.iter().map(|w| w.client_id.clone()).collect();
+                        let (tokio_wake_calls, deferred_waker_fires) =
+                            common::runtime::testing::waker_counters();
+                        common::runtime::testing::dst_log_event(
+                            "crates/isolate/src/client.rs:1256",
+                            "scheduler_completion_drain",
+                            serde_json::json!({
+                                "worker_ids": ids,
+                                "client_ids": clients,
+                                "tokio_wake_calls": tokio_wake_calls,
+                                "deferred_waker_fires": deferred_waker_fires,
+                            }),
+                        );
                     }
                     // #endregion
                     for w in completions {
@@ -1350,12 +1363,6 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 })
                 .expect("Available worker map should never contain an empty list");
             let worker = workers.remove(idx).expect("index is valid");
-            // #region agent log
-            {
-                let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                common::runtime::testing::dst_log(&format!("SCHED get_worker -> {} @{}", worker.worker_id, wpc));
-            }
-            // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
             }
