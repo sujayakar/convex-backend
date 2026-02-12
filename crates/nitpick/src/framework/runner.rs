@@ -27,6 +27,7 @@ use futures::{
 };
 use rand::Rng;
 use runtime::testing::{
+    dst_log,
     TestDriver,
     TestRuntime,
 };
@@ -95,6 +96,14 @@ fn run_once<S: Scenario>(
     let rt = td.rt_with_event_recorder(recorder.clone());
     let application = td.run_until(async {
         let application = Application::new_for_tests(&rt).await?;
+        // #region agent log
+        {
+            let wpc = tokio::runtime::Handle::current()
+                .metrics()
+                .worker_poll_count(0);
+            dst_log(&format!("RUN_ONCE after_application_new_for_tests wpc={}", wpc));
+        }
+        // #endregion
         tracing::info!(
             "[nitpick] Created application in {:?}",
             test_start.elapsed()
@@ -104,6 +113,14 @@ fn run_once<S: Scenario>(
 
     let test_run = td.run_until(async {
         let run = scenario.start_run(td.rt(), &application).await?;
+        // #region agent log
+        {
+            let wpc = tokio::runtime::Handle::current()
+                .metrics()
+                .worker_poll_count(0);
+            dst_log(&format!("RUN_ONCE after_scenario_start_run wpc={}", wpc));
+        }
+        // #endregion
         tracing::info!(
             "[nitpick] Initialized scenario {:?} in {:?}",
             scenario.name(),
@@ -113,16 +130,46 @@ fn run_once<S: Scenario>(
     })?;
 
     let num_polls = td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
+    // #region agent log
+    dst_log(&format!(
+        "RUN_ONCE after_run_transactions returned_num_polls={}",
+        num_polls
+    ));
+    // #endregion
 
     // Always run validation at the end.
     let start = Instant::now();
-    td.run_until(test_run.validate(&application))?;
+    let wpc_after_validate = td.run_until(async {
+        test_run.validate(&application).await?;
+        let wpc = tokio::runtime::Handle::current()
+            .metrics()
+            .worker_poll_count(0);
+        anyhow::Ok(wpc)
+    })?;
+    // #region agent log
+    dst_log(&format!(
+        "RUN_ONCE after_test_run_validate wpc={}",
+        wpc_after_validate
+    ));
+    // #endregion
     tracing::info!(
         "[nitpick] Final verification passed in {:?}",
         start.elapsed()
     );
 
-    let output = td.run_until(test_run.finalize(&application))?;
+    let (output, wpc_after_finalize) = td.run_until(async {
+        let output = test_run.finalize(&application).await?;
+        let wpc = tokio::runtime::Handle::current()
+            .metrics()
+            .worker_poll_count(0);
+        anyhow::Ok((output, wpc))
+    })?;
+    // #region agent log
+    dst_log(&format!(
+        "RUN_ONCE after_test_run_finalize wpc={}",
+        wpc_after_finalize
+    ));
+    // #endregion
 
     let trace = recorder.drain();
     let result = TestResult {
@@ -157,6 +204,21 @@ async fn run_transactions<TR: TestRun>(
     let max_tx_attempts = config.transactions * 10;
 
     loop {
+        // #region agent log
+        {
+            let wpc = tokio::runtime::Handle::current()
+                .metrics()
+                .worker_poll_count(0);
+            dst_log(&format!(
+                "RUN_TX loop_start completed={} in_flight={} next_tx_id={} max_tx_attempts={} wpc={}",
+                num_completed,
+                transactions.len(),
+                next_tx_id,
+                max_tx_attempts,
+                wpc
+            ));
+        }
+        // #endregion
         if test_start.elapsed() > TEST_TIMEOUT {
             anyhow::bail!(
                 "Test timed out after {:?} ({num_completed} completed, {} in flight)",
@@ -181,14 +243,86 @@ async fn run_transactions<TR: TestRun>(
         for r in results {
             if let Err(e) = r {
                 if e.is_occ() {
+                    // #region agent log
+                    {
+                        let wpc = tokio::runtime::Handle::current()
+                            .metrics()
+                            .worker_poll_count(0);
+                        dst_log(&format!(
+                            "RUN_TX tx_complete status=occ completed={} in_flight={} next_tx_id={} wpc={}",
+                            num_completed,
+                            transactions.len(),
+                            next_tx_id,
+                            wpc
+                        ));
+                    }
+                    // #endregion
                     tracing::debug!("[nitpick] Transaction OCC'd");
                     continue;
                 }
+                // #region agent log
+                {
+                    let wpc = tokio::runtime::Handle::current()
+                        .metrics()
+                        .worker_poll_count(0);
+                    dst_log(&format!(
+                        "RUN_TX tx_complete status=error completed={} in_flight={} next_tx_id={} err={:?} wpc={}",
+                        num_completed,
+                        transactions.len(),
+                        next_tx_id,
+                        e,
+                        wpc
+                    ));
+                }
+                // #endregion
                 return Err(e);
             }
             num_completed += 1;
+            // #region agent log
+            {
+                let wpc = tokio::runtime::Handle::current()
+                    .metrics()
+                    .worker_poll_count(0);
+                dst_log(&format!(
+                    "RUN_TX tx_complete status=ok completed={} in_flight={} next_tx_id={} wpc={}",
+                    num_completed,
+                    transactions.len(),
+                    next_tx_id,
+                    wpc
+                ));
+            }
+            // #endregion
         }
+        // #region agent log
+        {
+            let wpc = tokio::runtime::Handle::current()
+                .metrics()
+                .worker_poll_count(0);
+            dst_log(&format!(
+                "RUN_TX loop_after_drain completed={} in_flight={} next_tx_id={} wpc={}",
+                num_completed,
+                transactions.len(),
+                next_tx_id,
+                wpc
+            ));
+        }
+        // #endregion
         if num_completed >= config.transactions {
+            // #region agent log
+            {
+                let wpc = tokio::runtime::Handle::current()
+                    .metrics()
+                    .worker_poll_count(0);
+                dst_log(&format!(
+                    "RUN_TX loop_break_target_reached completed={} target={} in_flight={} next_tx_id={} wpc={}",
+                    num_completed,
+                    config.transactions,
+                    transactions.len(),
+                    next_tx_id,
+                    wpc
+                ));
+            }
+            // #endregion
             break;
         }
 
@@ -212,22 +346,82 @@ async fn run_transactions<TR: TestRun>(
             .boxed_local();
             transactions.push(future);
         }
+        // #region agent log
+        {
+            let wpc = tokio::runtime::Handle::current()
+                .metrics()
+                .worker_poll_count(0);
+            dst_log(&format!(
+                "RUN_TX loop_after_refill completed={} in_flight={} next_tx_id={} wpc={}",
+                num_completed,
+                transactions.len(),
+                next_tx_id,
+                wpc
+            ));
+        }
+        // #endregion
 
         // Probabilistically validate.
         if rt.rng().random_bool(VERIFY_PROBABILITY) {
+            // #region agent log
+            {
+                let wpc_before = tokio::runtime::Handle::current()
+                    .metrics()
+                    .worker_poll_count(0);
+                dst_log(&format!(
+                    "RUN_TX verify_branch taken completed={} in_flight={} next_tx_id={} wpc_before={}",
+                    num_completed,
+                    transactions.len(),
+                    next_tx_id,
+                    wpc_before
+                ));
+            }
+            // #endregion
             test_run.validate(application).await?;
+            // #region agent log
+            {
+                let wpc_after = tokio::runtime::Handle::current()
+                    .metrics()
+                    .worker_poll_count(0);
+                dst_log(&format!(
+                    "RUN_TX verify_branch_done completed={} in_flight={} next_tx_id={} wpc_after={}",
+                    num_completed,
+                    transactions.len(),
+                    next_tx_id,
+                    wpc_after
+                ));
+            }
+            // #endregion
+        } else {
+            // #region agent log
+            {
+                let wpc = tokio::runtime::Handle::current()
+                    .metrics()
+                    .worker_poll_count(0);
+                dst_log(&format!(
+                    "RUN_TX verify_branch skipped completed={} in_flight={} next_tx_id={} wpc={}",
+                    num_completed,
+                    transactions.len(),
+                    next_tx_id,
+                    wpc
+                ));
+            }
+            // #endregion
         }
     }
 
     let num_polls = tokio::runtime::Handle::current()
         .metrics()
         .worker_poll_count(0);
+    // #region agent log
+    dst_log(&format!("RUN_TX return_num_polls={}", num_polls));
+    // #endregion
     Ok(num_polls as usize)
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
 // #region agent log
-const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1; // was 0.1
+const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
 // #endregion
 
 /// Run a scenario with the given config on a dedicated thread with a large
