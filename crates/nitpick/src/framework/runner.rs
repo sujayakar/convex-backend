@@ -27,6 +27,9 @@ use futures::{
 };
 use rand::Rng;
 use runtime::testing::{
+    dst_log,
+    get_dst_run_id,
+    set_dst_run_id,
     TestDriver,
     TestRuntime,
 };
@@ -80,45 +83,85 @@ impl<T: Eq> PartialEq for TestResult<T> {
 }
 impl<T: Eq> Eq for TestResult<T> {}
 
+fn worker_poll_count() -> Option<u64> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|handle| handle.metrics().worker_poll_count(0))
+}
+
+fn log_poll_checkpoint(label: &str) {
+    match worker_poll_count() {
+        Some(polls) => dst_log(&format!("{label} polls={polls}")),
+        None => dst_log(&format!("{label} polls=unknown")),
+    }
+}
+
 fn run_once<S: Scenario>(
     scenario: &S,
     td: &TestDriver,
     config: Config,
 ) -> anyhow::Result<TestResult<<S::TestRun as TestRun>::Output>> {
     let test_start = Instant::now();
+    dst_log(&format!(
+        "RUN_BEGIN seed={} run_id={}",
+        config.seed,
+        get_dst_run_id()
+    ));
 
     let recorder = EventRecorder::active();
     let rt = td.rt_with_event_recorder(recorder.clone());
     let application = td.run_until(async {
+        log_poll_checkpoint("RUN_UNTIL_APP_CREATE_START");
         let application = Application::new_for_tests(&rt).await?;
         tracing::info!(
             "[nitpick] Created application in {:?}",
             test_start.elapsed()
         );
+        log_poll_checkpoint("RUN_UNTIL_APP_CREATE_END");
+        log_poll_checkpoint("PHASE_APP_CREATED");
         anyhow::Ok(application)
     })?;
 
     let test_run = td.run_until(async {
+        log_poll_checkpoint("RUN_UNTIL_SCENARIO_START_START");
         let run = scenario.start_run(td.rt(), &application).await?;
         tracing::info!(
             "[nitpick] Initialized scenario {:?} in {:?}",
             scenario.name(),
             test_start.elapsed()
         );
+        log_poll_checkpoint("RUN_UNTIL_SCENARIO_START_END");
+        log_poll_checkpoint("PHASE_SCENARIO_STARTED");
         anyhow::Ok(run)
     })?;
 
-    let num_polls = td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
+    let num_polls = td.run_until(async {
+        log_poll_checkpoint("RUN_UNTIL_TRANSACTIONS_START");
+        let num_polls = run_transactions(td.rt(), &application, &test_run, config).await?;
+        log_poll_checkpoint("RUN_UNTIL_TRANSACTIONS_END");
+        dst_log(&format!("PHASE_TRANSACTIONS_DONE polls={num_polls}"));
+        anyhow::Ok(num_polls)
+    })?;
 
     // Always run validation at the end.
     let start = Instant::now();
-    td.run_until(test_run.validate(&application))?;
+    td.run_until(async {
+        log_poll_checkpoint("RUN_UNTIL_VALIDATE_START");
+        test_run.validate(&application).await?;
+        log_poll_checkpoint("RUN_UNTIL_VALIDATE_END");
+        anyhow::Ok(())
+    })?;
     tracing::info!(
         "[nitpick] Final verification passed in {:?}",
         start.elapsed()
     );
 
-    let output = td.run_until(test_run.finalize(&application))?;
+    let output = td.run_until(async {
+        log_poll_checkpoint("RUN_UNTIL_FINALIZE_START");
+        let output = test_run.finalize(&application).await?;
+        log_poll_checkpoint("RUN_UNTIL_FINALIZE_END");
+        anyhow::Ok(output)
+    })?;
 
     let trace = recorder.drain();
     let result = TestResult {
@@ -230,22 +273,25 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-        let (run1, should_check) = {
-            let td = TestDriver::new_with_seed(config.seed);
-            let run1 = run_once(&scenario, &td, config)?;
-            let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
-            (run1, should_check)
-        };
+            let (run1, should_check) = {
+                let td = TestDriver::new_with_seed(config.seed);
+                set_dst_run_id(1);
+                let run1 = run_once(&scenario, &td, config)?;
+                let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
+                set_dst_run_id(0);
+                (run1, should_check)
+            };
 
-        if should_check {
-            tracing::info!(
-                "[nitpick] Running determinism check for seed {}",
-                config.seed
-            );
-            check_determinism(&scenario, config, &run1)?;
-        }
+            if should_check {
+                tracing::info!(
+                    "[nitpick] Running determinism check for seed {}",
+                    config.seed
+                );
+                check_determinism(&scenario, config, &run1)?;
+            }
 
-        anyhow::Ok(())
+            set_dst_run_id(0);
+            anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
     Ok(())
@@ -258,9 +304,13 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
         .spawn(move || {
             let run1 = {
                 let td = TestDriver::new_with_seed(config.seed);
-                run_once(&scenario, &td, config)?
+                set_dst_run_id(1);
+                let run = run_once(&scenario, &td, config)?;
+                set_dst_run_id(0);
+                run
             };
             check_determinism(&scenario, config, &run1)?;
+            set_dst_run_id(0);
             anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
@@ -277,8 +327,11 @@ fn check_determinism<S: Scenario>(
         config.seed
     );
     let td = TestDriver::new_with_seed(config.seed);
+    set_dst_run_id(2);
     let run2 = run_once(scenario, &td, config)?;
+    set_dst_run_id(0);
     if *run1 != run2 {
+        set_dst_run_id(0);
         anyhow::bail!(
             "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
             config.seed,
@@ -287,5 +340,6 @@ fn check_determinism<S: Scenario>(
         );
     }
     tracing::info!("[nitpick] Determinism check passed");
+    set_dst_run_id(0);
     Ok(())
 }

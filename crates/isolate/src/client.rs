@@ -184,6 +184,19 @@ pub const PAUSE_RECREATE_CLIENT: &str = "recreate_client";
 pub const PAUSE_REQUEST: &str = "pause_request";
 pub const NO_AVAILABLE_WORKERS: &str = "There are no available workers to process the request";
 
+#[cfg(any(test, feature = "testing"))]
+fn dst_scheduler_log(event_type: &str) {
+    let polls = tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|handle| handle.metrics().worker_poll_count(0))
+        .map(|polls| polls.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    common::runtime::testing::dst_log(&format!("SCHED_EVENT {event_type} @{polls}"));
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+fn dst_scheduler_log(_event_type: &str) {}
+
 #[derive(Clone)]
 pub struct IsolateConfig {
     // Name of isolate pool, used in metrics.
@@ -1215,6 +1228,7 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
         loop {
             select_biased! {
                 completed_worker = self.in_progress_workers.select_next_some() => {
+                    dst_scheduler_log("completed_worker");
                     let Ok(completed_worker): Result<ActiveWorkerState, _> = completed_worker else {
                         tracing::warn!("Worker has shut down uncleanly. Shutting down {} scheduler.", self.worker.config().name);
                         return;
@@ -1247,6 +1261,7 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                     }
                 }
                 request = receiver.next() => {
+                    dst_scheduler_log("request");
                     let Some((request, expired)) = request else {
                         tracing::warn!("Request sender went away; {} scheduler shutting down", self.worker.config().name);
                         return
@@ -1293,6 +1308,7 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                     }
                 },
                 _ = report_stats => {
+                    dst_scheduler_log("report_stats");
                     let heap_stats = self.aggregate_heap_stats();
                     log_aggregated_heap_stats(&heap_stats);
                     report_stats = self.rt.wait(*HEAP_WORKER_REPORT_INTERVAL_SECONDS);

@@ -10,6 +10,7 @@ pub use dst_oneshot::{
 
 use std::{
     self,
+    cell::Cell,
     pin::Pin,
     sync::{
         Arc,
@@ -49,6 +50,55 @@ use crate::pause::PauseClient;
 
 pub static CONVEX_EPOCH: LazyLock<SystemTime> =
     LazyLock::new(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1620198000)); // May 5th, 2021 :)
+
+thread_local! {
+    static DST_RUN_ID: Cell<u32> = const { Cell::new(0) };
+}
+
+pub fn set_dst_run_id(n: u32) {
+    DST_RUN_ID.with(|run_id| run_id.set(n));
+}
+
+pub fn get_dst_run_id() -> u32 {
+    DST_RUN_ID.with(Cell::get)
+}
+
+pub fn dst_log(msg: &str) {
+    use std::io::Write;
+
+    let run_id = get_dst_run_id();
+    if run_id == 0 {
+        return;
+    }
+
+    let thread_name = std::thread::current()
+        .name()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{:?}", std::thread::current().id()));
+    let thread_name = thread_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let path = format!(
+        "/tmp/nitpick_{}_{}_run{}.log",
+        std::process::id(),
+        thread_name,
+        run_id
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{msg}");
+    }
+}
 
 pub struct TestDriver {
     tokio_runtime: Option<tokio::runtime::Runtime>,
