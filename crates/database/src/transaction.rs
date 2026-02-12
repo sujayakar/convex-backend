@@ -414,8 +414,9 @@ impl<RT: Runtime> Transaction<RT> {
 
     /// Merge a forked query's accumulated reads and stats back into this
     /// transaction. The fork's read set is unioned with ours, and per-tablet
-    /// stats are accumulated.
-    pub fn merge_query_reads(&mut self, fork: Transaction<RT>) {
+    /// stats are accumulated. After merging, validates that the combined
+    /// reads don't exceed transaction limits.
+    pub fn merge_query_reads(&mut self, fork: Transaction<RT>) -> anyhow::Result<()> {
         let (read_set, num_intervals, user_tx_size, system_tx_size) = fork.reads.into_parts();
         self.reads
             .merge(read_set, num_intervals, user_tx_size, system_tx_size);
@@ -423,6 +424,7 @@ impl<RT: Runtime> Transaction<RT> {
             let entry = self.stats.entry(tablet_id).or_default();
             entry.rows_read += fork_stats.rows_read;
         }
+        self.reads.check_limits()
     }
 
     pub fn biggest_document_writes(&self) -> Option<BiggestDocumentWrites> {

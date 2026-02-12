@@ -740,15 +740,36 @@ impl<RT: Runtime> AsyncSyscallProvider<RT> for DatabaseUdfEnvironment<RT> {
 
         let results = join_all(futures).await;
 
-        // Merge reads from successful forks back into the parent transaction.
+        // Process results: merge reads, propagate log lines/identity/journals.
         let mut final_results = Vec::with_capacity(results.len());
-        for result in results {
+        for (result, (path, _)) in results.into_iter().zip(queries.iter()) {
             match result {
                 Ok((result_tx, outcome)) => {
-                    tx.merge_query_reads(result_tx);
-                    // Reconstruct a dummy tx for the caller -- they won't use it,
-                    // but the type signature expects it. We pass the parent tx's
-                    // fork so it has the right snapshot.
+                    tx.merge_query_reads(result_tx)?;
+
+                    // Propagate log lines, identity, and journals from the
+                    // outcome (mirroring the sequential run_udf path).
+                    if let FunctionOutcome::Query(ref udf_outcome) = outcome {
+                        log_run_udf(
+                            self.udf_type,
+                            UdfType::Query,
+                            self.phase.observed_identity(),
+                            udf_outcome.observed_identity,
+                        );
+                        if udf_outcome.observed_identity {
+                            self.observe_identity()?;
+                        }
+                        if self.is_system()
+                            && udf_outcome.result.is_ok()
+                        {
+                            self.next_journal = udf_outcome.journal.clone();
+                        }
+                        self.emit_sub_function_log_lines(
+                            path.for_logging(),
+                            udf_outcome.log_lines.clone(),
+                        );
+                    }
+
                     let dummy_tx = tx.fork_for_query()?;
                     final_results.push(Ok((dummy_tx, outcome)));
                 },

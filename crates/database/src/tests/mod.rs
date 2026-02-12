@@ -2571,3 +2571,91 @@ async fn test_schema_registry_takes_read_dependency(rt: TestRuntime) -> anyhow::
     );
     Ok(())
 }
+
+#[convex_macro::test_runtime]
+async fn test_fork_for_query_sees_parent_writes(rt: TestRuntime) -> anyhow::Result<()> {
+    let db = DbFixtures::new(&rt).await?.db;
+    let mut tx = db.begin(Identity::system()).await?;
+    let table_name: TableName = "table".parse()?;
+
+    // Write a document in the parent transaction.
+    let doc_id = TestFacingModel::new(&mut tx)
+        .insert(&table_name, assert_obj!("value" => 42))
+        .await?;
+
+    // Fork for a read-only query.
+    let mut fork = tx.fork_for_query()?;
+
+    // The fork should see the parent's write (RYOW).
+    let doc = fork.get_inner(doc_id, table_name.clone()).await?;
+    assert!(doc.is_some(), "fork should see parent's pending write");
+    let (doc, ts) = doc.unwrap();
+    assert_eq!(ts, WriteTimestamp::Pending);
+    assert_eq!(doc.value().0.get("value"), Some(&val!(42)));
+
+    Ok(())
+}
+
+#[convex_macro::test_runtime]
+async fn test_fork_for_query_has_fresh_reads(rt: TestRuntime) -> anyhow::Result<()> {
+    let db = DbFixtures::new(&rt).await?.db;
+    let mut tx = db.begin(Identity::system()).await?;
+    let table_name: TableName = "table".parse()?;
+
+    // Do some reads on the parent.
+    let _doc_id = TestFacingModel::new(&mut tx)
+        .insert(&table_name, assert_obj!("value" => 1))
+        .await?;
+
+    // Fork should start with empty reads.
+    let fork = tx.fork_for_query()?;
+    assert_eq!(fork.reads.num_intervals(), 0);
+    assert_eq!(fork.reads.user_tx_size().total_document_count, 0);
+
+    Ok(())
+}
+
+#[convex_macro::test_runtime]
+async fn test_merge_query_reads_combines_reads(rt: TestRuntime) -> anyhow::Result<()> {
+    let db = DbFixtures::new(&rt).await?.db;
+    let mut tx = db.begin(Identity::system()).await?;
+    let table_name: TableName = "table".parse()?;
+
+    // Insert two documents.
+    let doc_id0 = TestFacingModel::new(&mut tx)
+        .insert(&table_name, assert_obj!("value" => 1))
+        .await?;
+    let doc_id1 = TestFacingModel::new(&mut tx)
+        .insert(&table_name, assert_obj!("value" => 2))
+        .await?;
+
+    // Fork 1: reads doc 0.
+    let mut fork1 = tx.fork_for_query()?;
+    let _ = fork1.get_inner(doc_id0, table_name.clone()).await?;
+    let fork1_intervals = fork1.reads.num_intervals();
+    assert!(fork1_intervals > 0);
+
+    // Fork 2: reads doc 1.
+    let mut fork2 = tx.fork_for_query()?;
+    let _ = fork2.get_inner(doc_id1, table_name.clone()).await?;
+    let fork2_intervals = fork2.reads.num_intervals();
+    assert!(fork2_intervals > 0);
+
+    let parent_intervals_before = tx.reads.num_intervals();
+
+    // Merge both forks back into parent.
+    tx.merge_query_reads(fork1)?;
+    tx.merge_query_reads(fork2)?;
+
+    // Parent's reads should now include reads from both forks.
+    assert!(
+        tx.reads.num_intervals() >= parent_intervals_before,
+        "parent should have accumulated fork reads"
+    );
+    assert!(
+        tx.reads.user_tx_size().total_document_count >= 2,
+        "parent should have counted at least 2 documents from forks"
+    );
+
+    Ok(())
+}
