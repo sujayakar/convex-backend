@@ -728,3 +728,33 @@ impl<S: Stream> Stream for CoopStream<S> {
         self.inner.size_hint()
     }
 }
+
+/// Compute a retry backoff delay, using a deterministic RNG in DST mode.
+///
+/// In production, calls `backoff.fail(&mut runtime.rng())` to get a
+/// random-jitter delay.
+///
+/// In deterministic simulation testing (DST), uses a fixed-seed RNG keyed on
+/// the current failure count instead of the simulation's shared ChaCha12Rng.
+/// Background workers calling `runtime.rng()` for their backoff jitter can
+/// cause non-deterministic `rng_next_u64` values between run1 and run2 when
+/// the `did_wake` flag in Tokio's paused-time driver causes background timers
+/// to fire at slightly different virtual times (due to V8 JIT warmup).  Using
+/// an independent fixed-seed RNG here decouples background-task jitter from
+/// the simulation's shared RNG state, ensuring reproducibility.
+pub fn backoff_delay<RT: Runtime>(
+    backoff: &mut sync_types::backoff::Backoff,
+    runtime: &RT,
+) -> std::time::Duration {
+    #[cfg(any(test, feature = "testing"))]
+    {
+        use rand::SeedableRng;
+        let mut rng =
+            rand_chacha::ChaCha12Rng::seed_from_u64(backoff.failures() as u64);
+        backoff.fail(&mut rng)
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        backoff.fail(&mut runtime.rng())
+    }
+}

@@ -126,27 +126,6 @@ impl TestDriver {
             .start_paused(true)
             .unhandled_panic(UnhandledPanic::ShutdownRuntime)
             .rng_seed(tokio_seed)
-            // Force a `park_yield` after every single spawned task poll.
-            //
-            // Without this, the default event_interval is 61: Tokio processes
-            // up to 61 tasks before calling park_yield(). park_yield() is the
-            // ONLY place where the time driver's `did_wake` flag is cleared.
-            //
-            // The `did_wake` flag is set whenever an OS thread (V8 isolate
-            // worker) sends a result via the response channel. This happens
-            // during ThreadFuture::poll() while the Tokio thread is blocked on
-            // crossbeam. If fewer than 61 tasks run between the last
-            // cross-thread wakeup and the next real park(), `did_wake` is still
-            // true and Tokio skips virtual-time auto-advancement, causing timers
-            // to fire non-deterministically.
-            //
-            // With event_interval=1, park_yield() runs after EVERY task,
-            // guaranteeing `did_wake` is cleared. Since no OS threads can fire
-            // new cross-thread wakeups between park_yield() and the subsequent
-            // real park() (all OS threads are idle waiting for the next
-            // crossbeam poll request), real park() always sees did_wake=false
-            // and virtual time auto-advances deterministically.
-            .event_interval(1)
             .build()
             .expect("Failed to create Tokio runtime");
         let rng = ChaCha12Rng::seed_from_u64(seed);
@@ -244,11 +223,6 @@ impl Runtime for TestRuntime {
         // is manually advanced forward, or the Tokio runtime runs out of work to do and
         // auto advances to the next pending timer.
         //
-        // Minimum 1ns to avoid zero-duration timers which map to tick=now and
-        // prevent park_yield from calling park_thread_timeout (which clears
-        // the did_wake flag).  With 1ms tick resolution, 1ns rounds up to
-        // tick+1, guaranteeing every timer is strictly in the future.
-        let duration = duration.max(Duration::from_nanos(1));
         Box::pin(tokio::time::sleep(duration).fuse())
     }
 

@@ -71,7 +71,20 @@ impl BuildReason {
 // Timeout from 1/2 the target duration to 1.5 the target duration.
 pub async fn timeout_with_jitter<RT: Runtime>(rt: &RT, duration: Duration) {
     let half_timer = duration / 2;
-    let sleep = half_timer + duration.mul_f32(rt.rng().random::<f32>());
+    // Use a fixed-seed RNG in DST mode to avoid consuming the shared
+    // simulation RNG from this background task's jitter computation.
+    let jitter = {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            use rand::SeedableRng;
+            rand_chacha::ChaCha12Rng::seed_from_u64(0).random::<f32>()
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        {
+            rt.rng().random::<f32>()
+        }
+    };
+    let sleep = half_timer + duration.mul_f32(jitter);
     rt.wait(sleep).await;
 }
 

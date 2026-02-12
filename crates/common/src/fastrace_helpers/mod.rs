@@ -51,6 +51,15 @@ impl EncodedSpan {
 /// Given an instance name returns a span with the sample percentage specified
 /// in `knobs.rs`
 pub fn get_sampled_span<R: Rng>(instance_name: &str, name: &str, rng: &mut R) -> Span {
+    // In deterministic simulation testing, skip the RNG call entirely.
+    // Tracing is a no-op in tests anyway (no collector), and consuming the
+    // shared RNG here would cause non-deterministic rng_next_u64 values when
+    // background tasks fire at different virtual times in run1 vs run2.
+    #[cfg(any(test, feature = "testing"))]
+    {
+        let _ = rng;
+        return Span::noop();
+    }
     let sample_ratio = get_sampling_ratio(instance_name, name);
     let should_sample = rng.random_bool(sample_ratio);
     match should_sample {

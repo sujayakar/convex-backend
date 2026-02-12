@@ -327,9 +327,22 @@ impl<RT: Runtime> Committer<RT> {
                             span.set_local_parent();
                             self.publish_max_repeatable_ts(new_max_repeatable)?;
                             let base_period = *MAX_REPEATABLE_TIMESTAMP_IDLE_FREQUENCY;
-                            next_bump_wait = Some(
-                                self.runtime.rng().random_range(base_period..base_period * 2),
-                            );
+                            // Use a fixed multiplier (1.5x) in DST mode to
+                            // avoid consuming the shared simulation RNG and
+                            // causing non-deterministic rng_next_u64 values.
+                            let bump_wait = {
+                                #[cfg(any(test, feature = "testing"))]
+                                {
+                                    use rand::SeedableRng;
+                                    let mut rng = rand_chacha::ChaCha12Rng::seed_from_u64(0);
+                                    rng.random_range(base_period..base_period * 2)
+                                }
+                                #[cfg(not(any(test, feature = "testing")))]
+                                {
+                                    self.runtime.rng().random_range(base_period..base_period * 2)
+                                }
+                            };
+                            next_bump_wait = Some(bump_wait);
                             let _ = result.send(new_max_repeatable);
                             drop(timer);
                         },

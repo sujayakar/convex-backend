@@ -1732,7 +1732,19 @@ impl<RT: Runtime> RetentionValidator for LeaderRetentionManager<RT> {
             let is_failure = if age < min_failure_duration {
                 false
             } else {
-                let failure_die: f64 = self.rt.rng().random();
+                // Use a fixed-seed RNG in DST mode to avoid consuming the
+                // shared simulation RNG from this background task.
+                let failure_die: f64 = {
+                    #[cfg(any(test, feature = "testing"))]
+                    {
+                        use rand::SeedableRng;
+                        rand_chacha::ChaCha12Rng::seed_from_u64(0).random()
+                    }
+                    #[cfg(not(any(test, feature = "testing")))]
+                    {
+                        self.rt.rng().random()
+                    }
+                };
                 // failure_percentage might be >= 1.0, which will always cause failures because
                 // rng.random() is between 0 and 1.0. That's totally fine, at some point it's ok
                 // for all writes to fail.
