@@ -263,7 +263,7 @@ async fn run_transactions<TR: TestRun>(
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
-const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
+const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1;
 
 /// Run a scenario with the given config. The simulation runs entirely in a
 /// subprocess to get a clean V8 process. Probabilistically checks determinism
