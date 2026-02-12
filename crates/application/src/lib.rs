@@ -1134,6 +1134,13 @@ impl<RT: Runtime> Application<RT> {
         caller: FunctionCaller,
         mutation_queue_length: Option<usize>,
     ) -> anyhow::Result<Result<RedactedMutationReturn, RedactedMutationError>> {
+        let udf_path_str = format!("{path:?}");
+        self.runtime.event_recorder().record(
+            common::event_recorder::Event::UdfStart {
+                udf_path: udf_path_str.clone(),
+                udf_type: "mutation".to_string(),
+            },
+        );
         identity.ensure_can_run_function(UdfType::Mutation)?;
         let block_logging = self
             .log_visibility
@@ -1185,6 +1192,12 @@ impl<RT: Runtime> Application<RT> {
             }),
             Err(e) => anyhow::bail!(e),
         };
+        self.runtime.event_recorder().record(
+            common::event_recorder::Event::UdfEnd {
+                udf_path: udf_path_str,
+                success: result.is_ok(),
+            },
+        );
         Ok(result)
     }
 

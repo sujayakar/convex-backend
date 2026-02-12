@@ -247,4 +247,8 @@ impl Runtime for ProdRuntime {
     fn pause_client(&self) -> PauseClient {
         PauseClient::new()
     }
+
+    fn event_recorder(&self) -> common::event_recorder::EventRecorder {
+        common::event_recorder::EventRecorder::new()
+    }
 }

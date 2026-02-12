@@ -32,6 +32,7 @@ pub mod deleted_bitset;
 pub mod document;
 pub mod document_index_keys;
 pub mod errors;
+pub mod event_recorder;
 pub mod execution_context;
 pub mod ext;
 pub mod fastrace_helpers;

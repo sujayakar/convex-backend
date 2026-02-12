@@ -46,3 +46,26 @@ reset-local-backend:
 rush *ARGS:
   cd {{invocation_directory()}}; "{{justfile_directory()}}/scripts/rush_from_npm-packages.sh" "$@"
 
+# ---- Nitpick: deterministic simulation testing ----
+
+# Run all nitpick tests
+nitpick-test *ARGS:
+  cargo test -p nitpick -- "$@"
+
+# Replay a nitpick scenario with a specific seed
+nitpick-replay scenario seed concurrency='5' transactions='100':
+  RUST_LOG=info cargo run -p nitpick -- -c {{concurrency}} -t {{transactions}} replay {{scenario}} {{seed}}
+
+# Run a batch of nitpick simulations
+nitpick-batch scenario simulations='1000' concurrency='5' transactions='100' threads='4':
+  RUST_LOG=info cargo run -p nitpick -- -c {{concurrency}} -t {{transactions}} batch {{scenario}} -s {{simulations}} --threads {{threads}}
+
+# Rebuild the simulation JS bundle (after editing npm-packages/simulation/convex/*.ts)
+nitpick-rebuild-js:
+  cd npm-packages/simulation && npx convex-bundled deploy --write-push-request dist/start_push --url http://127.0.0.1:8000 --admin-key $(cat ../../crates/keybroker/dev/admin_key.txt)
+
+# Generate coverage report for nitpick
+nitpick-coverage:
+  cargo llvm-cov -p nitpick --html --output-dir target/coverage/html
+  @echo "Report: target/coverage/html/html/index.html"
+
