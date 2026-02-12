@@ -1176,25 +1176,51 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
         );
 
         self.available_workers
-            .entry(completed_worker.client_id)
+            .entry(completed_worker.client_id.clone())
             .or_default()
             .push_front(IdleWorkerState {
                 worker_id: completed_worker.worker_id,
                 last_used_ts: self.rt.monotonic_now(),
             });
+
+        // #region agent log
+        {
+            let avail: Vec<(String, Vec<usize>)> = self
+                .available_workers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.iter().map(|w| w.worker_id).collect()))
+                .collect();
+            common::runtime::testing::dst_log(&format!(
+                "SCHED handle_completed_worker: worker_id={} client={} available={:?}",
+                completed_worker.worker_id, completed_worker.client_id, avail
+            ));
+        }
+        // #endregion
     }
 
     pub async fn run(mut self, receiver: CoDelQueueReceiver<RT, Request<RT>>) {
         log_pool_max(self.worker.config().name, self.max_workers);
         let mut receiver = receiver.fuse();
         let mut report_stats = self.rt.wait(*HEAP_WORKER_REPORT_INTERVAL_SECONDS);
+        // #region agent log
+        let mut sched_iter: u64 = 0;
+        // #endregion
         loop {
+            // #region agent log
+            sched_iter += 1;
+            // #endregion
             select_biased! {
                 completed_worker = self.in_progress_workers.select_next_some() => {
                     let Ok(completed_worker): Result<ActiveWorkerState, _> = completed_worker else {
                         tracing::warn!("Worker has shut down uncleanly. Shutting down {} scheduler.", self.worker.config().name);
                         return;
                     };
+                    // #region agent log
+                    common::runtime::testing::dst_log(&format!(
+                        "SCHED[{}] branch=completed_worker worker_id={}",
+                        sched_iter, completed_worker.worker_id
+                    ));
+                    // #endregion
                     self.handle_completed_worker(completed_worker);
                 }
                 request = receiver.next() => {
@@ -1203,9 +1229,21 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         return
                     };
                     if let Some(expired) = expired {
+                        // #region agent log
+                        common::runtime::testing::dst_log(&format!(
+                            "SCHED[{}] branch=request EXPIRED client={}",
+                            sched_iter, request.client_id
+                        ));
+                        // #endregion
                         request.expire(expired);
                         continue;
                     }
+                    // #region agent log
+                    common::runtime::testing::dst_log(&format!(
+                        "SCHED[{}] branch=request client={}",
+                        sched_iter, request.client_id
+                    ));
+                    // #endregion
                     let Some(worker_id) = self.get_worker(&request.client_id) else {
                         request.reject();
                         continue;
@@ -1223,6 +1261,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         &request.client_id,
                     );
                     let client_id = request.client_id.clone();
+                    // #region agent log
+                    common::runtime::testing::dst_log(&format!(
+                        "SCHED[{}] try_send to worker_id={} client={}",
+                        sched_iter, worker_id, client_id
+                    ));
+                    // #endregion
                     if self.worker_senders[worker_id]
                         .try_send((
                             request,
@@ -1244,6 +1288,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                     }
                 },
                 _ = report_stats => {
+                    // #region agent log
+                    common::runtime::testing::dst_log(&format!(
+                        "SCHED[{}] branch=report_stats",
+                        sched_iter
+                    ));
+                    // #endregion
                     let heap_stats = self.aggregate_heap_stats();
                     log_aggregated_heap_stats(&heap_stats);
                     report_stats = self.rt.wait(*HEAP_WORKER_REPORT_INTERVAL_SECONDS);
@@ -1273,6 +1323,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 client_id,
                 self.max_percent_per_client,
             );
+            // #region agent log
+            common::runtime::testing::dst_log(&format!(
+                "SCHED get_worker: client={} REJECTED (overload active={})",
+                client_id, active_worker_count
+            ));
+            // #endregion
             return None;
         }
         // Try to find an existing worker for this client.
@@ -1280,6 +1336,15 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             let worker = workers
                 .pop_front()
                 .expect("Available worker map should never contain an empty list");
+            // #region agent log
+            {
+                let remaining: Vec<usize> = workers.iter().map(|w| w.worker_id).collect();
+                common::runtime::testing::dst_log(&format!(
+                    "SCHED get_worker: client={} -> existing worker_id={} remaining={:?}",
+                    client_id, worker.worker_id, remaining
+                ));
+            }
+            // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
             }
@@ -1299,16 +1364,32 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             self.handles
                 .lock()
                 .push(IsolateWorkerHandle { handle, heap_stats });
+            let new_id = self.worker_senders.len() - 1;
             tracing::info!(
                 "Created {} isolate worker {}",
                 self.worker.config().name,
-                self.worker_senders.len() - 1
+                new_id
             );
-            return Some(self.worker_senders.len() - 1);
+            // #region agent log
+            common::runtime::testing::dst_log(&format!(
+                "SCHED get_worker: client={} -> NEW worker_id={}",
+                client_id, new_id
+            ));
+            // #endregion
+            return Some(new_id);
         }
         // No existing worker for this client and we've already started the max number
         // of workers -- just grab the least recently used worker. This worker is least
         // likely to be reused by its' previous client.
+        // #region agent log
+        {
+            let avail_keys: Vec<String> = self.available_workers.keys().cloned().collect();
+            common::runtime::testing::dst_log(&format!(
+                "SCHED get_worker: client={} stealing, available_keys={:?}",
+                client_id, avail_keys
+            ));
+        }
+        // #endregion
         let Some((key, workers)) =
             self.available_workers
                 .iter_mut()
@@ -1326,6 +1407,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 })
         else {
             // No available workers.
+            // #region agent log
+            common::runtime::testing::dst_log(&format!(
+                "SCHED get_worker: client={} -> NONE (no available)",
+                client_id
+            ));
+            // #endregion
             return None;
         };
         log_worker_stolen(
@@ -1338,6 +1425,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
         let worker_id = workers
             .pop_back()
             .expect("Available worker map should never contain an empty list");
+        // #region agent log
+        common::runtime::testing::dst_log(&format!(
+            "SCHED get_worker: client={} -> STOLEN worker_id={} from={}",
+            client_id, worker_id.worker_id, key
+        ));
+        // #endregion
         if workers.is_empty() {
             // This variable shadowing drops the mutable reference to
             // `self.available_workers`.
@@ -1413,6 +1506,9 @@ pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
                 }
                 heap_stats.store(isolate.heap_stats());
                 if let Some((done, done_token)) = ready.take() {
+                    // #region agent log
+                    common::runtime::testing::dst_log("WORKER done.send (worker ready for next request)");
+                    // #endregion
                     // Inform the scheduler that this thread is ready to accept a new request.
                     let _ = done.send(done_token);
                 }
