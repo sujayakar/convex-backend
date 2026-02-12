@@ -1280,7 +1280,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         request.reject();
                         continue;
                     };
-                    let (done_sender, done_receiver) = dst_done_channel();
+                    let (done_sender, mut done_receiver) = dst_done_channel();
+                    // Pre-register this scheduler task's waker on the done receiver
+                    // before dispatching work. Otherwise a very fast worker can send
+                    // before the receiver is ever polled, and completion discovery then
+                    // depends on later opportunistic polls.
+                    let _ = futures::poll!(std::pin::Pin::new(&mut done_receiver));
                     self.in_progress_workers.push(done_receiver);
                     let entry = self
                         .in_progress_count
