@@ -27,9 +27,6 @@ use futures::{
 };
 use rand::Rng;
 use runtime::testing::{
-    current_dst_run_id,
-    dst_log,
-    set_dst_run_id_for_current_thread,
     TestDriver,
     TestRuntime,
 };
@@ -89,13 +86,6 @@ fn run_once<S: Scenario>(
     config: Config,
 ) -> anyhow::Result<TestResult<<S::TestRun as TestRun>::Output>> {
     let test_start = Instant::now();
-    // #region agent log
-    dst_log(&format!(
-        "RUN_BEGIN seed={} run_id={}",
-        config.seed,
-        current_dst_run_id()
-    ));
-    // #endregion
 
     let recorder = EventRecorder::active();
     let rt = td.rt_with_event_recorder(recorder.clone());
@@ -105,12 +95,6 @@ fn run_once<S: Scenario>(
             "[nitpick] Created application in {:?}",
             test_start.elapsed()
         );
-        let polls = tokio::runtime::Handle::current()
-            .metrics()
-            .worker_poll_count(0);
-        // #region agent log
-        dst_log(&format!("PHASE_APP_CREATED polls={polls}"));
-        // #endregion
         anyhow::Ok(application)
     })?;
 
@@ -121,19 +105,10 @@ fn run_once<S: Scenario>(
             scenario.name(),
             test_start.elapsed()
         );
-        let polls = tokio::runtime::Handle::current()
-            .metrics()
-            .worker_poll_count(0);
-        // #region agent log
-        dst_log(&format!("PHASE_SCENARIO_STARTED polls={polls}"));
-        // #endregion
         anyhow::Ok(run)
     })?;
 
     let num_polls = td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
-    // #region agent log
-    dst_log(&format!("PHASE_TRANSACTIONS_DONE polls={num_polls}"));
-    // #endregion
 
     // Always run validation at the end.
     let start = Instant::now();
@@ -255,24 +230,22 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            let (run1, should_check) = {
-                let td = TestDriver::new_with_seed(config.seed);
-                set_dst_run_id_for_current_thread(1);
-                let run1 = run_once(&scenario, &td, config)?;
-                let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
-                (run1, should_check)
-            };
+        let (run1, should_check) = {
+            let td = TestDriver::new_with_seed(config.seed);
+            let run1 = run_once(&scenario, &td, config)?;
+            let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
+            (run1, should_check)
+        };
 
-            if should_check {
-                tracing::info!(
-                    "[nitpick] Running determinism check for seed {}",
-                    config.seed
-                );
-                check_determinism(&scenario, config, &run1)?;
-            }
+        if should_check {
+            tracing::info!(
+                "[nitpick] Running determinism check for seed {}",
+                config.seed
+            );
+            check_determinism(&scenario, config, &run1)?;
+        }
 
-            set_dst_run_id_for_current_thread(0);
-            anyhow::Ok(())
+        anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
     Ok(())
@@ -285,11 +258,9 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
         .spawn(move || {
             let run1 = {
                 let td = TestDriver::new_with_seed(config.seed);
-                set_dst_run_id_for_current_thread(1);
                 run_once(&scenario, &td, config)?
             };
             check_determinism(&scenario, config, &run1)?;
-            set_dst_run_id_for_current_thread(0);
             anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
@@ -306,7 +277,6 @@ fn check_determinism<S: Scenario>(
         config.seed
     );
     let td = TestDriver::new_with_seed(config.seed);
-    set_dst_run_id_for_current_thread(2);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
         anyhow::bail!(
@@ -317,6 +287,5 @@ fn check_determinism<S: Scenario>(
         );
     }
     tracing::info!("[nitpick] Determinism check passed");
-    set_dst_run_id_for_current_thread(0);
     Ok(())
 }

@@ -13,7 +13,6 @@ use futures::{
     FutureExt,
 };
 
-use super::dst_log;
 use crate::knobs::RUNTIME_STACK_SIZE;
 
 /// Channel for deferring waker fires from the OS thread to the Tokio
@@ -103,18 +102,6 @@ impl Future for ThreadFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let start_poll_count = tokio::runtime::Handle::try_current()
-            .ok()
-            .map(|handle| handle.metrics().worker_poll_count(0));
-        // #region agent log
-        dst_log(&format!(
-            "TF_POLL start @{}",
-            start_poll_count
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        ));
-        // #endregion
-
         let this = self.get_mut();
 
         // Forward the poll request to the thread.
@@ -147,36 +134,12 @@ impl Future for ThreadFuture {
 
         match response {
             Poll::Ready(was_canceled) => {
-                let ready_poll_count = tokio::runtime::Handle::try_current()
-                    .ok()
-                    .map(|handle| handle.metrics().worker_poll_count(0));
-                // #region agent log
-                dst_log(&format!(
-                    "TF_POLL done ready @{}",
-                    ready_poll_count
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "unknown".to_string())
-                ));
-                // #endregion
                 tracing::debug!(
                     "ThreadFuture completed (was_canceled: {was_canceled}), returning."
                 );
                 Poll::Ready(())
             },
-            Poll::Pending => {
-                let pending_poll_count = tokio::runtime::Handle::try_current()
-                    .ok()
-                    .map(|handle| handle.metrics().worker_poll_count(0));
-                // #region agent log
-                dst_log(&format!(
-                    "TF_POLL done pending @{}",
-                    pending_poll_count
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "unknown".to_string())
-                ));
-                // #endregion
-                Poll::Pending
-            },
+            Poll::Pending => Poll::Pending,
         }
     }
 }

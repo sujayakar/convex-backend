@@ -10,7 +10,6 @@ pub use dst_oneshot::{
 
 use std::{
     self,
-    cell::Cell,
     pin::Pin,
     sync::{
         Arc,
@@ -22,7 +21,6 @@ use std::{
         SystemTime,
     },
 };
-
 
 use futures::{
     future::FusedFuture,
@@ -52,50 +50,6 @@ use crate::pause::PauseClient;
 pub static CONVEX_EPOCH: LazyLock<SystemTime> =
     LazyLock::new(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1620198000)); // May 5th, 2021 :)
 
-thread_local! {
-    static DST_RUN_ID_LOCAL: Cell<u32> = const { Cell::new(0) };
-}
-
-pub fn set_dst_run_id_for_current_thread(run_id: u32) {
-    DST_RUN_ID_LOCAL.with(|id| id.set(run_id));
-}
-
-pub fn current_dst_run_id() -> u32 {
-    DST_RUN_ID_LOCAL.with(Cell::get)
-}
-
-pub fn dst_log(msg: &str) {
-    use std::io::Write;
-
-    let run_id = current_dst_run_id();
-    if run_id == 0 {
-        return;
-    }
-    let thread_id = format!("{:?}", std::thread::current().id())
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let path = format!(
-        "/tmp/nitpick_{}_{}_run{}.log",
-        std::process::id(),
-        thread_id,
-        run_id
-    );
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(file, "{msg}");
-    }
-}
-
 pub struct TestDriver {
     tokio_runtime: Option<tokio::runtime::Runtime>,
     state: Arc<Mutex<TestRuntimeState>>,
@@ -122,6 +76,27 @@ impl TestDriver {
             .start_paused(true)
             .unhandled_panic(UnhandledPanic::ShutdownRuntime)
             .rng_seed(tokio_seed)
+            // Force a `park_yield` after every single spawned task poll.
+            //
+            // Without this, the default event_interval is 61: Tokio processes
+            // up to 61 tasks before calling park_yield(). park_yield() is the
+            // ONLY place where the time driver's `did_wake` flag is cleared.
+            //
+            // The `did_wake` flag is set whenever an OS thread (V8 isolate
+            // worker) sends a result via the response channel. This happens
+            // during ThreadFuture::poll() while the Tokio thread is blocked on
+            // crossbeam. If fewer than 61 tasks run between the last
+            // cross-thread wakeup and the next real park(), `did_wake` is still
+            // true and Tokio skips virtual-time auto-advancement, causing timers
+            // to fire non-deterministically.
+            //
+            // With event_interval=1, park_yield() runs after EVERY task,
+            // guaranteeing `did_wake` is cleared. Since no OS threads can fire
+            // new cross-thread wakeups between park_yield() and the subsequent
+            // real park() (all OS threads are idle waiting for the next
+            // crossbeam poll request), real park() always sees did_wake=false
+            // and virtual time auto-advances deterministically.
+            .event_interval(1)
             .build()
             .expect("Failed to create Tokio runtime");
         let rng = ChaCha12Rng::seed_from_u64(seed);
