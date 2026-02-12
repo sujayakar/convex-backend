@@ -624,7 +624,7 @@ pub fn initialize_v8() {
         // reproducible across runs.
         if deterministic {
             argv.push("--predictable".to_string());
-            tracing::info!("V8 deterministic mode enabled (--predictable, thread_pool_size=1)");
+            tracing::info!("V8 deterministic mode enabled (--predictable, thread_pool_size=0)");
         }
         if let Ok(flags) = env::var("ISOLATE_V8_FLAGS") {
             argv.extend(

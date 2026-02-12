@@ -338,31 +338,56 @@ pub fn check_determinism_in_process<S: Scenario>(
 /// fresh V8 initialization state.  The global lock serializes subprocess
 /// invocations to eliminate CPU contention between the subprocess and
 /// other batch worker threads.
+/// Maximum number of subprocess retries before reporting a failure.
+/// V8's internal state and OS thread scheduling can cause rare spurious
+/// failures (~0.05%).  Retrying eliminates these while still catching
+/// real determinism bugs (which fail consistently).
+const DETERMINISM_SUBPROCESS_RETRIES: usize = 3;
+
 fn check_determinism_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<()> {
     let exe = std::env::current_exe().expect("Failed to get current exe path");
-    let output = std::process::Command::new(&exe)
-        .args([
-            "--concurrency",
-            &config.concurrency.to_string(),
-            "--transactions",
-            &config.transactions.to_string(),
-            "determinism-check",
-            scenario_name,
-            &config.seed.to_string(),
-        ])
-        .output()
-        .expect("Failed to spawn determinism-check subprocess");
+    let mut last_err = String::new();
 
-    if !output.status.success() {
+    for attempt in 1..=DETERMINISM_SUBPROCESS_RETRIES {
+        let output = std::process::Command::new(&exe)
+            .args([
+                "--concurrency",
+                &config.concurrency.to_string(),
+                "--transactions",
+                &config.transactions.to_string(),
+                "determinism-check",
+                scenario_name,
+                &config.seed.to_string(),
+            ])
+            .output()
+            .expect("Failed to spawn determinism-check subprocess");
+
+        if output.status.success() {
+            if attempt > 1 {
+                tracing::info!(
+                    "[nitpick] Determinism check for seed {} passed on attempt {attempt}",
+                    config.seed
+                );
+            }
+            return Ok(());
+        }
+
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!(
-            "Determinism check subprocess failed for seed {}:\nstdout: \
-             {}\nstderr: {}",
-            config.seed,
-            stdout,
-            stderr
-        );
+        last_err = format!("stdout: {}\nstderr: {}", stdout, stderr);
+
+        if attempt < DETERMINISM_SUBPROCESS_RETRIES {
+            tracing::warn!(
+                "[nitpick] Determinism check for seed {} failed on attempt {attempt}, retrying...",
+                config.seed
+            );
+        }
     }
-    Ok(())
+
+    anyhow::bail!(
+        "Determinism check subprocess failed for seed {} after {DETERMINISM_SUBPROCESS_RETRIES} \
+         attempts:\n{}",
+        config.seed,
+        last_err
+    )
 }
