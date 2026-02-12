@@ -226,7 +226,7 @@ impl<RT: Runtime> ScheduledJobExecutor<RT> {
             match executor.run_once().await {
                 Ok(()) => backoff.reset(),
                 Err(mut e) => {
-                    let delay = backoff.fail(&mut executor.context.rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut backoff, &executor.context.rt);
                     tracing::error!("Scheduled job executor failed, sleeping {delay:?}");
                     report_error(&mut e).await;
                     executor.context.rt.wait(delay).await;
@@ -522,7 +522,7 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
         } else {
             attempts.system_errors += 1;
         }
-        let delay = backoff.fail(&mut self.rt.rng());
+        let delay = common::runtime::backoff_delay(&mut backoff, &self.rt);
         tracing::error!("System error executing job {job_id}, sleeping {delay:?}");
         job.next_ts = Some(self.rt.generate_timestamp()?.add(delay)?);
 
@@ -863,7 +863,7 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                     .complete_action(job_id, &updated_job, usage_tracker.clone(), state.clone())
                     .await
                 {
-                    let delay = backoff.fail(&mut self.rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut backoff, &self.rt);
                     tracing::error!("Failed to update action state, sleeping {delay:?}");
                     report_error(&mut err).await;
                     self.rt.wait(delay).await;
@@ -992,7 +992,7 @@ impl<RT: Runtime> ScheduledJobGarbageCollector<RT> {
                 *SCHEDULED_JOB_GARBAGE_COLLECTION_MAX_BACKOFF,
             );
             while let Err(mut e) = garbage_collector.run(&mut backoff).await {
-                let delay = backoff.fail(&mut garbage_collector.rt.rng());
+                let delay = common::runtime::backoff_delay(&mut backoff, &garbage_collector.rt);
                 tracing::error!("Scheduled job garbage collector failed, sleeping {delay:?}");
                 // Only report OCCs that happen repeatedly
                 if !e.is_occ() || (backoff.failures() as usize) > *UDF_EXECUTOR_OCC_MAX_RETRIES {

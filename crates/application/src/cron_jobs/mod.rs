@@ -149,7 +149,7 @@ impl<RT: Runtime> CronJobExecutor<RT> {
                     {
                         report_error(&mut e).await;
                     }
-                    let delay = backoff.fail(&mut executor.context.rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut backoff, &executor.context.rt);
                     tracing::error!("Cron job executor failed, sleeping {delay:?}");
                     executor.context.rt.wait(delay).await;
                 },
@@ -293,7 +293,7 @@ impl<RT: Runtime> CronJobContext<RT> {
                     return result;
                 },
                 Err(mut e) => {
-                    let delay = function_backoff.fail(&mut self.rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut function_backoff, &self.rt);
                     tracing::error!(
                         "System error executing job {} in {:?}: {}, sleeping {delay:?}",
                         job.id,
@@ -620,7 +620,7 @@ impl<RT: Runtime> CronJobContext<RT> {
                     )
                     .await
                 {
-                    let delay = backoff.fail(&mut self.rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut backoff, &self.rt);
                     tracing::error!("Failed to update action state, sleeping {delay:?}");
                     report_error(&mut err).await;
                     self.rt.wait(delay).await;

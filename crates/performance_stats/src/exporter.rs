@@ -45,7 +45,7 @@ pub fn register_prometheus_exporter<RT: Runtime>(
 
             let make_svc = router.into_make_service_with_connect_info::<SocketAddr>();
             let e = serve_http(make_svc, bind_addr, future::pending()).await;
-            let delay = backoff.fail(&mut rt.rng());
+            let delay = common::runtime::backoff_delay(&mut backoff, &rt);
             tracing::error!(
                 "Prometheus exporter server failed with error {e:?}, restarting after {}ms delay",
                 delay.as_millis()

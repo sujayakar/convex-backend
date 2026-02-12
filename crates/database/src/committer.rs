@@ -648,7 +648,7 @@ impl<RT: Runtime> Committer<RT> {
                             break;
                         },
                         Err(mut e) => {
-                            let delay = backoff.fail(&mut runtime.rng());
+                            let delay = common::runtime::backoff_delay(&mut backoff, &runtime);
                             report_error(&mut e).await;
                             tracing::error!(
                                 "Failed to bump max repeatable timestamp, retrying after {:.2}s",
@@ -984,7 +984,7 @@ impl<RT: Runtime> Committer<RT> {
                     ));
                     if let Err(mut e) = handle.await? {
                         if e.is::<DatabaseTimeoutError>() {
-                            let delay = backoff.fail(&mut rt.rng());
+                            let delay = common::runtime::backoff_delay(&mut backoff, &rt);
                             tracing::error!(
                                 "Failed to write to persistence because database timed out"
                             );

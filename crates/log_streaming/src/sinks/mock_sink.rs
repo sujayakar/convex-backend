@@ -77,7 +77,7 @@ impl<RT: Runtime> MockSink<RT> {
                 },
                 Some(events) => {
                     while let Err(mut e) = self.process_events(events.clone()).await {
-                        let delay = backoff.fail(&mut self.runtime.rng());
+                        let delay = common::runtime::backoff_delay(&mut backoff, &self.runtime);
                         tracing::error!(
                             "Error emitting event in MockSink: {e:?}. Waiting {delay:?}ms before \
                              retrying"

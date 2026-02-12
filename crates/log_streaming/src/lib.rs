@@ -276,7 +276,7 @@ impl<RT: Runtime> LogManager<RT> {
         // Start listening to logs
         loop {
             let Err(mut e) = self.listen().await;
-            let delay = backoff.fail(&mut self.runtime.rng());
+            let delay = common::runtime::backoff_delay(&mut backoff, &self.runtime);
             tracing::error!("LogManager failed, sleeping {delay:?}");
             report_error(&mut e).await;
             self.runtime.wait(delay).await;

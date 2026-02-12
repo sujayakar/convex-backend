@@ -215,7 +215,7 @@ impl<RT: Runtime> WebhookSink<RT> {
                             source: None,
                         }));
                     } else {
-                        let delay = self.backoff.fail(&mut self.runtime.rng());
+                        let delay = common::runtime::backoff_delay(&mut self.backoff, &self.runtime);
                         tracing::warn!(
                             "Failed to send in Webhook sink: {e}. Waiting {delay:?} before \
                              retrying."

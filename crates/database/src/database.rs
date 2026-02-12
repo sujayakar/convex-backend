@@ -1586,7 +1586,7 @@ impl<RT: Runtime> Database<RT> {
             match result {
                 Err(e) => {
                     if is_retriable(&e) {
-                        let delay = backoff.fail(&mut self.runtime.rng());
+                        let delay = common::runtime::backoff_delay(&mut backoff, &self.runtime);
                         tracing::warn!(
                             "Retrying transaction `{write_source:?}` after error: {e:#}"
                         );
@@ -2347,7 +2347,7 @@ impl<RT: Runtime> Database<RT> {
                     // If backend hasn't loaded the in-memory index yet, it returns
                     // overloaded. We want to retry those.
                     if e.is_overloaded() {
-                        let delay = backoff.fail(&mut self.runtime.rng());
+                        let delay = common::runtime::backoff_delay(&mut backoff, &self.runtime);
                         last_error = Some(e);
                         if backoff.failures() >= MAX_VECTOR_ATTEMPTS {
                             break;

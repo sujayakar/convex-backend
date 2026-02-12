@@ -113,7 +113,7 @@ pub async fn start_beacon(
             },
             Err(e) => {
                 report_error(&mut e.context("Beacon coroutine error")).await;
-                let delay = backoff.fail(&mut runtime.rng());
+                let delay = common::runtime::backoff_delay(&mut backoff, &runtime);
                 tracing::error!("Beacon failed, retrying in {delay:?}");
                 runtime.wait(delay).await;
             },

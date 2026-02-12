@@ -1150,7 +1150,7 @@ impl LeaderRetentionWorkers {
         // Abuse backoff to get jitter by passing in the same constant for initial and
         // max backoff.
         let mut initial_backoff = Backoff::new(delay, delay);
-        let delay = initial_backoff.fail(&mut rt.rng());
+        let delay = common::runtime::backoff_delay(&mut initial_backoff, &rt);
         rt.wait(delay).await;
     }
 
@@ -1267,7 +1267,7 @@ impl LeaderRetentionWorkers {
             .await;
             if let Err(mut err) = r {
                 report_error(&mut err).await;
-                let delay = error_backoff.fail(&mut rt.rng());
+                let delay = common::runtime::backoff_delay(&mut error_backoff, &rt);
                 tracing::debug!("go_delete_indexes: error, {err:?}, delaying {delay:?}");
                 rt.wait(delay).await;
             } else {
@@ -1387,7 +1387,7 @@ impl LeaderRetentionWorkers {
                 },
                 Err(mut err) => {
                     report_error(&mut err).await;
-                    let delay = error_backoff.fail(&mut rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut error_backoff, &rt);
                     tracing::debug!(
                         "go_delete_table_documents: error, {err:?}, delaying {delay:?}"
                     );
@@ -1502,7 +1502,7 @@ impl LeaderRetentionWorkers {
             };
             if let Err(mut err) = r {
                 report_error(&mut err).await;
-                let delay = error_backoff.fail(&mut rt.rng());
+                let delay = common::runtime::backoff_delay(&mut error_backoff, &rt);
                 tracing::debug!("go_delete_documents: error, {err:?}, delaying {delay:?}");
                 rt.wait(delay).await;
             } else {

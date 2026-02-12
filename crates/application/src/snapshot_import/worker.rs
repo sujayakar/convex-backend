@@ -56,7 +56,7 @@ impl SnapshotImportWorker {
                 if let Err(e) = Self::run_once(&mut worker).await {
                     log_snapshot_import_failed(&e);
                     report_error(&mut e.context("SnapshotImportWorker died")).await;
-                    let delay = worker.backoff.fail(&mut worker.runtime.rng());
+                    let delay = common::runtime::backoff_delay(&mut worker.backoff, &worker.runtime);
                     worker.runtime.wait(delay).await;
                 } else {
                     worker.backoff.reset();

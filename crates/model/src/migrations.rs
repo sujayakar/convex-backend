@@ -59,7 +59,7 @@ impl<RT: Runtime> MigrationWorker<RT> {
                 Ok(()) => break,
                 Err(mut e) => {
                     log_migration_worker_failed();
-                    let delay = backoff.fail(&mut self.rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut backoff, &self.rt);
                     tracing::error!("Migration worker failed, sleeping {delay:?}");
                     report_error(&mut e).await;
                     self.rt.wait(delay).await;

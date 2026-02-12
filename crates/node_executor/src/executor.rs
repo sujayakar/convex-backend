@@ -393,7 +393,7 @@ impl<RT: Runtime> Actions<RT> {
                     }
                     tracing::warn!("Failed to invoke analyze: {:?}", e);
                     retries += 1;
-                    let duration = backoff.fail(&mut self.runtime.rng());
+                    let duration = common::runtime::backoff_delay(&mut backoff, &self.runtime);
                     self.runtime.wait(duration).await;
                 },
             }

@@ -144,7 +144,7 @@ impl<RT: Runtime> IndexWorker<RT> {
 
                 if let Err(e) = worker.run().in_span(root).await {
                     report_error(&mut e.context("IndexWorkerLoop died")).await;
-                    let delay = worker.backoff.fail(&mut worker.runtime.rng());
+                    let delay = common::runtime::backoff_delay(&mut worker.backoff, &worker.runtime);
                     tracing::error!(
                         "IndexIndexWorker died, num_failures: {}. Backing off for {}ms",
                         worker.backoff.failures(),

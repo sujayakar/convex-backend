@@ -234,7 +234,7 @@ impl<RT: Runtime> AxiomSink<RT> {
                             source: None,
                         }));
                     } else {
-                        let delay = self.backoff.fail(&mut self.runtime.rng());
+                        let delay = common::runtime::backoff_delay(&mut self.backoff, &self.runtime);
                         tracing::warn!(
                             "Failed to send in Axiom sink: {e}. Waiting {delay:?} before retrying."
                         );

@@ -211,7 +211,7 @@ impl<RT: Runtime> SystemTableCleanupWorker<RT> {
                 },
                 Err(e) => {
                     report_error(&mut e.context("cleanup_deleted_tablets failed")).await;
-                    let delay = error_backoff.fail(&mut rt.rng());
+                    let delay = common::runtime::backoff_delay(&mut error_backoff, &rt);
                     rt.wait(delay).await;
                 },
             }
