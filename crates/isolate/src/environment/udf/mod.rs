@@ -43,7 +43,10 @@ use std::{
 
 use anyhow::anyhow;
 use common::{
-    errors::JsError,
+    errors::{
+        ExecutionResult,
+        JsError,
+    },
     identity::InertIdentity,
     knobs::{
         DATABASE_UDF_SYSTEM_TIMEOUT,
@@ -200,7 +203,7 @@ pub struct DatabaseUdfEnvironment<RT: Runtime> {
     context: ExecutionContext,
 
     reactor_depth: usize,
-    udf_callback: Box<dyn UdfCallback<RT>>,
+    udf_callback: Arc<dyn UdfCallback<RT>>,
 }
 
 fn not_allowed_in_udf(name: &str, description: &str) -> ErrorMetadata {
@@ -327,7 +330,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
             context,
         }: UdfRequest<RT>,
         reactor_depth: usize,
-        udf_callback: Box<dyn UdfCallback<RT>>,
+        udf_callback: Arc<dyn UdfCallback<RT>>,
         client_id: String,
     ) -> Self {
         let persistence_version = transaction.persistence_version();
@@ -513,7 +516,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
         cancellation: BoxFuture<'_, ()>,
         rng_seed: [u8; 32],
         unix_timestamp: UnixTimestamp,
-    ) -> anyhow::Result<Result<ConvexValue, JsError>> {
+    ) -> ExecutionResult<ConvexValue> {
         let handle = isolate.handle();
         scope!(let v8_scope, isolate.scope());
 

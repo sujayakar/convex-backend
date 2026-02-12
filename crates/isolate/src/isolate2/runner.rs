@@ -76,6 +76,7 @@ use udf::{
         validate_schedule_args,
         ValidatedPathAndArgs,
     },
+    FunctionOutcome,
     SyscallTrace,
     UdfOutcome,
 };
@@ -948,6 +949,16 @@ impl<RT: Runtime> AsyncSyscallProvider<RT> for Isolate2SyscallProvider<'_, RT> {
         _path: ResolvedComponentFunctionPath,
         _args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
+        todo!();
+    }
+
+    async fn run_query_batch(
+        &mut self,
+        _queries: Vec<(
+            ResolvedComponentFunctionPath,
+            ValidatedPathAndArgs,
+        )>,
+    ) -> anyhow::Result<Vec<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>> {
         todo!();
     }
 

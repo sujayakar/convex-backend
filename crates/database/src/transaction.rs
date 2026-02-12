@@ -384,6 +384,47 @@ impl<RT: Runtime> Transaction<RT> {
         (self.reads, self.writes)
     }
 
+    /// Create a lightweight fork of this transaction for read-only query
+    /// execution. The fork shares the base snapshot and sees the parent's
+    /// pending writes (for read-your-own-writes), but tracks its own reads
+    /// independently.
+    pub fn fork_for_query(&self) -> anyhow::Result<Transaction<RT>> {
+        Ok(Transaction {
+            identity: self.identity.clone(),
+            reads: TransactionReadSet::new(),
+            writes: self.writes.clone(),
+            id_generator: TransactionIdGenerator::new(&self.runtime)?,
+            next_creation_time: self.next_creation_time,
+            scheduled_size: TransactionWriteSize::default(),
+            index: self.index.clone(),
+            metadata: self.metadata.clone(),
+            schema_registry: self.schema_registry.clone(),
+            component_registry: self.component_registry.clone(),
+            count_snapshot: self.count_snapshot.clone(),
+            table_count_deltas: self.table_count_deltas.clone(),
+            stats: BTreeMap::new(),
+            runtime: self.runtime.clone(),
+            retention_validator: self.retention_validator.clone(),
+            usage_tracker: self.usage_tracker.clone(),
+            virtual_system_mapping: self.virtual_system_mapping.clone(),
+            #[cfg(any(test, feature = "testing"))]
+            index_size_override: self.index_size_override,
+        })
+    }
+
+    /// Merge a forked query's accumulated reads and stats back into this
+    /// transaction. The fork's read set is unioned with ours, and per-tablet
+    /// stats are accumulated.
+    pub fn merge_query_reads(&mut self, fork: Transaction<RT>) {
+        let (read_set, num_intervals, user_tx_size, system_tx_size) = fork.reads.into_parts();
+        self.reads
+            .merge(read_set, num_intervals, user_tx_size, system_tx_size);
+        for (tablet_id, fork_stats) in fork.stats {
+            let entry = self.stats.entry(tablet_id).or_default();
+            entry.rows_read += fork_stats.rows_read;
+        }
+    }
+
     pub fn biggest_document_writes(&self) -> Option<BiggestDocumentWrites> {
         let mut max_size = 0;
         let mut biggest_document_id = None;

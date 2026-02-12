@@ -1,4 +1,4 @@
-import { query, action } from "./_generated/server";
+import { query, mutation, action } from "./_generated/server";
 import { components } from "./_generated/api";
 
 export const hello = action({
@@ -60,5 +60,17 @@ export const mathRandom = query({
     );
     const myRandom = Math.random();
     return [myRandom, componentRandom];
+  },
+});
+
+// Test: two concurrent query subtransactions via Promise.all
+export const concurrentQueries = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const [messages, dateNow] = await Promise.all([
+      ctx.runQuery(components.component.messages.listMessages, {}),
+      ctx.runQuery(components.component.messages.dateNow, {}),
+    ]);
+    return { messages, dateNow };
   },
 });

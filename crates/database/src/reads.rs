@@ -410,6 +410,19 @@ impl TransactionReadSet {
         self.read_set
     }
 
+    /// Consume the read set and return all its parts for merging into another
+    /// TransactionReadSet.
+    pub fn into_parts(
+        self,
+    ) -> (ReadSet, usize, TransactionReadSize, TransactionReadSize) {
+        (
+            self.read_set,
+            self.num_intervals,
+            self.user_tx_size,
+            self.system_tx_size,
+        )
+    }
+
     pub fn read_set(&self) -> &ReadSet {
         &self.read_set
     }
