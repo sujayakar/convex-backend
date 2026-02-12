@@ -10,12 +10,9 @@ pub use dst_oneshot::{
 
 use std::{
     self,
+    cell::Cell,
     pin::Pin,
     sync::{
-        atomic::{
-            AtomicU32,
-            Ordering,
-        },
         Arc,
         LazyLock,
         Weak,
@@ -26,19 +23,6 @@ use std::{
     },
 };
 
-// #region agent log
-pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
-pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
-pub fn dst_log(msg: &str) {
-    use std::io::Write;
-    let r = DST_RUN_ID.load(Ordering::Relaxed);
-    if r == 0 { return; }
-    let p = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), r);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = writeln!(f, "{}", msg);
-    }
-}
-// #endregion
 
 use futures::{
     future::FusedFuture,
@@ -67,6 +51,50 @@ use crate::pause::PauseClient;
 
 pub static CONVEX_EPOCH: LazyLock<SystemTime> =
     LazyLock::new(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1620198000)); // May 5th, 2021 :)
+
+thread_local! {
+    static DST_RUN_ID_LOCAL: Cell<u32> = const { Cell::new(0) };
+}
+
+pub fn set_dst_run_id_for_current_thread(run_id: u32) {
+    DST_RUN_ID_LOCAL.with(|id| id.set(run_id));
+}
+
+pub fn current_dst_run_id() -> u32 {
+    DST_RUN_ID_LOCAL.with(Cell::get)
+}
+
+pub fn dst_log(msg: &str) {
+    use std::io::Write;
+
+    let run_id = current_dst_run_id();
+    if run_id == 0 {
+        return;
+    }
+    let thread_id = format!("{:?}", std::thread::current().id())
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let path = format!(
+        "/tmp/nitpick_{}_{}_run{}.log",
+        std::process::id(),
+        thread_id,
+        run_id
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{msg}");
+    }
+}
 
 pub struct TestDriver {
     tokio_runtime: Option<tokio::runtime::Runtime>,
