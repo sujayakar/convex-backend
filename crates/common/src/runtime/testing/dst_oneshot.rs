@@ -56,26 +56,9 @@ impl<T> DstOneshotSender<T> {
             let mut slot = self.shared.value.lock().unwrap();
             *slot = Some(value);
         }
-        let mut wake_path = "none";
         if let Some(waker) = self.shared.waker.lock().unwrap().take() {
-            wake_path = if defer_waker_to_tokio_thread(waker) {
-                "deferred"
-            } else {
-                "direct"
-            };
+            defer_waker_to_tokio_thread(waker);
         }
-        let (tokio_wake_calls, deferred_waker_fires) = super::waker_counters();
-        // #region agent log
-        super::dst_log_event(
-            "crates/common/src/runtime/testing/dst_oneshot.rs:68",
-            "dst_oneshot_send",
-            serde_json::json!({
-                "wake_path": wake_path,
-                "tokio_wake_calls": tokio_wake_calls,
-                "deferred_waker_fires": deferred_waker_fires,
-            }),
-        );
-        // #endregion
         Ok(())
     }
 }

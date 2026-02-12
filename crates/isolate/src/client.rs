@@ -1242,26 +1242,6 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         completions.push(w);
                     }
                     completions.sort_by_key(|w| w.worker_id);
-                    #[cfg(any(test, feature = "testing"))]
-                    // #region agent log
-                    {
-                        let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
-                        let clients: Vec<String> =
-                            completions.iter().map(|w| w.client_id.clone()).collect();
-                        let (tokio_wake_calls, deferred_waker_fires) =
-                            common::runtime::testing::waker_counters();
-                        common::runtime::testing::dst_log_event(
-                            "crates/isolate/src/client.rs:1256",
-                            "scheduler_completion_drain",
-                            serde_json::json!({
-                                "worker_ids": ids,
-                                "client_ids": clients,
-                                "tokio_wake_calls": tokio_wake_calls,
-                                "deferred_waker_fires": deferred_waker_fires,
-                            }),
-                        );
-                    }
-                    // #endregion
                     for w in completions {
                         self.handle_completed_worker(w);
                     }

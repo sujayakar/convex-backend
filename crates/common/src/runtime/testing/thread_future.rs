@@ -24,52 +24,24 @@ use crate::knobs::RUNTIME_STACK_SIZE;
 thread_local! {
     static DEFERRED_WAKER_TX: RefCell<Option<crossbeam_channel::Sender<Waker>>> =
         const { RefCell::new(None) };
-    static THREAD_FUTURE_ID: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
 
 /// Defer a waker fire so it happens on the Tokio runtime thread instead
 /// of the current OS thread.  If called outside a `ThreadFuture` context,
 /// the waker is fired immediately (production runtime path).
-pub fn defer_waker_to_tokio_thread(waker: Waker) -> bool {
+pub fn defer_waker_to_tokio_thread(waker: Waker) {
     DEFERRED_WAKER_TX.with(|tx| {
         let tx = tx.borrow();
-        let thread_future_id = THREAD_FUTURE_ID.with(|id| *id.borrow());
         if let Some(tx) = tx.as_ref() {
-            let send_ok = tx.send(waker).is_ok();
-            // #region agent log
-            super::dst_log_event(
-                "crates/common/src/runtime/testing/thread_future.rs:39",
-                "defer_waker_to_tokio_thread",
-                serde_json::json!({
-                    "thread_future_id": thread_future_id,
-                    "deferred": true,
-                    "send_ok": send_ok,
-                }),
-            );
-            // #endregion
-            send_ok
+            let _ = tx.send(waker);
         } else {
             // Not inside a ThreadFuture — fire immediately.
-            let tokio_wake_calls = super::note_tokio_thread_wake_call();
-            // #region agent log
-            super::dst_log_event(
-                "crates/common/src/runtime/testing/thread_future.rs:52",
-                "defer_waker_to_tokio_thread",
-                serde_json::json!({
-                    "thread_future_id": thread_future_id,
-                    "deferred": false,
-                    "tokio_wake_calls": tokio_wake_calls,
-                }),
-            );
-            // #endregion
             waker.wake();
-            false
         }
-    })
+    });
 }
 
 pub struct ThreadFuture {
-    id: u64,
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
@@ -77,7 +49,6 @@ pub struct ThreadFuture {
     /// [`defer_waker_to_tokio_thread`].  Drained and fired on the Tokio
     /// thread after each poll response.
     deferred_waker_rx: crossbeam_channel::Receiver<Waker>,
-    poll_calls: u64,
 }
 
 impl ThreadFuture {
@@ -85,7 +56,6 @@ impl ThreadFuture {
         tokio_handle: tokio::runtime::Handle,
         f: F,
     ) -> Self {
-        let id = super::next_thread_future_id();
         let (poll_request_tx, poll_request_rx) = crossbeam_channel::bounded(1);
         let (poll_response_tx, poll_response_rx) = crossbeam_channel::bounded(1);
         let (deferred_waker_tx, deferred_waker_rx) = crossbeam_channel::unbounded();
@@ -96,9 +66,6 @@ impl ThreadFuture {
                 // Install the deferred-waker channel for this thread.
                 DEFERRED_WAKER_TX.with(|tx| {
                     *tx.borrow_mut() = Some(deferred_waker_tx);
-                });
-                THREAD_FUTURE_ID.with(|slot| {
-                    *slot.borrow_mut() = Some(id);
                 });
                 let fut = f();
                 tokio::pin!(fut);
@@ -123,12 +90,10 @@ impl ThreadFuture {
             })
             .expect("Failed to start new thread");
         Self {
-            id,
             std_handle: Some(std_handle),
             poll_request_tx: Some(poll_request_tx),
             poll_response_rx,
             deferred_waker_rx,
-            poll_calls: 0,
         }
     }
 }
@@ -138,17 +103,6 @@ impl Future for ThreadFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        this.poll_calls += 1;
-        // #region agent log
-        super::dst_log_event(
-            "crates/common/src/runtime/testing/thread_future.rs:144",
-            "thread_future_poll_enter",
-            serde_json::json!({
-                "thread_future_id": this.id,
-                "poll_call": this.poll_calls,
-            }),
-        );
-        // #endregion
 
         // Forward the poll request to the thread.
         if this
@@ -168,21 +122,6 @@ impl Future for ThreadFuture {
                 return Poll::Ready(());
             },
         };
-        let response_kind = match &response {
-            Poll::Ready(was_canceled) => format!("ready({was_canceled})"),
-            Poll::Pending => "pending".to_owned(),
-        };
-        // #region agent log
-        super::dst_log_event(
-            "crates/common/src/runtime/testing/thread_future.rs:175",
-            "thread_future_poll_response",
-            serde_json::json!({
-                "thread_future_id": this.id,
-                "poll_call": this.poll_calls,
-                "response": response_kind,
-            }),
-        );
-        // #endregion
 
         // Fire any wakers that the OS thread deferred via
         // `defer_waker_to_tokio_thread`.  Because we're on the Tokio
@@ -190,20 +129,6 @@ impl Future for ThreadFuture {
         // `Schedule::schedule` → local queue (deterministic), instead of
         // the injection queue (non-deterministic).
         while let Ok(waker) = this.deferred_waker_rx.try_recv() {
-            let deferred_waker_fires = super::note_deferred_waker_fire();
-            let tokio_wake_calls = super::note_tokio_thread_wake_call();
-            // #region agent log
-            super::dst_log_event(
-                "crates/common/src/runtime/testing/thread_future.rs:196",
-                "thread_future_deferred_waker_fire",
-                serde_json::json!({
-                    "thread_future_id": this.id,
-                    "poll_call": this.poll_calls,
-                    "tokio_wake_calls": tokio_wake_calls,
-                    "deferred_waker_fires": deferred_waker_fires,
-                }),
-            );
-            // #endregion
             waker.wake();
         }
 
