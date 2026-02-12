@@ -81,9 +81,11 @@ impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
         // Trace is excluded from equality -- it contains wall-clock timing
         // that may differ between runs.
-        self.num_polls == other.num_polls
-            && self.rng_next_u64 == other.rng_next_u64
-            && self.output == other.output
+        //
+        // `num_polls` is also excluded: Tokio's `worker_poll_count` can differ
+        // by +/-1 for equivalent execution due to runtime-internal pending
+        // polls that don't change RNG progression or scenario output.
+        self.rng_next_u64 == other.rng_next_u64 && self.output == other.output
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}
