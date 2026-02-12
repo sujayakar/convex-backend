@@ -1,6 +1,7 @@
 use std::{
     cell::Cell,
     panic,
+    process::Command,
     sync::{
         atomic::{
             AtomicUsize,
@@ -38,6 +39,17 @@ pub fn run_batch<S: Scenario + Clone>(
     num_simulations: usize,
     num_threads: usize,
 ) -> BatchResult {
+    let scenario_name = scenario.name().to_string();
+    let use_subprocess_isolation = scenario_name.ends_with("_js")
+        && std::env::var("NITPICK_BATCH_IN_PROCESS")
+            .map(|v| v != "1")
+            .unwrap_or(true);
+    if use_subprocess_isolation {
+        tracing::info!(
+            "[nitpick] Using subprocess isolation for scenario {} in batch mode",
+            scenario_name
+        );
+    }
     let counter = Arc::new(AtomicUsize::new(0));
     let error: Arc<std::sync::Mutex<Option<(u64, String)>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -59,6 +71,7 @@ pub fn run_batch<S: Scenario + Clone>(
 
     for _ in 0..num_threads {
         let scenario = scenario.clone();
+        let scenario_name = scenario_name.clone();
         let work_index = work_index.clone();
         let counter = counter.clone();
         let error = error.clone();
@@ -85,7 +98,12 @@ pub fn run_batch<S: Scenario + Clone>(
                     seed,
                 };
 
-                if let Err(e) = run_scenario(scenario.clone(), config) {
+                let result = if use_subprocess_isolation {
+                    run_scenario_subprocess(&scenario_name, config)
+                } else {
+                    run_scenario(scenario.clone(), config)
+                };
+                if let Err(e) = result {
                     let mut err = error.lock().unwrap();
                     if err.is_none() {
                         *err = Some((seed, format!("{e:?}")));
@@ -136,4 +154,29 @@ pub fn run_batch<S: Scenario + Clone>(
         passed,
         failed,
     }
+}
+
+fn run_scenario_subprocess(scenario: &str, config: Config) -> anyhow::Result<()> {
+    let current_exe = std::env::current_exe()?;
+    let output = Command::new(current_exe)
+        .arg("-t")
+        .arg(config.transactions.to_string())
+        .arg("-c")
+        .arg(config.concurrency.to_string())
+        .arg("replay")
+        .arg(scenario)
+        .arg(config.seed.to_string())
+        .output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    anyhow::bail!(
+        "Subprocess replay failed for scenario {scenario}, seed {} with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        config.seed,
+        output.status.code(),
+        stdout,
+        stderr,
+    );
 }

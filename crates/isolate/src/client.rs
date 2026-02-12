@@ -379,11 +379,46 @@ impl<RT: Runtime> Request<RT> {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
+pub type ResponseSender<T> = common::runtime::testing::DstOneshotSender<T>;
+#[cfg(not(any(test, feature = "testing")))]
+pub type ResponseSender<T> = oneshot::Sender<T>;
+
+#[cfg(any(test, feature = "testing"))]
+pub type ResponseReceiver<T> = common::runtime::testing::DstOneshotReceiver<T>;
+#[cfg(not(any(test, feature = "testing")))]
+pub type ResponseReceiver<T> = oneshot::Receiver<T>;
+
+pub fn response_channel<T>() -> (ResponseSender<T>, ResponseReceiver<T>) {
+    #[cfg(any(test, feature = "testing"))]
+    {
+        common::runtime::testing::dst_oneshot_channel()
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        oneshot::channel()
+    }
+}
+
+pub fn response_closed<'a, T>(
+    response: &'a mut ResponseSender<T>,
+) -> futures::future::BoxFuture<'a, ()> {
+    #[cfg(any(test, feature = "testing"))]
+    {
+        let _ = response;
+        futures::future::pending::<()>().boxed()
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        response.closed().boxed()
+    }
+}
+
 pub enum RequestType<RT: Runtime> {
     Udf {
         request: UdfRequest<RT>,
         environment_data: EnvironmentData<RT>,
-        response: oneshot::Sender<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>,
+        response: ResponseSender<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>,
         queue_timer: Timer<VMHistogram>,
         reactor_depth: usize,
         udf_callback: Box<dyn UdfCallback<RT>>,
@@ -392,7 +427,7 @@ pub enum RequestType<RT: Runtime> {
     Action {
         request: ActionRequest<RT>,
         environment_data: EnvironmentData<RT>,
-        response: oneshot::Sender<anyhow::Result<ActionOutcome>>,
+        response: ResponseSender<anyhow::Result<ActionOutcome>>,
         queue_timer: Timer<VMHistogram>,
         action_callbacks: Arc<dyn ActionCallbacks>,
         fetch_client: Arc<dyn FetchClient>,
@@ -402,7 +437,7 @@ pub enum RequestType<RT: Runtime> {
     HttpAction {
         request: HttpActionRequest<RT>,
         environment_data: EnvironmentData<RT>,
-        response: oneshot::Sender<anyhow::Result<HttpActionOutcome>>,
+        response: ResponseSender<anyhow::Result<HttpActionOutcome>>,
         queue_timer: Timer<VMHistogram>,
         action_callbacks: Arc<dyn ActionCallbacks>,
         fetch_client: Arc<dyn FetchClient>,
@@ -414,7 +449,7 @@ pub enum RequestType<RT: Runtime> {
         udf_config: UdfConfig,
         modules: BTreeMap<CanonicalizedModulePath, ModuleConfig>,
         environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
-        response: oneshot::Sender<
+        response: ResponseSender<
             anyhow::Result<Result<BTreeMap<CanonicalizedModulePath, AnalyzedModule>, JsError>>,
         >,
     },
@@ -423,13 +458,13 @@ pub enum RequestType<RT: Runtime> {
         source_map: Option<SourceMap>,
         rng_seed: [u8; 32],
         unix_timestamp: UnixTimestamp,
-        response: oneshot::Sender<anyhow::Result<DatabaseSchema>>,
+        response: ResponseSender<anyhow::Result<DatabaseSchema>>,
     },
     EvaluateAuthConfig {
         auth_config_bundle: ModuleSource,
         source_map: Option<SourceMap>,
         environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
-        response: oneshot::Sender<anyhow::Result<AuthConfig>>,
+        response: ResponseSender<anyhow::Result<AuthConfig>>,
     },
     EvaluateAppDefinitions {
         app_definition: ModuleConfig,
@@ -437,7 +472,7 @@ pub enum RequestType<RT: Runtime> {
         dependency_graph: BTreeSet<(ComponentDefinitionPath, ComponentDefinitionPath)>,
         user_environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
         system_env_vars: BTreeMap<EnvVarName, EnvVarValue>,
-        response: oneshot::Sender<anyhow::Result<EvaluateAppDefinitionsResult>>,
+        response: ResponseSender<anyhow::Result<EvaluateAppDefinitionsResult>>,
     },
     EvaluateComponentInitializer {
         evaluated_definitions: BTreeMap<ComponentDefinitionPath, ComponentDefinitionMetadata>,
@@ -445,7 +480,7 @@ pub enum RequestType<RT: Runtime> {
         definition: ModuleConfig,
         args: BTreeMap<Identifier, Resource>,
         name: ComponentName,
-        response: oneshot::Sender<anyhow::Result<BTreeMap<Identifier, Resource>>>,
+        response: ResponseSender<anyhow::Result<BTreeMap<Identifier, Resource>>>,
     },
 }
 
@@ -732,7 +767,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         instance_name: String,
         function_started_sender: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<(Transaction<RT>, FunctionOutcome)> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::Udf {
             request: UdfRequest {
                 path_and_args,
@@ -771,7 +806,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         instance_name: String,
         function_started_sender: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<ActionOutcome> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::Action {
             request: ActionRequest {
                 params: ActionRequestParams { path_and_args },
@@ -818,7 +853,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         instance_name: String,
         function_started_sender: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<HttpActionOutcome> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::HttpAction {
             request: HttpActionRequest {
                 http_module_path,
@@ -863,7 +898,7 @@ impl<RT: Runtime> IsolateClient<RT> {
                 .all(|m| m.environment == ModuleEnvironment::Isolate),
             "Can only analyze Isolate modules"
         );
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::Analyze {
             modules,
             response: tx,
@@ -901,7 +936,7 @@ impl<RT: Runtime> IsolateClient<RT> {
                 .all(|m| m.environment == ModuleEnvironment::Isolate),
             "Can only evaluate Isolate modules"
         );
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::EvaluateAppDefinitions {
             app_definition,
             component_definitions,
@@ -931,7 +966,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         name: ComponentName,
         instance_name: String,
     ) -> anyhow::Result<BTreeMap<Identifier, Resource>> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::EvaluateComponentInitializer {
             evaluated_definitions,
             path,
@@ -960,7 +995,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         unix_timestamp: UnixTimestamp,
         instance_name: String,
     ) -> anyhow::Result<DatabaseSchema> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::EvaluateSchema {
             schema_bundle,
             source_map,
@@ -988,7 +1023,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         explanation: &str,
         instance_name: String,
     ) -> anyhow::Result<AuthConfig> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = response_channel();
         let request = RequestType::EvaluateAuthConfig {
             auth_config_bundle,
             source_map,
@@ -1060,10 +1095,44 @@ impl<RT: Runtime> IsolateClient<RT> {
         Ok(())
     }
 
-    async fn receive_response<T>(rx: oneshot::Receiver<T>) -> anyhow::Result<T> {
+    async fn receive_response<T>(rx: ResponseReceiver<T>) -> anyhow::Result<T> {
         // The only reason a oneshot response channel wil be dropped prematurely if the
         // isolate worker is shutting down.
-        rx.await.map_err(|_| shutdown_error())
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let worker_poll_count = tokio::runtime::Handle::try_current()
+                .ok()
+                .map(|h| h.metrics().worker_poll_count(0));
+            // #region agent log
+            common::runtime::testing::dst_debug_log(
+                "H3",
+                "crates/isolate/src/client.rs:receive_response",
+                "receive_response_await_start",
+                serde_json::json!({
+                    "worker_poll_count": worker_poll_count,
+                }),
+            );
+            // #endregion
+        }
+        let result = rx.await.map_err(|_| shutdown_error());
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let worker_poll_count = tokio::runtime::Handle::try_current()
+                .ok()
+                .map(|h| h.metrics().worker_poll_count(0));
+            // #region agent log
+            common::runtime::testing::dst_debug_log(
+                "H3",
+                "crates/isolate/src/client.rs:receive_response",
+                "receive_response_await_end",
+                serde_json::json!({
+                    "worker_poll_count": worker_poll_count,
+                    "ok": result.is_ok(),
+                }),
+            );
+            // #endregion
+        }
+        result
     }
 }
 
@@ -1494,12 +1563,7 @@ pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
                     let _ = done.send(done_token);
                 }
                 tokio::select! {
-                    // If the isolate isn't "tainted", no need to wait for the idle timeout.
-                    _ = self.rt().wait(*ISOLATE_IDLE_TIMEOUT), if last_client_id.is_some() => {
-                        tracing::debug!("Restarting isolate for {last_client_id:?} due to idle timeout");
-                        metrics::log_recreate_isolate("idle_timeout");
-                        continue 'recreate_isolate;
-                    },
+                    biased;
                     // First peek the request to decide if we need to make a new isolate.
                     req = reqs.as_mut().peek() => {
                         let Some((req, ..)) = req else {
@@ -1548,7 +1612,13 @@ pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
                             continue 'recreate_isolate;
                         }
                         last_request = Some(debug_str);
-                    }
+                    },
+                    // If the isolate isn't "tainted", no need to wait for the idle timeout.
+                    _ = self.rt().wait(*ISOLATE_IDLE_TIMEOUT), if last_client_id.is_some() => {
+                        tracing::debug!("Restarting isolate for {last_client_id:?} due to idle timeout");
+                        metrics::log_recreate_isolate("idle_timeout");
+                        continue 'recreate_isolate;
+                    },
                 }
             }
         }
@@ -1638,13 +1708,13 @@ mod tests {
         let DbFixtures { db, .. } = DbFixtures::new(&rt).await?;
         let client1 = "client1";
         let hold_guard = pause1.hold(PAUSE_REQUEST);
-        let (sender, _rx1) = oneshot::channel();
+        let (sender, _rx1) = response_channel();
         let request = bogus_udf_request(&db, client1, sender).await?;
         function_runner_core.send_request(request)?;
         // Pausing a request while being executed should make the next request be
         // rejected because there are no available workers.
         let _guard = hold_guard.wait_for_blocked().await.unwrap();
-        let (sender, rx2) = oneshot::channel();
+        let (sender, rx2) = response_channel();
         let request2 = bogus_udf_request(&db, client1, sender).await?;
         function_runner_core.send_request(request2)?;
         let response = IsolateClient::<TestRuntime>::receive_response(rx2).await?;
@@ -1664,13 +1734,13 @@ mod tests {
         let DbFixtures { db, .. } = DbFixtures::new_with_model(&rt).await?;
         let client1 = "client1";
         let hold_guard = pause1.hold(PAUSE_REQUEST);
-        let (sender, _rx1) = oneshot::channel();
+        let (sender, _rx1) = response_channel();
         let request = bogus_udf_request(&db, client1, sender).await?;
         function_runner_core.send_request(request)?;
         // Pausing a request should not affect the next one because we have 2 workers
         // and 2 requests from different clients.
         let _guard = hold_guard.wait_for_blocked().await.unwrap();
-        let (sender, rx2) = oneshot::channel();
+        let (sender, rx2) = response_channel();
         let client2 = "client2";
         let request2 = bogus_udf_request(&db, client2, sender).await?;
         function_runner_core.send_request(request2)?;
@@ -1688,13 +1758,13 @@ mod tests {
         let DbFixtures { db, .. } = DbFixtures::new_with_model(&rt).await?;
         let client = "client";
         let hold_guard = pause1.hold(PAUSE_REQUEST);
-        let (sender, _rx1) = oneshot::channel();
+        let (sender, _rx1) = response_channel();
         let request = bogus_udf_request(&db, client, sender).await?;
         function_runner_core.send_request(request)?;
         // Pausing the first request and sending a second should make the second fail
         // because there's only one worker left and it is reserved for other clients.
         let _guard = hold_guard.wait_for_blocked().await.unwrap();
-        let (sender, rx2) = oneshot::channel();
+        let (sender, rx2) = response_channel();
         let request2 = bogus_udf_request(&db, client, sender).await?;
         function_runner_core.send_request(request2)?;
         let response = IsolateClient::<TestRuntime>::receive_response(rx2).await?;

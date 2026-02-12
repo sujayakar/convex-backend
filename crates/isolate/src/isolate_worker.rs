@@ -87,11 +87,11 @@ impl<RT: Runtime> FunctionRunnerIsolateWorker<RT> {
                 );
                 let r = environment
                     .run(
-                        client_id,
+                        client_id.clone(),
                         isolate,
                         v8_context,
                         isolate_clean,
-                        response.closed().boxed(),
+                        crate::client::response_closed(&mut response),
                         function_started_sender,
                     )
                     .await;
@@ -106,6 +106,21 @@ impl<RT: Runtime> FunctionRunnerIsolateWorker<RT> {
                     Err(_) => RequestStatus::SystemError,
                 };
                 finish_service_request_timer(timer, status);
+                #[cfg(any(test, feature = "testing"))]
+                {
+                    // #region agent log
+                    common::runtime::testing::dst_debug_log(
+                        "H3",
+                        "crates/isolate/src/isolate_worker.rs:handle_request_inner",
+                        "udf_response_send",
+                        serde_json::json!({
+                            "client_id": client_id,
+                            "udf_path": format!("{udf_path:?}"),
+                            "ok": r.is_ok(),
+                        }),
+                    );
+                    // #endregion
+                }
                 let _ = response.send(r);
                 format!("UDF: {udf_path:?}")
             },
@@ -145,7 +160,7 @@ impl<RT: Runtime> FunctionRunnerIsolateWorker<RT> {
                         v8_context,
                         isolate_clean,
                         request.params.clone(),
-                        response.closed().boxed(),
+                        crate::client::response_closed(&mut response),
                         function_started_sender,
                     )
                     .await;

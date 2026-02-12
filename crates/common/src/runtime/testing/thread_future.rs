@@ -33,9 +33,29 @@ pub fn defer_waker_to_tokio_thread(waker: Waker) {
     DEFERRED_WAKER_TX.with(|tx| {
         let tx = tx.borrow();
         if let Some(tx) = tx.as_ref() {
+            // #region agent log
+            super::dst_debug_log(
+                "H1",
+                "crates/common/src/runtime/testing/thread_future.rs:defer_waker_to_tokio_thread",
+                "wake_path",
+                serde_json::json!({
+                    "path": "deferred_to_tokio_thread",
+                }),
+            );
+            // #endregion
             let _ = tx.send(waker);
         } else {
             // Not inside a ThreadFuture — fire immediately.
+            // #region agent log
+            super::dst_debug_log(
+                "H1",
+                "crates/common/src/runtime/testing/thread_future.rs:defer_waker_to_tokio_thread",
+                "wake_path",
+                serde_json::json!({
+                    "path": "immediate_wake",
+                }),
+            );
+            // #endregion
             waker.wake();
         }
     });
