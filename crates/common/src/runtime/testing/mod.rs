@@ -32,6 +32,8 @@ pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
 pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
 pub static DST_SEED: AtomicU64 = AtomicU64::new(0);
 pub static DST_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
+static DST_LOG_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
 pub fn dst_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
     use std::io::Write;
     let run_id = DST_RUN_ID.load(Ordering::Relaxed);
@@ -55,6 +57,7 @@ pub fn dst_log(hypothesis_id: &str, location: &str, message: &str, data: serde_j
         },
         "timestamp": timestamp,
     });
+    let _guard = DST_LOG_LOCK.lock().expect("dst log lock poisoned");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
