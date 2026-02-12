@@ -197,6 +197,12 @@ async fn run_transactions<TR: TestRun>(
             }
             num_completed += 1;
             drained_ok += 1;
+            // Tie validation randomness to successful completions, not loop
+            // iterations, so RNG progression is insensitive to completion
+            // batching/scheduling jitter.
+            if rt.rng().random_bool(VERIFY_PROBABILITY) {
+                test_run.validate(application).await?;
+            }
         }
         if drained_ok > 0 || drained_occ > 0 {
             // #region agent log
@@ -240,10 +246,6 @@ async fn run_transactions<TR: TestRun>(
             transactions.push(future);
         }
 
-        // Probabilistically validate.
-        if rt.rng().random_bool(VERIFY_PROBABILITY) {
-            test_run.validate(application).await?;
-        }
     }
 
     let num_polls = tokio::runtime::Handle::current()
