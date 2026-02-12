@@ -1532,7 +1532,7 @@ pub async fn test_isolate_recreated_with_client_change<RT: Runtime, W: IsolateWo
         worker.service_requests::<Option<usize>>(work_receiver, heap_stats)
     });
     let DbFixtures { db, .. } = DbFixtures::new(&rt).await?;
-    let (done_sender, done_receiver) = oneshot::channel();
+    let (done_sender, done_receiver) = common::runtime::testing::dst_oneshot_channel();
     let (sender, _rx) = oneshot::channel();
     let request = bogus_udf_request(&db, "carnitas", sender).await?;
     work_sender.try_send((request, done_sender, None)).unwrap();
@@ -1547,7 +1547,7 @@ pub async fn test_isolate_recreated_with_client_change<RT: Runtime, W: IsolateWo
         }
     }?;
     // Second request with different client_id should recreate isolate.
-    let (done_sender, done_receiver) = oneshot::channel();
+    let (done_sender, done_receiver) = common::runtime::testing::dst_oneshot_channel();
     let (sender, _rx) = oneshot::channel();
     let request = bogus_udf_request(&db, "alpastor", sender).await?;
     work_sender.try_send((request, done_sender, None)).unwrap();
@@ -1584,7 +1584,7 @@ pub async fn test_isolate_not_recreated_with_same_client<RT: Runtime, W: Isolate
         worker.service_requests::<Option<usize>>(work_receiver, heap_stats)
     });
     let DbFixtures { db, .. } = DbFixtures::new(&rt).await?;
-    let (done_sender, done_receiver) = oneshot::channel();
+    let (done_sender, done_receiver) = common::runtime::testing::dst_oneshot_channel();
     let (sender, _rx) = oneshot::channel();
     let request = bogus_udf_request(&db, "carnitas", sender).await?;
     work_sender.try_send((request, done_sender, None)).unwrap();
@@ -1599,7 +1599,7 @@ pub async fn test_isolate_not_recreated_with_same_client<RT: Runtime, W: Isolate
         }
     }?;
     // Second request with the same client_id should not recreate isolate.
-    let (done_sender, done_receiver) = oneshot::channel();
+    let (done_sender, done_receiver) = common::runtime::testing::dst_oneshot_channel();
     let (sender, _rx) = oneshot::channel();
     let request = bogus_udf_request(&db, "carnitas", sender).await?;
     work_sender.try_send((request, done_sender, None)).unwrap();

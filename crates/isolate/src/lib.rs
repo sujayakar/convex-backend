@@ -42,6 +42,7 @@ mod udf_runtime;
 pub mod test_helpers;
 pub use self::{
     client::{
+        configure_v8_for_determinism,
         ActionCallbacks,
         ActionRequest,
         ActionRequestParams,

@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     pin::Pin,
     task::{
         Context,
@@ -14,10 +15,40 @@ use futures::{
 
 use crate::knobs::RUNTIME_STACK_SIZE;
 
+/// Channel for deferring waker fires from the OS thread to the Tokio
+/// thread.  Code running inside a `ThreadFuture` poll can call
+/// [`defer_waker_to_tokio_thread`] to enqueue a waker; it will be fired
+/// on the Tokio runtime thread after the poll completes, ensuring
+/// deterministic local-queue scheduling instead of non-deterministic
+/// injection-queue scheduling.
+thread_local! {
+    static DEFERRED_WAKER_TX: RefCell<Option<crossbeam_channel::Sender<Waker>>> =
+        const { RefCell::new(None) };
+}
+
+/// Defer a waker fire so it happens on the Tokio runtime thread instead
+/// of the current OS thread.  If called outside a `ThreadFuture` context,
+/// the waker is fired immediately (production runtime path).
+pub fn defer_waker_to_tokio_thread(waker: Waker) {
+    DEFERRED_WAKER_TX.with(|tx| {
+        let tx = tx.borrow();
+        if let Some(tx) = tx.as_ref() {
+            let _ = tx.send(waker);
+        } else {
+            // Not inside a ThreadFuture — fire immediately.
+            waker.wake();
+        }
+    });
+}
+
 pub struct ThreadFuture {
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
+    /// Receives wakers that the OS thread deferred via
+    /// [`defer_waker_to_tokio_thread`].  Drained and fired on the Tokio
+    /// thread after each poll response.
+    deferred_waker_rx: crossbeam_channel::Receiver<Waker>,
 }
 
 impl ThreadFuture {
@@ -27,10 +58,15 @@ impl ThreadFuture {
     ) -> Self {
         let (poll_request_tx, poll_request_rx) = crossbeam_channel::bounded(1);
         let (poll_response_tx, poll_response_rx) = crossbeam_channel::bounded(1);
+        let (deferred_waker_tx, deferred_waker_rx) = crossbeam_channel::unbounded();
         let std_handle = std::thread::Builder::new()
             .stack_size(*RUNTIME_STACK_SIZE)
             .spawn(move || {
                 let _guard = tokio_handle.enter();
+                // Install the deferred-waker channel for this thread.
+                DEFERRED_WAKER_TX.with(|tx| {
+                    *tx.borrow_mut() = Some(deferred_waker_tx);
+                });
                 let fut = f();
                 tokio::pin!(fut);
                 loop {
@@ -57,6 +93,7 @@ impl ThreadFuture {
             std_handle: Some(std_handle),
             poll_request_tx: Some(poll_request_tx),
             poll_response_rx,
+            deferred_waker_rx,
         }
     }
 }
@@ -85,6 +122,16 @@ impl Future for ThreadFuture {
                 return Poll::Ready(());
             },
         };
+
+        // Fire any wakers that the OS thread deferred via
+        // `defer_waker_to_tokio_thread`.  Because we're on the Tokio
+        // runtime thread, `Waker::wake()` routes through
+        // `Schedule::schedule` → local queue (deterministic), instead of
+        // the injection queue (non-deterministic).
+        while let Ok(waker) = this.deferred_waker_rx.try_recv() {
+            waker.wake();
+        }
+
         match response {
             Poll::Ready(was_canceled) => {
                 tracing::debug!(

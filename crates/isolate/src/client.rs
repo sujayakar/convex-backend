@@ -7,6 +7,10 @@ use std::{
     },
     env,
     sync::{
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
         Arc,
         Once,
     },
@@ -540,11 +544,31 @@ impl<RT: Runtime> Clone for IsolateClient<RT> {
     }
 }
 
+/// Request deterministic V8 execution for simulation testing.
+///
+/// Must be called **before** `initialize_v8()`. Enables V8's `--predictable`
+/// flag (disabling background JIT compilation, concurrent GC sweeping, and
+/// randomized hash seeds) and forces a single V8 platform thread. This
+/// eliminates non-determinism caused by V8's shared background thread pool
+/// when multiple simulations run in parallel.
+static V8_DETERMINISTIC: AtomicBool = AtomicBool::new(false);
+
+pub fn configure_v8_for_determinism() {
+    V8_DETERMINISTIC.store(true, Ordering::SeqCst);
+}
+
+/// Returns whether V8 deterministic mode was requested.
+pub fn is_v8_deterministic() -> bool {
+    V8_DETERMINISTIC.load(Ordering::SeqCst)
+}
+
 pub fn initialize_v8() {
     ensure_utc().expect("Failed to setup timezone");
     static V8_INIT: Once = Once::new();
     V8_INIT.call_once(|| {
         let _s = static_span!("initialize_v8");
+
+        let deterministic = V8_DETERMINISTIC.load(Ordering::SeqCst);
 
         // `deno_core_icudata` internally loads this with proper 16-byte alignment.
         assert!(v8::icu::set_common_data_74(deno_core_icudata::ICU_DATA).is_ok());
@@ -566,7 +590,14 @@ pub fn initialize_v8() {
         // not compatible with how Rust tests run and additionally, the version of V8
         // used at the time of this comment has a bug with PKU on certain Intel CPUs.
         // See https://github.com/denoland/rusty_v8/issues/1381
-        let platform = v8::new_unprotected_default_platform(*V8_THREADS, false).make_shared();
+        //
+        // In deterministic mode we force a single platform thread. V8's
+        // `--predictable` flag disables background compilation and concurrent GC,
+        // so no background work is generated, but constraining the thread pool
+        // to 1 is belt-and-suspenders against any remaining platform tasks.
+        let thread_pool_size = if deterministic { 1 } else { *V8_THREADS };
+        let platform =
+            v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
 
         // Calls into `v8::V8::InitializePlatform`, sets global platform.
         V8::initialize_platform(platform);
@@ -589,6 +620,13 @@ pub fn initialize_v8() {
             "--stack-size=2048".to_string(),
             "--js-base-64".to_string(),
         ];
+        // In deterministic mode, disable background compilation, concurrent
+        // sweeping, and randomized hash seeds so V8 execution is fully
+        // reproducible across runs.
+        if deterministic {
+            argv.push("--predictable".to_string());
+            tracing::info!("V8 deterministic mode enabled (--predictable, thread_pool_size=1)");
+        }
         if let Ok(flags) = env::var("ISOLATE_V8_FLAGS") {
             argv.extend(
                 flags
@@ -1057,17 +1095,36 @@ impl<RT: Runtime> UdfCallback<RT> for IsolateClient<RT> {
     }
 }
 
+/// In testing/DST mode, use a custom oneshot channel that defers waker
+/// fires to the Tokio thread (via `defer_waker_to_tokio_thread`) to avoid
+/// non-deterministic injection-queue scheduling.  In production, use the
+/// standard `tokio::sync::oneshot`.
+#[cfg(any(test, feature = "testing"))]
+pub type DstDoneSender<T> = common::runtime::testing::DstOneshotSender<T>;
+#[cfg(not(any(test, feature = "testing")))]
+pub type DstDoneSender<T> = oneshot::Sender<T>;
+
+#[cfg(any(test, feature = "testing"))]
+type DoneReceiver = common::runtime::testing::DstOneshotReceiver<ActiveWorkerState>;
+#[cfg(not(any(test, feature = "testing")))]
+type DoneReceiver = oneshot::Receiver<ActiveWorkerState>;
+
+fn dst_done_channel() -> (DstDoneSender<ActiveWorkerState>, DoneReceiver) {
+    #[cfg(any(test, feature = "testing"))]
+    {
+        common::runtime::testing::dst_oneshot_channel()
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        oneshot::channel()
+    }
+}
+
 pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     rt: RT,
     worker: W,
     /// Vec of channels for sending work to individual workers.
-    worker_senders: Vec<
-        mpsc::Sender<(
-            Request<RT>,
-            oneshot::Sender<ActiveWorkerState>,
-            ActiveWorkerState,
-        )>,
-    >,
+    worker_senders: Vec<mpsc::Sender<(Request<RT>, DstDoneSender<ActiveWorkerState>, ActiveWorkerState)>>,
     /// Map from client_id to stack of workers (implemented with a deque). The
     /// most recently used worker for a given client is at the front of the
     /// deque. These workers were previously used by this client, but may
@@ -1077,7 +1134,7 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     /// new client.
     available_workers: HashMap<String, VecDeque<IdleWorkerState>>,
     /// Set of futures awaiting a response from an active worker.
-    in_progress_workers: FuturesUnordered<oneshot::Receiver<ActiveWorkerState>>,
+    in_progress_workers: FuturesUnordered<DoneReceiver>,
     /// Counts the number of active workers per client. Should only contain a
     /// key if the value is greater than 0.
     in_progress_count: HashMap<String, usize>,
@@ -1162,7 +1219,39 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         tracing::warn!("Worker has shut down uncleanly. Shutting down {} scheduler.", self.worker.config().name);
                         return;
                     };
-                    self.handle_completed_worker(completed_worker);
+                    // Drain all *currently-ready* completions and process
+                    // them in worker_id order.  `FuturesUnordered` uses an
+                    // atomic LIFO ready-list, so when two OS-thread
+                    // `done_sender.send()` wakeups land between scheduler
+                    // polls the return order is timing-dependent.  Sorting
+                    // makes the `available_workers` deque (and therefore
+                    // `get_worker` selection) deterministic across replays.
+                    let mut completions = vec![completed_worker];
+                    while let Some(result) =
+                        futures::FutureExt::now_or_never(
+                            self.in_progress_workers.next()
+                        ).flatten()
+                    {
+                        let Ok(w) = result else {
+                            tracing::warn!(
+                                "Worker has shut down uncleanly. Shutting down {} scheduler.",
+                                self.worker.config().name
+                            );
+                            return;
+                        };
+                        completions.push(w);
+                    }
+                    completions.sort_by_key(|w| w.worker_id);
+                    // #region agent log
+                    {
+                        let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
+                        let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
+                        common::runtime::testing::dst_log(&format!("SCHED completed {:?} @{}", ids, wpc));
+                    }
+                    // #endregion
+                    for w in completions {
+                        self.handle_completed_worker(w);
+                    }
                 }
                 request = receiver.next() => {
                     let Some((request, expired)) = request else {
@@ -1177,7 +1266,7 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         request.reject();
                         continue;
                     };
-                    let (done_sender, done_receiver) = oneshot::channel();
+                    let (done_sender, done_receiver) = dst_done_channel();
                     self.in_progress_workers.push(done_receiver);
                     let entry = self
                         .in_progress_count
@@ -1243,10 +1332,30 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             return None;
         }
         // Try to find an existing worker for this client.
+        //
+        // Select the most-recently-used worker (highest `last_used_ts`),
+        // breaking ties by `worker_id`.  `last_used_ts` uses the runtime's
+        // virtual monotonic clock, which is deterministic.  This makes
+        // selection independent of `VecDeque` insertion order, which can
+        // vary when OS-thread completion ordering is non-deterministic
+        // (e.g. `FuturesUnordered` LIFO ready-list under CPU contention).
         if let Some((client_id, mut workers)) = self.available_workers.remove_entry(client_id) {
-            let worker = workers
-                .pop_front()
+            let (idx, _) = workers
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    a.last_used_ts
+                        .cmp(&b.last_used_ts)
+                        .then_with(|| a.worker_id.cmp(&b.worker_id))
+                })
                 .expect("Available worker map should never contain an empty list");
+            let worker = workers.remove(idx).expect("index is valid");
+            // #region agent log
+            {
+                let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
+                common::runtime::testing::dst_log(&format!("SCHED get_worker -> {} @{}", worker.worker_id, wpc));
+            }
+            // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
             }
@@ -1266,12 +1375,13 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             self.handles
                 .lock()
                 .push(IsolateWorkerHandle { handle, heap_stats });
+            let new_id = self.worker_senders.len() - 1;
             tracing::info!(
                 "Created {} isolate worker {}",
                 self.worker.config().name,
-                self.worker_senders.len() - 1
+                new_id
             );
-            return Some(self.worker_senders.len() - 1);
+            return Some(new_id);
         }
         // No existing worker for this client and we've already started the max number
         // of workers -- just grab the least recently used worker. This worker is least
@@ -1349,7 +1459,7 @@ impl SharedIsolateHeapStats {
 pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
     async fn service_requests<T>(
         self,
-        reqs: mpsc::Receiver<(Request<RT>, oneshot::Sender<T>, T)>,
+        reqs: mpsc::Receiver<(Request<RT>, DstDoneSender<T>, T)>,
         heap_stats: SharedIsolateHeapStats,
     ) {
         let IsolateConfig {
@@ -1358,7 +1468,7 @@ pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
             ..
         } = self.config();
         let mut reqs = std::pin::pin!(ReceiverStream::new(reqs).peekable());
-        let mut ready: Option<(oneshot::Sender<_>, _)> = None;
+        let mut ready: Option<(DstDoneSender<_>, _)> = None;
         'recreate_isolate: loop {
             let mut last_client_id: Option<String> = None;
             let mut last_request: Option<String> = None;

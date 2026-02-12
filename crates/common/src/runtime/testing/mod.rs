@@ -1,9 +1,21 @@
 mod thread_future;
+pub use thread_future::defer_waker_to_tokio_thread;
+
+mod dst_oneshot;
+pub use dst_oneshot::{
+    dst_oneshot_channel,
+    DstOneshotReceiver,
+    DstOneshotSender,
+};
 
 use std::{
     self,
     pin::Pin,
     sync::{
+        atomic::{
+            AtomicU32,
+            Ordering,
+        },
         Arc,
         LazyLock,
         Weak,
@@ -13,6 +25,20 @@ use std::{
         SystemTime,
     },
 };
+
+// #region agent log
+pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
+pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
+pub fn dst_log(msg: &str) {
+    use std::io::Write;
+    let r = DST_RUN_ID.load(Ordering::Relaxed);
+    if r == 0 { return; }
+    let p = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), r);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
+// #endregion
 
 use futures::{
     future::FusedFuture,
@@ -116,10 +142,17 @@ impl TestDriver {
 impl Drop for TestDriver {
     fn drop(&mut self) {
         assert_eq!(Arc::strong_count(&self.state), 1);
+        // Use a blocking shutdown so all spawned tasks (including
+        // `ThreadFuture` OS threads hosting V8 isolates) are fully
+        // joined before this `TestDriver` is dropped.
+        // `shutdown_background()` is non-blocking and can leave V8
+        // worker threads alive, causing the V8 platform thread to
+        // serve stale isolates concurrently with a subsequent run's
+        // isolates — a source of cross-run non-determinism.
         self.tokio_runtime
             .take()
             .expect("tokio_runtime disappeared?")
-            .shutdown_background();
+            .shutdown_timeout(std::time::Duration::from_secs(5));
     }
 }
 
