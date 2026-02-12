@@ -2,18 +2,13 @@ mod thread_future;
 pub use thread_future::defer_waker_to_tokio_thread;
 
 mod dst_oneshot;
-pub use dst_oneshot::{
-    dst_oneshot_channel,
-    DstOneshotReceiver,
-    DstOneshotSender,
-};
-
 use std::{
     self,
     pin::Pin,
     sync::{
         atomic::{
             AtomicU32,
+            AtomicU64,
             Ordering,
         },
         Arc,
@@ -26,16 +21,46 @@ use std::{
     },
 };
 
+pub use dst_oneshot::{
+    dst_oneshot_channel,
+    DstOneshotReceiver,
+    DstOneshotSender,
+};
+
 // #region agent log
 pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
 pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
-pub fn dst_log(msg: &str) {
+pub static DST_SEED: AtomicU64 = AtomicU64::new(0);
+pub static DST_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
+pub fn dst_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
     use std::io::Write;
-    let r = DST_RUN_ID.load(Ordering::Relaxed);
-    if r == 0 { return; }
-    let p = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), r);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = writeln!(f, "{}", msg);
+    let run_id = DST_RUN_ID.load(Ordering::Relaxed);
+    if run_id == 0 {
+        return;
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let payload = serde_json::json!({
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": {
+            "seed": DST_SEED.load(Ordering::Relaxed),
+            "runId": run_id,
+            "threadFutureId": DST_TF_ID.load(Ordering::Relaxed),
+            "eventSeq": DST_EVENT_SEQ.fetch_add(1, Ordering::Relaxed),
+            "details": data,
+        },
+        "timestamp": timestamp,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/opt/cursor/logs/debug.log")
+    {
+        let _ = writeln!(f, "{payload}");
     }
 }
 // #endregion

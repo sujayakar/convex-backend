@@ -596,8 +596,7 @@ pub fn initialize_v8() {
         // so no background work is generated, but constraining the thread pool
         // to 1 is belt-and-suspenders against any remaining platform tasks.
         let thread_pool_size = if deterministic { 1 } else { *V8_THREADS };
-        let platform =
-            v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
+        let platform = v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
 
         // Calls into `v8::V8::InitializePlatform`, sets global platform.
         V8::initialize_platform(platform);
@@ -1124,7 +1123,13 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     rt: RT,
     worker: W,
     /// Vec of channels for sending work to individual workers.
-    worker_senders: Vec<mpsc::Sender<(Request<RT>, DstDoneSender<ActiveWorkerState>, ActiveWorkerState)>>,
+    worker_senders: Vec<
+        mpsc::Sender<(
+            Request<RT>,
+            DstDoneSender<ActiveWorkerState>,
+            ActiveWorkerState,
+        )>,
+    >,
     /// Map from client_id to stack of workers (implemented with a deque). The
     /// most recently used worker for a given client is at the front of the
     /// deque. These workers were previously used by this client, but may
@@ -1246,7 +1251,16 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                     {
                         let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
                         let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                        common::runtime::testing::dst_log(&format!("SCHED completed {:?} @{}", ids, wpc));
+                        common::runtime::testing::dst_log(
+                            "H1",
+                            "isolate::client::SharedIsolateScheduler::run",
+                            "scheduler_completed_batch",
+                            serde_json::json!({
+                                "completedWorkerIds": ids,
+                                "workerPollCount": wpc,
+                                "inProgressCountLen": self.in_progress_count.len(),
+                            }),
+                        );
                     }
                     // #endregion
                     for w in completions {
@@ -1352,8 +1366,20 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             let worker = workers.remove(idx).expect("index is valid");
             // #region agent log
             {
-                let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                common::runtime::testing::dst_log(&format!("SCHED get_worker -> {} @{}", worker.worker_id, wpc));
+                let wpc = tokio::runtime::Handle::current()
+                    .metrics()
+                    .worker_poll_count(0);
+                common::runtime::testing::dst_log(
+                    "H1",
+                    "isolate::client::SharedIsolateScheduler::get_worker",
+                    "get_worker_existing_client",
+                    serde_json::json!({
+                        "selectedWorkerId": worker.worker_id,
+                        "availableRemaining": workers.len(),
+                        "workerPollCount": wpc,
+                        "clientId": client_id,
+                    }),
+                );
             }
             // #endregion
             if !workers.is_empty() {

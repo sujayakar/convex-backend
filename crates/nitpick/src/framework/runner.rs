@@ -1,4 +1,5 @@
 use std::{
+    sync::atomic::Ordering,
     task::Poll,
     time::{
         Duration,
@@ -27,14 +28,20 @@ use futures::{
 };
 use rand::Rng;
 use runtime::testing::{
+    dst_log,
     TestDriver,
     TestRuntime,
 };
 // #region agent log
-use runtime::testing::{DST_RUN_ID, DST_TF_ID};
-use std::sync::atomic::Ordering;
-// #endregion
+use runtime::testing::{
+    DST_EVENT_SEQ,
+    DST_RUN_ID,
+    DST_SEED,
+    DST_TF_ID,
+};
+use serde_json::json;
 
+// #endregion
 use super::scenario::{
     Scenario,
     TestRun,
@@ -178,15 +185,36 @@ async fn run_transactions<TR: TestRun>(
                 break;
             }
         }
+        let mut drained_ok = 0usize;
+        let mut drained_occ = 0usize;
         for r in results {
             if let Err(e) = r {
                 if e.is_occ() {
                     tracing::debug!("[nitpick] Transaction OCC'd");
+                    drained_occ += 1;
                     continue;
                 }
                 return Err(e);
             }
             num_completed += 1;
+            drained_ok += 1;
+        }
+        if drained_ok > 0 || drained_occ > 0 {
+            // #region agent log
+            dst_log(
+                "H2",
+                "nitpick::runner::run_transactions",
+                "drain_results",
+                json!({
+                    "drainedOk": drained_ok,
+                    "drainedOcc": drained_occ,
+                    "numCompleted": num_completed,
+                    "inFlight": transactions.len(),
+                    "nextTxId": next_tx_id,
+                    "targetTransactions": config.transactions,
+                }),
+            );
+            // #endregion
         }
         if num_completed >= config.transactions {
             break;
@@ -222,23 +250,50 @@ async fn run_transactions<TR: TestRun>(
     let num_polls = tokio::runtime::Handle::current()
         .metrics()
         .worker_poll_count(0);
+    // #region agent log
+    dst_log(
+        "H3",
+        "nitpick::runner::run_transactions",
+        "sample_worker_poll_count",
+        json!({
+            "numCompleted": num_completed,
+            "inFlight": transactions.len(),
+            "nextTxId": next_tx_id,
+            "numPolls": num_polls,
+        }),
+    );
+    // #endregion
     Ok(num_polls as usize)
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
 // #region agent log
-const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1; // was 0.1
+const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
 // #endregion
 
 /// Run a scenario with the given config on a dedicated thread with a large
-/// stack. Probabilistically checks determinism by re-running with the same seed.
+/// stack. Probabilistically checks determinism by re-running with the same
+/// seed.
 pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
             // #region agent log
+            DST_SEED.store(config.seed, Ordering::Relaxed);
             DST_RUN_ID.store(1, Ordering::Relaxed);
             DST_TF_ID.store(0, Ordering::Relaxed);
+            DST_EVENT_SEQ.store(0, Ordering::Relaxed);
+            dst_log(
+                "H1",
+                "nitpick::runner::run_scenario",
+                "run1_start",
+                json!({
+                    "scenario": scenario.name(),
+                    "seed": config.seed,
+                    "concurrency": config.concurrency,
+                    "transactions": config.transactions,
+                }),
+            );
             // #endregion
             let (run1, should_check) = {
                 let td = TestDriver::new_with_seed(config.seed);
@@ -287,12 +342,41 @@ fn check_determinism<S: Scenario>(
         config.seed
     );
     // #region agent log
+    DST_SEED.store(config.seed, Ordering::Relaxed);
     DST_RUN_ID.store(2, Ordering::Relaxed);
     DST_TF_ID.store(0, Ordering::Relaxed);
+    DST_EVENT_SEQ.store(0, Ordering::Relaxed);
+    dst_log(
+        "H1",
+        "nitpick::runner::check_determinism",
+        "run2_start",
+        json!({
+            "scenario": scenario.name(),
+            "seed": config.seed,
+            "concurrency": config.concurrency,
+            "transactions": config.transactions,
+            "run1NumPolls": run1.num_polls,
+            "run1RngNextU64": run1.rng_next_u64,
+        }),
+    );
     // #endregion
     let td = TestDriver::new_with_seed(config.seed);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
+        // #region agent log
+        dst_log(
+            "H4",
+            "nitpick::runner::check_determinism",
+            "determinism_mismatch",
+            json!({
+                "run1NumPolls": run1.num_polls,
+                "run2NumPolls": run2.num_polls,
+                "run1RngNextU64": run1.rng_next_u64,
+                "run2RngNextU64": run2.rng_next_u64,
+                "sameOutput": run1.output == run2.output,
+            }),
+        );
+        // #endregion
         anyhow::bail!(
             "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
             config.seed,

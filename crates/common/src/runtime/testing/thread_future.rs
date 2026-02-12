@@ -128,8 +128,22 @@ impl Future for ThreadFuture {
         // runtime thread, `Waker::wake()` routes through
         // `Schedule::schedule` → local queue (deterministic), instead of
         // the injection queue (non-deterministic).
+        let mut drained_deferred_wakers = 0usize;
         while let Ok(waker) = this.deferred_waker_rx.try_recv() {
+            drained_deferred_wakers += 1;
             waker.wake();
+        }
+        if drained_deferred_wakers > 0 {
+            // #region agent log
+            super::dst_log(
+                "H4",
+                "common::runtime::testing::ThreadFuture::poll",
+                "drained_deferred_wakers",
+                serde_json::json!({
+                    "drainedDeferredWakers": drained_deferred_wakers,
+                }),
+            );
+            // #endregion
         }
 
         match response {
