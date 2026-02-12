@@ -4,6 +4,10 @@ use std::{
     self,
     pin::Pin,
     sync::{
+        atomic::{
+            AtomicU32,
+            Ordering,
+        },
         Arc,
         LazyLock,
         Weak,
@@ -13,6 +17,20 @@ use std::{
         SystemTime,
     },
 };
+
+// #region agent log
+pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
+pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
+pub fn dst_log(msg: &str) {
+    use std::io::Write;
+    let r = DST_RUN_ID.load(Ordering::Relaxed);
+    if r == 0 { return; }
+    let p = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), r);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
+// #endregion
 
 use futures::{
     future::FusedFuture,

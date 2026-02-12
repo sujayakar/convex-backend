@@ -557,6 +557,11 @@ pub fn configure_v8_for_determinism() {
     V8_DETERMINISTIC.store(true, Ordering::SeqCst);
 }
 
+/// Returns whether V8 deterministic mode was requested.
+pub fn is_v8_deterministic() -> bool {
+    V8_DETERMINISTIC.load(Ordering::SeqCst)
+}
+
 pub fn initialize_v8() {
     ensure_utc().expect("Failed to setup timezone");
     static V8_INIT: Once = Once::new();
@@ -1218,6 +1223,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         completions.push(w);
                     }
                     completions.sort_by_key(|w| w.worker_id);
+                    // #region agent log
+                    {
+                        let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
+                        common::runtime::testing::dst_log(&format!("SCHED completed {:?}", ids));
+                    }
+                    // #endregion
                     for w in completions {
                         self.handle_completed_worker(w);
                     }
@@ -1319,6 +1330,9 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 })
                 .expect("Available worker map should never contain an empty list");
             let worker = workers.remove(idx).expect("index is valid");
+            // #region agent log
+            common::runtime::testing::dst_log(&format!("SCHED get_worker -> {}", worker.worker_id));
+            // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
             }

@@ -30,6 +30,10 @@ use runtime::testing::{
     TestDriver,
     TestRuntime,
 };
+// #region agent log
+use runtime::testing::{DST_RUN_ID, DST_TF_ID};
+use std::sync::atomic::Ordering;
+// #endregion
 
 use super::scenario::{
     Scenario,
@@ -222,7 +226,9 @@ async fn run_transactions<TR: TestRun>(
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
-const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1;
+// #region agent log
+const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0; // was 0.1
+// #endregion
 
 /// Run a scenario with the given config on a dedicated thread with a large
 /// stack. Probabilistically checks determinism by re-running with the same seed.
@@ -230,6 +236,10 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
+            // #region agent log
+            DST_RUN_ID.store(1, Ordering::Relaxed);
+            DST_TF_ID.store(0, Ordering::Relaxed);
+            // #endregion
             let (run1, should_check) = {
                 let td = TestDriver::new_with_seed(config.seed);
                 let run1 = run_once(&scenario, &td, config)?;
@@ -276,6 +286,10 @@ fn check_determinism<S: Scenario>(
         "[nitpick] Running determinism check for seed {}",
         config.seed
     );
+    // #region agent log
+    DST_RUN_ID.store(2, Ordering::Relaxed);
+    DST_TF_ID.store(0, Ordering::Relaxed);
+    // #endregion
     let td = TestDriver::new_with_seed(config.seed);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
