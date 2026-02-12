@@ -109,7 +109,11 @@ fn run_once<S: Scenario>(
         anyhow::Ok(run)
     })?;
 
-    let num_polls = td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
+    // Fork the RNG for run_transactions so that the VERIFY_PROBABILITY
+    // check and per-transaction RNG derivation use a deterministic stream
+    // independent of background workers consuming the shared test RNG.
+    let tx_rt = td.rt().fork_rng();
+    let num_polls = td.run_until(run_transactions(tx_rt, &application, &test_run, config))?;
 
     // Always run validation at the end.
     let start = Instant::now();
