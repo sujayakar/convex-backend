@@ -1150,7 +1150,7 @@ impl LeaderRetentionWorkers {
         // Abuse backoff to get jitter by passing in the same constant for initial and
         // max backoff.
         let mut initial_backoff = Backoff::new(delay, delay);
-        let delay = common::runtime::backoff_delay(&mut initial_backoff, &rt);
+        let delay = common::runtime::backoff_delay(&mut initial_backoff, rt);
         rt.wait(delay).await;
     }
 
