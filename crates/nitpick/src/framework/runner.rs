@@ -190,10 +190,15 @@ async fn run_transactions<TR: TestRun>(
         }
 
         // Refill transactions.
+        // Each transaction gets a forked RNG so that concurrent transactions
+        // don't share the global test RNG.  Without this, the order of
+        // `rt.rng()` calls depends on task scheduling, causing
+        // non-deterministic RNG state across replays.
         while transactions.len() < config.concurrency && next_tx_id < max_tx_attempts {
             let tx_id = next_tx_id;
             next_tx_id += 1;
-            let future = test_run.run_transaction(rt.clone(), application);
+            let tx_rt = rt.fork_rng();
+            let future = test_run.run_transaction(tx_rt, application);
             let future = async move {
                 tracing::debug!("[nitpick] tx {tx_id} starting");
                 let r = future.await;

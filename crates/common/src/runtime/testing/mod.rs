@@ -149,6 +149,7 @@ impl TestDriver {
                 .handle()
                 .clone(),
             state: Arc::downgrade(&self.state),
+            _owned_state: None,
             pause_client: self.pause_client.clone(),
             event_recorder,
         }
@@ -193,6 +194,9 @@ struct TestRuntimeState {
 pub struct TestRuntime {
     tokio_handle: tokio::runtime::Handle,
     state: Weak<Mutex<TestRuntimeState>>,
+    /// If this runtime was created via `fork_rng()`, holds the owning Arc
+    /// to keep the forked state alive.
+    _owned_state: Option<Arc<Mutex<TestRuntimeState>>>,
     pause_client: PauseClient,
     event_recorder: crate::event_recorder::EventRecorder,
 }
@@ -209,6 +213,28 @@ impl TestRuntime {
 
     pub async fn advance_time(&self, duration: Duration) {
         tokio::time::advance(duration).await
+    }
+
+    /// Create a copy of this runtime with an independent RNG, seeded from
+    /// the current shared RNG.  This allows concurrent tasks to consume
+    /// their own deterministic RNG without the ordering of RNG calls
+    /// depending on task scheduling.
+    pub fn fork_rng(&self) -> Self {
+        let seed: u64 = self.with_state(|state| state.rng.next_u64());
+        let forked_rng = ChaCha12Rng::seed_from_u64(seed);
+        let creation_time = self.with_state(|state| state.creation_time);
+        let owned = Arc::new(Mutex::new(TestRuntimeState {
+            rng: forked_rng,
+            creation_time,
+            rng_next_u64_calls: 0,
+        }));
+        TestRuntime {
+            tokio_handle: self.tokio_handle.clone(),
+            state: Arc::downgrade(&owned),
+            _owned_state: Some(owned),
+            pause_client: self.pause_client.clone(),
+            event_recorder: self.event_recorder.clone(),
+        }
     }
 }
 
