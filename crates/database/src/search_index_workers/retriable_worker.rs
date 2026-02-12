@@ -94,6 +94,20 @@ async fn retry_failures_impl<RT: Runtime>(
                 report_error(&mut e).await;
             }
             let delay = backoff.fail(&mut runtime.rng());
+            // #region agent log
+            common::runtime::testing::dst_log(
+                "H5",
+                "database::search_index_workers::retriable_worker::retry_failures_impl",
+                "search_worker_backoff",
+                serde_json::json!({
+                    "workerName": name,
+                    "delayMs": delay.as_millis(),
+                    "backoffFailures": backoff.failures(),
+                    "isOverloaded": is_overloaded,
+                    "isOcc": e.is_occ(),
+                }),
+            );
+            // #endregion
             tracing::error!(
                 "{name} died, num_failures: {}. Backing off for {}ms (max: {}ms), expected: {}: \
                  {e:#}",
