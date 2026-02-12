@@ -30,6 +30,13 @@ use runtime::testing::{
     TestDriver,
     TestRuntime,
 };
+// #region agent log
+use runtime::testing::{
+    DST_RUN_ID,
+    DST_TF_ID,
+};
+use std::sync::atomic::Ordering;
+// #endregion
 
 use super::scenario::{
     Scenario,
@@ -69,33 +76,11 @@ pub struct TestResult<T> {
     pub trace: Vec<TraceEvent>,
 }
 
-/// Maximum allowed jitter in `num_polls` between deterministic replays.
-///
-/// `worker_poll_count` includes every spawned-task poll on the Tokio
-/// current-thread runtime.  V8 isolate workers complete UDFs on OS
-/// threads and notify the scheduler via `tokio::sync::oneshot::send()`.
-/// This fires the scheduler-task's waker from outside the runtime thread,
-/// which Tokio routes to its cross-thread *injection queue*.  The
-/// current-thread scheduler only pops that queue when the local run-queue
-/// is empty or on a periodic global tick (every ~31 polls).
-///
-/// Under CPU contention the exact tick at which the entry is consumed
-/// varies.  If it is consumed *during* the transaction loop the scheduler
-/// can immediately assign the freed worker to the next pending request,
-/// generating downstream scheduling polls.  If it is consumed *after* the
-/// loop (no pending requests) those polls never happen.  This produces a
-/// small, bounded jitter in `worker_poll_count` — typically ±1 — while
-/// the logical execution (RNG state, output) remains identical.
-///
-/// A tolerance of 2 accommodates ±1 from a single deferred completion
-/// plus a second ±1 if two workers race on the same tick boundary.
-const NUM_POLLS_TOLERANCE: usize = 2;
-
 impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
         // Trace is excluded from equality -- it contains wall-clock timing
         // that may differ between runs.
-        self.num_polls.abs_diff(other.num_polls) <= NUM_POLLS_TOLERANCE
+        self.num_polls == other.num_polls
             && self.rng_next_u64 == other.rng_next_u64
             && self.output == other.output
     }
@@ -244,7 +229,7 @@ async fn run_transactions<TR: TestRun>(
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
-const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1;
+const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
 
 /// Run a scenario with the given config on a dedicated thread with a large
 /// stack. Probabilistically checks determinism by re-running with the same seed.
@@ -252,6 +237,10 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
+            // #region agent log
+            DST_RUN_ID.store(1, Ordering::Relaxed);
+            DST_TF_ID.store(0, Ordering::Relaxed);
+            // #endregion
             let (run1, should_check) = {
                 let td = TestDriver::new_with_seed(config.seed);
                 let run1 = run_once(&scenario, &td, config)?;
@@ -298,6 +287,10 @@ fn check_determinism<S: Scenario>(
         "[nitpick] Running determinism check for seed {}",
         config.seed
     );
+    // #region agent log
+    DST_RUN_ID.store(2, Ordering::Relaxed);
+    DST_TF_ID.store(0, Ordering::Relaxed);
+    // #endregion
     let td = TestDriver::new_with_seed(config.seed);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {

@@ -75,7 +75,19 @@ pub fn module_origin<'s>(
 /// In particular, this runs minor GC tasks that are scheduled.
 pub fn pump_message_loop(isolate: &v8::Isolate) {
     let platform = v8::V8::get_current_platform();
-    while v8::Platform::pump_message_loop(&platform, isolate, false /* wait_for_work */) {}
+    // #region agent log
+    let mut pumped: u32 = 0;
+    // #endregion
+    while v8::Platform::pump_message_loop(&platform, isolate, false /* wait_for_work */) {
+        // #region agent log
+        pumped += 1;
+        // #endregion
+    }
+    // #region agent log
+    if pumped > 0 {
+        common::runtime::testing::dst_log(&format!("PUMP {}", pumped));
+    }
+    // #endregion
 }
 
 /// Taken from `deno_core::bindings::throw_type_error`.
