@@ -9,6 +9,14 @@ pub use dst_oneshot::{
     DstOneshotSender,
 };
 
+mod dst_mpsc;
+pub use dst_mpsc::{
+    dst_mpsc_channel,
+    DstMpscReceiver,
+    DstMpscSender,
+    TrySendError as DstTrySendError,
+};
+
 use std::{
     pin::Pin,
     sync::{

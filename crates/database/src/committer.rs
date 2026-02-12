@@ -94,13 +94,36 @@ use parking_lot::Mutex;
 use prometheus::VMHistogram;
 use rand::Rng;
 use search::TextIndexWriteSize;
-use tokio::sync::{
-    mpsc::{
-        self,
-        error::TrySendError,
-    },
-    oneshot,
-};
+use tokio::sync::oneshot;
+
+// In testing/DST mode, use a custom MPSC channel that defers waker fires
+// from V8 worker OS threads to the Tokio runtime thread, preventing
+// non-deterministic injection-queue scheduling.
+#[cfg(any(test, feature = "testing"))]
+type CommitterSender = common::runtime::testing::DstMpscSender<CommitterMessage>;
+#[cfg(any(test, feature = "testing"))]
+type CommitterReceiver = common::runtime::testing::DstMpscReceiver<CommitterMessage>;
+#[cfg(any(test, feature = "testing"))]
+fn committer_channel(
+    capacity: usize,
+) -> (CommitterSender, CommitterReceiver) {
+    common::runtime::testing::dst_mpsc_channel(capacity)
+}
+#[cfg(any(test, feature = "testing"))]
+type CommitterTrySendError<T> = common::runtime::testing::DstTrySendError<T>;
+
+#[cfg(not(any(test, feature = "testing")))]
+type CommitterSender = tokio::sync::mpsc::Sender<CommitterMessage>;
+#[cfg(not(any(test, feature = "testing")))]
+type CommitterReceiver = tokio::sync::mpsc::Receiver<CommitterMessage>;
+#[cfg(not(any(test, feature = "testing")))]
+fn committer_channel(
+    capacity: usize,
+) -> (CommitterSender, CommitterReceiver) {
+    tokio::sync::mpsc::channel(capacity)
+}
+#[cfg(not(any(test, feature = "testing")))]
+type CommitterTrySendError<T> = tokio::sync::mpsc::error::TrySendError<T>;
 use tokio_util::task::AbortOnDropHandle;
 use usage_tracking::FunctionUsageTracker;
 use value::{
@@ -216,7 +239,7 @@ impl<RT: Runtime> Committer<RT> {
     ) -> CommitterClient {
         let persistence_reader = persistence.reader();
         let conflict_checker = PendingWrites::new();
-        let (tx, rx) = mpsc::channel(*COMMITTER_QUEUE_SIZE);
+        let (tx, rx) = committer_channel(*COMMITTER_QUEUE_SIZE);
         let snapshot_reader = snapshot_manager.reader();
         let committer = Self {
             pending_writes: conflict_checker,
@@ -250,7 +273,7 @@ impl<RT: Runtime> Committer<RT> {
         }
     }
 
-    async fn go(mut self, mut rx: mpsc::Receiver<CommitterMessage>) -> anyhow::Result<()> {
+    async fn go(mut self, mut rx: CommitterReceiver) -> anyhow::Result<()> {
         let mut last_bumped_repeatable_ts = self.runtime.monotonic_now();
         // Assume there were commits just before the backend restarted, so first do a
         // quick bump.
@@ -1157,7 +1180,7 @@ struct ValidatedDocumentWrite {
 #[derive(Clone)]
 pub struct CommitterClient {
     handle: Arc<Mutex<Box<dyn SpawnHandle>>>,
-    sender: mpsc::Sender<CommitterMessage>,
+    sender: CommitterSender,
     persistence_reader: Arc<dyn PersistenceReader>,
     retention_validator: Arc<dyn RetentionValidator>,
     snapshot_reader: Reader<SnapshotManager>,
@@ -1176,8 +1199,8 @@ impl CommitterClient {
             result: tx,
         };
         self.sender.try_send(message).map_err(|e| match e {
-            TrySendError::Full(..) => metrics::committer_full_error().into(),
-            TrySendError::Closed(..) => metrics::shutdown_error(),
+            CommitterTrySendError::Full(..) => metrics::committer_full_error().into(),
+            CommitterTrySendError::Closed(..) => metrics::shutdown_error(),
         })?;
         // The only reason we might fail here if the committer is shutting down.
         rx.await.map_err(|_| metrics::shutdown_error())?
@@ -1187,8 +1210,8 @@ impl CommitterClient {
         let (tx, rx) = oneshot::channel();
         let message = CommitterMessage::FinishTableSummaryBootstrap { result: tx };
         self.sender.try_send(message).map_err(|e| match e {
-            TrySendError::Full(..) => metrics::committer_full_error().into(),
-            TrySendError::Closed(..) => metrics::shutdown_error(),
+            CommitterTrySendError::Full(..) => metrics::committer_full_error().into(),
+            CommitterTrySendError::Closed(..) => metrics::shutdown_error(),
         })?;
         // The only reason we might fail here if the committer is shutting down.
         rx.await.map_err(|_| metrics::shutdown_error())?
@@ -1202,8 +1225,8 @@ impl CommitterClient {
         let (tx, rx) = oneshot::channel();
         let message = CommitterMessage::LoadIndexesIntoMemory { tables, result: tx };
         self.sender.try_send(message).map_err(|e| match e {
-            TrySendError::Full(..) => metrics::committer_full_error().into(),
-            TrySendError::Closed(..) => metrics::shutdown_error(),
+            CommitterTrySendError::Full(..) => metrics::committer_full_error().into(),
+            CommitterTrySendError::Closed(..) => metrics::shutdown_error(),
         })?;
         // The only reason we might fail here if the committer is shutting down.
         rx.await.map_err(|_| metrics::shutdown_error())?
@@ -1245,8 +1268,8 @@ impl CommitterClient {
             parent_trace: EncodedSpan::from_parent(),
         };
         self.sender.try_send(message).map_err(|e| match e {
-            TrySendError::Full(..) => metrics::committer_full_error().into(),
-            TrySendError::Closed(..) => metrics::shutdown_error(),
+            CommitterTrySendError::Full(..) => metrics::committer_full_error().into(),
+            CommitterTrySendError::Closed(..) => metrics::shutdown_error(),
         })?;
         let Ok(result) = rx.await else {
             anyhow::bail!(metrics::shutdown_error());
