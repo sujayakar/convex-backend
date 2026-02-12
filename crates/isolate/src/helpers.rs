@@ -73,21 +73,18 @@ pub fn module_origin<'s>(
 
 /// Run all queued tasks from this isolate's foreground task runner.
 /// In particular, this runs minor GC tasks that are scheduled.
+///
+/// In deterministic simulation mode this is a no-op.  The V8 platform's
+/// foreground task runner is shared across all isolates in the process.
+/// Under CPU contention from concurrent simulations, GC-related tasks
+/// land in the queue at timing-dependent points, making the number of
+/// pumped tasks non-deterministic across replay runs.
 pub fn pump_message_loop(isolate: &v8::Isolate) {
+    if crate::client::is_v8_deterministic() {
+        return;
+    }
     let platform = v8::V8::get_current_platform();
-    // #region agent log
-    let mut pumped: u32 = 0;
-    // #endregion
-    while v8::Platform::pump_message_loop(&platform, isolate, false /* wait_for_work */) {
-        // #region agent log
-        pumped += 1;
-        // #endregion
-    }
-    // #region agent log
-    if pumped > 0 {
-        common::runtime::testing::dst_log(&format!("PUMP {}", pumped));
-    }
-    // #endregion
+    while v8::Platform::pump_message_loop(&platform, isolate, false /* wait_for_work */) {}
 }
 
 /// Taken from `deno_core::bindings::throw_type_error`.
