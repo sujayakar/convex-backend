@@ -666,6 +666,13 @@ impl<RT: Runtime> IsolateClient<RT> {
         max_isolate_workers: usize,
         isolate_config: Option<IsolateConfig>,
     ) -> anyhow::Result<Self> {
+        let max_isolate_workers = if is_v8_deterministic() {
+            // In deterministic simulation mode, a single isolate worker removes
+            // cross-worker completion-order races that can perturb replay.
+            1
+        } else {
+            max_isolate_workers
+        };
         let concurrency_limit = if *FUNRUN_ISOLATE_ACTIVE_THREADS > 0 {
             ConcurrencyLimiter::new(*FUNRUN_ISOLATE_ACTIVE_THREADS)
         } else {
