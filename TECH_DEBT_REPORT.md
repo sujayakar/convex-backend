@@ -1,6 +1,6 @@
 # Technical Debt Review Report
 
-Date: 2026-02-12  
+Date: 2026-02-12
 Branch reviewed: `cursor/technical-debt-review-and-report-77c5` (tracking `main`)
 
 ## Scope and method
@@ -14,7 +14,7 @@ I reviewed:
 
 ## Executive summary
 
-Components are deeply integrated and clearly production-used, but key areas are still in transitional mode.  
+Components are deeply integrated and clearly production-used, but key areas are still in transitional mode.
 The largest cleanup opportunity is finishing the components namespace/data-model migration and removing compatibility shims.
 
 Top risk themes:
@@ -36,7 +36,7 @@ History/churn indicators:
 
 ### 1) Namespace migration still incomplete (`TableNamespace::by_component_TODO`)
 
-**Why this matters**  
+**Why this matters**
 The system still relies on a transitional namespace shim that currently resolves to `Global`, which can mask incorrect component scoping and keep migration debt alive across feature areas.
 
 **Current evidence**
@@ -77,7 +77,7 @@ The system still relies on a transitional namespace shim that currently resolves
 
 ### 2) Orphaned component namespaces are treated as expected steady-state
 
-**Why this matters**  
+**Why this matters**
 Code currently assumes incomplete component pushes can leave orphaned tables/namespaces and then works around them in billing/storage metrics and counts. This is safe-ish, but it normalizes inconsistent state and can hide data-model issues.
 
 **Current evidence**
@@ -112,7 +112,7 @@ Code currently assumes incomplete component pushes can leave orphaned tables/nam
 
 ### 3) HTTP action/component attribution is still incomplete in logs
 
-**Why this matters**  
+**Why this matters**
 HTTP actions are still logged under root component paths in some function-log paths, which weakens observability and attribution for component-heavy deployments.
 
 **Current evidence**
@@ -145,7 +145,7 @@ HTTP actions are still logged under root component paths in some function-log pa
 
 ### 4) Scheduled jobs are partially component-aware
 
-**Why this matters**  
+**Why this matters**
 Scheduled jobs have component-aware internals, but virtual table exposure and some cancellation paths still use TODO-era assumptions.
 
 **Current evidence**
@@ -173,7 +173,7 @@ Scheduled jobs have component-aware internals, but virtual table exposure and so
 
 ### 5) Streaming export parity is incomplete across endpoints
 
-**Why this matters**  
+**Why this matters**
 `document_deltas` still intentionally skips non-root components, while the broader streaming export stack has component-related upgrades. This creates inconsistent behavior between export surfaces.
 
 **Current evidence**
@@ -203,7 +203,7 @@ Scheduled jobs have component-aware internals, but virtual table exposure and so
 
 ### 6) CLI components push path still contains explicit ship-time shortcuts
 
-**Why this matters**  
+**Why this matters**
 The CLI components flow has known TODO shortcuts around debug bundle output, per-component runtime versioning, and unsupported component node actions.
 
 **Current evidence**
@@ -233,7 +233,7 @@ The CLI components flow has known TODO shortcuts around debug bundle output, per
 
 ### 7) Start/finish push response contract still carries transitional fields
 
-**Why this matters**  
+**Why this matters**
 `start_push`/`finish_push` still include compatibility logic around `exports`, increasing payload complexity and coupling old/new clients.
 
 **Current evidence**
@@ -260,7 +260,7 @@ The CLI components flow has known TODO shortcuts around debug bundle output, per
 
 ### 8) Determinism debt is acknowledged in component tests but unresolved
 
-**Why this matters**  
+**Why this matters**
 Tests explicitly note incorrect temporal/random guarantees across parent/child component execution.
 
 **Current evidence**
@@ -283,7 +283,7 @@ Tests explicitly note incorrect temporal/random guarantees across parent/child c
 
 ### 9) Component definition deletion still leaves module system tables
 
-**Why this matters**  
+**Why this matters**
 Deleting definitions without module-system-table cleanup risks long-tail metadata bloat and cleanup complexity.
 
 **Current evidence**
@@ -342,4 +342,3 @@ Deleting definitions without module-system-table cleanup risks long-tail metadat
 - **Application/API team:** deploy2 payload versioning, push contract cleanup.
 - **CLI/devex team:** components push-path TODOs, node-action support strategy.
 - **Observability team:** HTTP action component attribution and metric dimensions.
-
