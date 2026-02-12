@@ -18,10 +18,6 @@ pub struct ThreadFuture {
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
-    // #region agent log
-    dst_id: u32,
-    dst_poll_count: u32,
-    // #endregion
 }
 
 impl ThreadFuture {
@@ -57,17 +53,10 @@ impl ThreadFuture {
                 }
             })
             .expect("Failed to start new thread");
-        // #region agent log
-        let dst_id = super::DST_THREAD_FUTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // #endregion
         Self {
             std_handle: Some(std_handle),
             poll_request_tx: Some(poll_request_tx),
             poll_response_rx,
-            // #region agent log
-            dst_id,
-            dst_poll_count: 0,
-            // #endregion
         }
     }
 }
@@ -78,19 +67,6 @@ impl Future for ThreadFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        // #region agent log
-        this.dst_poll_count += 1;
-        let poll_num = this.dst_poll_count;
-        let tf_id = this.dst_id;
-        let polls_before = tokio::runtime::Handle::current()
-            .metrics()
-            .worker_poll_count(0);
-        super::dst_log(&format!(
-            "ThreadFuture[{}] poll#{} START worker_poll_count={}",
-            tf_id, poll_num, polls_before
-        ));
-        // #endregion
-
         // Forward the poll request to the thread.
         if this
             .poll_request_tx
@@ -100,24 +76,12 @@ impl Future for ThreadFuture {
             .is_err()
         {
             tracing::error!("ThreadFuture worker thread terminated.");
-            // #region agent log
-            super::dst_log(&format!(
-                "ThreadFuture[{}] poll#{} -> Ready(thread_terminated)",
-                tf_id, poll_num
-            ));
-            // #endregion
             return Poll::Ready(());
         }
         let response = match this.poll_response_rx.recv() {
             Ok(response) => response,
             Err(..) => {
                 tracing::error!("ThreadFuture worker thread terminated.");
-                // #region agent log
-                super::dst_log(&format!(
-                    "ThreadFuture[{}] poll#{} -> Ready(recv_error)",
-                    tf_id, poll_num
-                ));
-                // #endregion
                 return Poll::Ready(());
             },
         };
@@ -126,29 +90,9 @@ impl Future for ThreadFuture {
                 tracing::debug!(
                     "ThreadFuture completed (was_canceled: {was_canceled}), returning."
                 );
-                // #region agent log
-                let polls_after = tokio::runtime::Handle::current()
-                    .metrics()
-                    .worker_poll_count(0);
-                super::dst_log(&format!(
-                    "ThreadFuture[{}] poll#{} -> Ready(was_canceled={}) worker_poll_count={}",
-                    tf_id, poll_num, was_canceled, polls_after
-                ));
-                // #endregion
                 Poll::Ready(())
             },
-            Poll::Pending => {
-                // #region agent log
-                let polls_after = tokio::runtime::Handle::current()
-                    .metrics()
-                    .worker_poll_count(0);
-                super::dst_log(&format!(
-                    "ThreadFuture[{}] poll#{} -> Pending worker_poll_count={}",
-                    tf_id, poll_num, polls_after
-                ));
-                // #endregion
-                Poll::Pending
-            },
+            Poll::Pending => Poll::Pending,
         }
     }
 }

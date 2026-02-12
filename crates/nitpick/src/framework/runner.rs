@@ -31,15 +31,6 @@ use runtime::testing::{
     TestRuntime,
 };
 
-// #region agent log
-use runtime::testing::{
-    dst_log,
-    DST_RUN_ID,
-    DST_THREAD_FUTURE_ID,
-};
-use std::sync::atomic::Ordering;
-// #endregion
-
 use super::scenario::{
     Scenario,
     TestRun,
@@ -118,26 +109,10 @@ fn run_once<S: Scenario>(
 ) -> anyhow::Result<TestResult<<S::TestRun as TestRun>::Output>> {
     let test_start = Instant::now();
 
-    // #region agent log
-    let run_id = DST_RUN_ID.load(Ordering::Relaxed);
-    dst_log(&format!("=== run_once START (run_id={}, seed={}) ===", run_id, config.seed));
-    // #endregion
-
     let recorder = EventRecorder::active();
     let rt = td.rt_with_event_recorder(recorder.clone());
     let application = td.run_until(async {
-        // #region agent log
-        let polls_start = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("create_app: polls_before={}", polls_start));
-        // #endregion
-
         let application = Application::new_for_tests(&rt).await?;
-
-        // #region agent log
-        let polls_end = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("create_app: polls_after={}", polls_end));
-        // #endregion
-
         tracing::info!(
             "[nitpick] Created application in {:?}",
             test_start.elapsed()
@@ -146,18 +121,7 @@ fn run_once<S: Scenario>(
     })?;
 
     let test_run = td.run_until(async {
-        // #region agent log
-        let polls_start = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("start_run: polls_before={}", polls_start));
-        // #endregion
-
         let run = scenario.start_run(td.rt(), &application).await?;
-
-        // #region agent log
-        let polls_end = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("start_run: polls_after={}", polls_end));
-        // #endregion
-
         tracing::info!(
             "[nitpick] Initialized scenario {:?} in {:?}",
             scenario.name(),
@@ -170,41 +134,13 @@ fn run_once<S: Scenario>(
 
     // Always run validation at the end.
     let start = Instant::now();
-    td.run_until(async {
-        // #region agent log
-        let polls_start = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("validate: polls_before={}", polls_start));
-        // #endregion
-
-        test_run.validate(&application).await?;
-
-        // #region agent log
-        let polls_end = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("validate: polls_after={}", polls_end));
-        // #endregion
-
-        anyhow::Ok(())
-    })?;
+    td.run_until(test_run.validate(&application))?;
     tracing::info!(
         "[nitpick] Final verification passed in {:?}",
         start.elapsed()
     );
 
-    let output = td.run_until(async {
-        // #region agent log
-        let polls_start = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("finalize: polls_before={}", polls_start));
-        // #endregion
-
-        let output = test_run.finalize(&application).await?;
-
-        // #region agent log
-        let polls_end = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-        dst_log(&format!("finalize: polls_after={}", polls_end));
-        // #endregion
-
-        anyhow::Ok(output)
-    })?;
+    let output = td.run_until(test_run.finalize(&application))?;
 
     let trace = recorder.drain();
     let result = TestResult {
@@ -213,14 +149,6 @@ fn run_once<S: Scenario>(
         output,
         trace,
     };
-
-    // #region agent log
-    dst_log(&format!(
-        "=== run_once END (run_id={}, num_polls={}, rng_next_u64={}) ===",
-        run_id, result.num_polls, result.rng_next_u64
-    ));
-    // #endregion
-
     tracing::info!(
         "[nitpick] Scenario {:?} completed in {:?} ({} polls, {} trace events, output: {:?})",
         scenario.name(),
@@ -246,26 +174,7 @@ async fn run_transactions<TR: TestRun>(
     // Allow extra transaction attempts to account for OCC retries.
     let max_tx_attempts = config.transactions * 10;
 
-    // #region agent log
-    let polls_at_tx_start = tokio::runtime::Handle::current()
-        .metrics()
-        .worker_poll_count(0);
-    dst_log(&format!("run_transactions: START worker_poll_count={}", polls_at_tx_start));
-    let mut loop_iter: u64 = 0;
-    // #endregion
-
     loop {
-        // #region agent log
-        loop_iter += 1;
-        let polls_loop = tokio::runtime::Handle::current()
-            .metrics()
-            .worker_poll_count(0);
-        dst_log(&format!(
-            "run_transactions: loop_iter={} completed={}/{} in_flight={} next_tx={} worker_poll_count={}",
-            loop_iter, num_completed, config.transactions, transactions.len(), next_tx_id, polls_loop
-        ));
-        // #endregion
-
         if test_start.elapsed() > TEST_TIMEOUT {
             anyhow::bail!(
                 "Test timed out after {:?} ({num_completed} completed, {} in flight)",
@@ -287,47 +196,21 @@ async fn run_transactions<TR: TestRun>(
                 break;
             }
         }
-        // #region agent log
-        let drained_count = results.len();
-        // #endregion
         for r in results {
             if let Err(e) = r {
                 if e.is_occ() {
                     tracing::debug!("[nitpick] Transaction OCC'd");
-                    // #region agent log
-                    dst_log(&format!("run_transactions: loop_iter={} tx_OCC", loop_iter));
-                    // #endregion
                     continue;
                 }
                 return Err(e);
             }
             num_completed += 1;
-            // #region agent log
-            dst_log(&format!(
-                "run_transactions: loop_iter={} tx_completed num_completed={}",
-                loop_iter, num_completed
-            ));
-            // #endregion
         }
-        // #region agent log
-        if drained_count > 0 {
-            let polls_after_drain = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!(
-                "run_transactions: loop_iter={} after_drain drained={} worker_poll_count={}",
-                loop_iter, drained_count, polls_after_drain
-            ));
-        }
-        // #endregion
         if num_completed >= config.transactions {
             break;
         }
 
         // Refill transactions.
-        // #region agent log
-        let mut refill_count = 0u32;
-        // #endregion
         while transactions.len() < config.concurrency && next_tx_id < max_tx_attempts {
             let tx_id = next_tx_id;
             next_tx_id += 1;
@@ -346,59 +229,22 @@ async fn run_transactions<TR: TestRun>(
             }
             .boxed_local();
             transactions.push(future);
-            // #region agent log
-            refill_count += 1;
-            // #endregion
         }
-        // #region agent log
-        if refill_count > 0 {
-            dst_log(&format!(
-                "run_transactions: loop_iter={} refilled={} next_tx={}",
-                loop_iter, refill_count, next_tx_id
-            ));
-        }
-        // #endregion
 
         // Probabilistically validate.
         if rt.rng().random_bool(VERIFY_PROBABILITY) {
-            // #region agent log
-            let polls_before_verify = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!(
-                "run_transactions: loop_iter={} verify_start worker_poll_count={}",
-                loop_iter, polls_before_verify
-            ));
-            // #endregion
             test_run.validate(application).await?;
-            // #region agent log
-            let polls_after_verify = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!(
-                "run_transactions: loop_iter={} verify_end worker_poll_count={}",
-                loop_iter, polls_after_verify
-            ));
-            // #endregion
         }
     }
 
     let num_polls = tokio::runtime::Handle::current()
         .metrics()
         .worker_poll_count(0);
-    // #region agent log
-    dst_log(&format!(
-        "run_transactions: END worker_poll_count={} loop_iters={}",
-        num_polls, loop_iter
-    ));
-    // #endregion
     Ok(num_polls as usize)
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
-// #region agent log
-const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0; // was 0.1
-// #endregion
+const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1;
 
 /// Run a scenario with the given config on a dedicated thread with a large
 /// stack. Probabilistically checks determinism by re-running with the same seed.
@@ -406,14 +252,6 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            // #region agent log
-            // Clean up old log files from previous runs.
-            let _ = std::fs::remove_file("/tmp/nitpick_run1.log");
-            let _ = std::fs::remove_file("/tmp/nitpick_run2.log");
-            DST_RUN_ID.store(1, Ordering::Relaxed);
-            DST_THREAD_FUTURE_ID.store(0, Ordering::Relaxed);
-            // #endregion
-
             let (run1, should_check) = {
                 let td = TestDriver::new_with_seed(config.seed);
                 let run1 = run_once(&scenario, &td, config)?;
@@ -460,22 +298,9 @@ fn check_determinism<S: Scenario>(
         "[nitpick] Running determinism check for seed {}",
         config.seed
     );
-
-    // #region agent log
-    DST_RUN_ID.store(2, Ordering::Relaxed);
-    DST_THREAD_FUTURE_ID.store(0, Ordering::Relaxed);
-    dst_log(&format!("=== DETERMINISM CHECK START seed={} ===", config.seed));
-    // #endregion
-
     let td = TestDriver::new_with_seed(config.seed);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
-        // #region agent log
-        dst_log(&format!(
-            "DETERMINISM FAILURE: run1.num_polls={} run2.num_polls={} run1.rng={} run2.rng={}",
-            run1.num_polls, run2.num_polls, run1.rng_next_u64, run2.rng_next_u64
-        ));
-        // #endregion
         anyhow::bail!(
             "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
             config.seed,

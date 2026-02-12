@@ -4,10 +4,6 @@ use std::{
     self,
     pin::Pin,
     sync::{
-        atomic::{
-            AtomicU32,
-            Ordering,
-        },
         Arc,
         LazyLock,
         Weak,
@@ -17,32 +13,6 @@ use std::{
         SystemTime,
     },
 };
-
-// #region agent log
-/// Global run ID for DST instrumentation (1 = first run, 2 = determinism
-/// check). Set by the test runner before each `run_once()` call.
-pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
-
-/// Global ThreadFuture instance counter for DST instrumentation.
-pub static DST_THREAD_FUTURE_ID: AtomicU32 = AtomicU32::new(0);
-
-/// Write a line to `/tmp/nitpick_run{N}.log` for the current DST run.
-pub fn dst_log(msg: &str) {
-    use std::io::Write;
-    let run_id = DST_RUN_ID.load(Ordering::Relaxed);
-    if run_id == 0 {
-        return;
-    }
-    let path = format!("/tmp/nitpick_run{}.log", run_id);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(f, "{}", msg);
-    }
-}
-// #endregion
 
 use futures::{
     future::FusedFuture,
@@ -146,10 +116,17 @@ impl TestDriver {
 impl Drop for TestDriver {
     fn drop(&mut self) {
         assert_eq!(Arc::strong_count(&self.state), 1);
+        // Use a blocking shutdown so all spawned tasks (including
+        // `ThreadFuture` OS threads hosting V8 isolates) are fully
+        // joined before this `TestDriver` is dropped.
+        // `shutdown_background()` is non-blocking and can leave V8
+        // worker threads alive, causing the V8 platform thread to
+        // serve stale isolates concurrently with a subsequent run's
+        // isolates — a source of cross-run non-determinism.
         self.tokio_runtime
             .take()
             .expect("tokio_runtime disappeared?")
-            .shutdown_background();
+            .shutdown_timeout(std::time::Duration::from_secs(5));
     }
 }
 
