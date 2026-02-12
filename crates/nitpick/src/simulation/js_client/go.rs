@@ -66,8 +66,7 @@ impl JsClientThread {
                 pump_message_loop(&scope);
 
                 let rejections = scope.pending_unhandled_promise_rejections_mut();
-                if let Some(promise) = rejections.exceptions.keys().next().cloned() {
-                    let err = rejections.exceptions.remove(&promise).unwrap();
+                if let Some((_promise, err)) = rejections.exceptions.pop() {
                     let err = v8::Local::new(&scope, err);
                     let err = extract_error(&scope, err)?;
                     anyhow::bail!(err);

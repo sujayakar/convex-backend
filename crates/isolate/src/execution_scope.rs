@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ffi::c_char,
     marker::PhantomData,
     mem,
@@ -118,13 +117,15 @@ use crate::{
 /// })()
 /// ```
 pub struct PendingUnhandledPromiseRejections {
-    pub exceptions: HashMap<v8::Global<v8::Promise>, v8::Global<v8::Value>>,
+    /// Use a Vec instead of HashMap to maintain insertion order and avoid
+    /// non-deterministic iteration from HashMap's RandomState.
+    pub exceptions: Vec<(v8::Global<v8::Promise>, v8::Global<v8::Value>)>,
 }
 
 impl PendingUnhandledPromiseRejections {
     pub fn new() -> Self {
         PendingUnhandledPromiseRejections {
-            exceptions: HashMap::new(),
+            exceptions: Vec::new(),
         }
     }
 }

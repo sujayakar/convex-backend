@@ -679,8 +679,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
 
             // Check for rejected promises still unhandled, if so terminate.
             let rejections = scope.pending_unhandled_promise_rejections_mut();
-            if let Some(promise) = rejections.exceptions.keys().next().cloned() {
-                let error = rejections.exceptions.remove(&promise).unwrap();
+            if let Some((promise, error)) = rejections.exceptions.pop() {
 
                 let as_local = v8::Local::new(&scope, error);
                 let err = match scope.format_traceback(as_local) {

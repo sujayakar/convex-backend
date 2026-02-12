@@ -223,6 +223,12 @@ async fn run_transactions<TR: TestRun>(
 /// How likely we are to run a determinism check (re-run with same seed).
 const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
 
+/// Global RwLock for batch mode: batch worker threads hold a read-lock
+/// while running simulations, and the determinism-check subprocess
+/// acquires an exclusive write-lock to ensure it has undisturbed CPU
+/// access (no concurrent batch workers competing for CPU).
+pub static BATCH_CPU_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 /// Run a scenario with the given config on a dedicated thread with a large
 /// stack. Probabilistically checks determinism by re-running with the same seed.
 pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
@@ -230,6 +236,8 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
             let should_check = {
+                // Hold read lock during the main simulation run.
+                let _cpu_guard = BATCH_CPU_LOCK.read().unwrap_or_else(|e| e.into_inner());
                 let td = TestDriver::new_with_seed(config.seed);
                 let _run1 = run_once(&scenario, &td, config)?;
                 td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY)
@@ -240,6 +248,11 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
                     "[nitpick] Running determinism check for seed {} (subprocess)",
                     config.seed
                 );
+                // Acquire exclusive lock to pause all other batch threads
+                // while the subprocess runs, ensuring deterministic CPU access.
+                let _cpu_guard = BATCH_CPU_LOCK
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
                 check_determinism_subprocess(scenario.name(), config)?;
             }
 
@@ -305,7 +318,9 @@ pub fn check_determinism_in_process<S: Scenario>(
 /// behavior (e.g., different OCC retry patterns).
 ///
 /// By forking a child process, both run1 and run2 start from the same
-/// fresh V8 initialization state.
+/// fresh V8 initialization state.  The global lock serializes subprocess
+/// invocations to eliminate CPU contention between the subprocess and
+/// other batch worker threads.
 fn check_determinism_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<()> {
     let exe = std::env::current_exe().expect("Failed to get current exe path");
     let output = std::process::Command::new(&exe)
