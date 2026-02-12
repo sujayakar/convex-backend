@@ -3,14 +3,10 @@ pub use thread_future::defer_waker_to_tokio_thread;
 
 mod dst_oneshot;
 use std::{
+    cell::Cell,
     self,
     pin::Pin,
     sync::{
-        atomic::{
-            AtomicU32,
-            AtomicU64,
-            Ordering,
-        },
         Arc,
         LazyLock,
         Weak,
@@ -28,18 +24,39 @@ pub use dst_oneshot::{
 };
 
 // #region agent log
-pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
-pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
-pub static DST_SEED: AtomicU64 = AtomicU64::new(0);
-pub static DST_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
 static DST_LOG_LOCK: LazyLock<std::sync::Mutex<()>> =
     LazyLock::new(|| std::sync::Mutex::new(()));
+thread_local! {
+    static DST_RUN_ID: Cell<u32> = const { Cell::new(0) };
+    static DST_TF_ID: Cell<u32> = const { Cell::new(0) };
+    static DST_SEED: Cell<u64> = const { Cell::new(0) };
+    static DST_EVENT_SEQ: Cell<u64> = const { Cell::new(0) };
+}
+pub fn dst_set_seed(seed: u64) {
+    DST_SEED.with(|value| value.set(seed));
+}
+pub fn dst_set_run_id(run_id: u32) {
+    DST_RUN_ID.with(|value| value.set(run_id));
+}
+pub fn dst_set_tf_id(thread_future_id: u32) {
+    DST_TF_ID.with(|value| value.set(thread_future_id));
+}
+pub fn dst_reset_event_seq() {
+    DST_EVENT_SEQ.with(|value| value.set(0));
+}
 pub fn dst_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
     use std::io::Write;
-    let run_id = DST_RUN_ID.load(Ordering::Relaxed);
+    let run_id = DST_RUN_ID.with(Cell::get);
     if run_id == 0 {
         return;
     }
+    let seed = DST_SEED.with(Cell::get);
+    let thread_future_id = DST_TF_ID.with(Cell::get);
+    let event_seq = DST_EVENT_SEQ.with(|value| {
+        let current = value.get();
+        value.set(current + 1);
+        current
+    });
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -49,10 +66,10 @@ pub fn dst_log(hypothesis_id: &str, location: &str, message: &str, data: serde_j
         "location": location,
         "message": message,
         "data": {
-            "seed": DST_SEED.load(Ordering::Relaxed),
+            "seed": seed,
             "runId": run_id,
-            "threadFutureId": DST_TF_ID.load(Ordering::Relaxed),
-            "eventSeq": DST_EVENT_SEQ.fetch_add(1, Ordering::Relaxed),
+            "threadFutureId": thread_future_id,
+            "eventSeq": event_seq,
             "details": data,
         },
         "timestamp": timestamp,

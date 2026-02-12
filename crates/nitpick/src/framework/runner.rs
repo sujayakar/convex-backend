@@ -1,5 +1,4 @@
 use std::{
-    sync::atomic::Ordering,
     task::Poll,
     time::{
         Duration,
@@ -29,16 +28,14 @@ use futures::{
 use rand::Rng;
 use runtime::testing::{
     dst_log,
+    dst_reset_event_seq,
+    dst_set_run_id,
+    dst_set_seed,
+    dst_set_tf_id,
     TestDriver,
     TestRuntime,
 };
 // #region agent log
-use runtime::testing::{
-    DST_EVENT_SEQ,
-    DST_RUN_ID,
-    DST_SEED,
-    DST_TF_ID,
-};
 use serde_json::json;
 
 // #endregion
@@ -279,10 +276,10 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
             // #region agent log
-            DST_SEED.store(config.seed, Ordering::Relaxed);
-            DST_RUN_ID.store(1, Ordering::Relaxed);
-            DST_TF_ID.store(0, Ordering::Relaxed);
-            DST_EVENT_SEQ.store(0, Ordering::Relaxed);
+            dst_set_seed(config.seed);
+            dst_set_run_id(1);
+            dst_set_tf_id(0);
+            dst_reset_event_seq();
             dst_log(
                 "H1",
                 "nitpick::runner::run_scenario",
@@ -342,10 +339,10 @@ fn check_determinism<S: Scenario>(
         config.seed
     );
     // #region agent log
-    DST_SEED.store(config.seed, Ordering::Relaxed);
-    DST_RUN_ID.store(2, Ordering::Relaxed);
-    DST_TF_ID.store(0, Ordering::Relaxed);
-    DST_EVENT_SEQ.store(0, Ordering::Relaxed);
+    dst_set_seed(config.seed);
+    dst_set_run_id(2);
+    dst_set_tf_id(0);
+    dst_reset_event_seq();
     dst_log(
         "H1",
         "nitpick::runner::check_determinism",
