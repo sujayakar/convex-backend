@@ -18,6 +18,9 @@ pub use dst_mpsc::{
 };
 
 use std::{
+    backtrace::Backtrace,
+    fs::OpenOptions,
+    io::Write,
     pin::Pin,
     sync::{
         Arc,
@@ -58,6 +61,32 @@ use crate::pause::PauseClient;
 pub static CONVEX_EPOCH: LazyLock<SystemTime> =
     LazyLock::new(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1620198000)); // May 5th, 2021 :)
 
+fn nitpick_rng_run_id() -> Option<u32> {
+    let run_id = std::env::var("NITPICK_RUN_ID").ok()?;
+    run_id.parse::<u32>().ok().filter(|id| *id > 0)
+}
+
+fn nitpick_rng_log_path() -> Option<String> {
+    let run_id = nitpick_rng_run_id()?;
+    Some(format!("/tmp/nitpick_rng_run{run_id}.log"))
+}
+
+pub fn reset_rng_log_for_current_run() {
+    let Some(path) = nitpick_rng_log_path() else {
+        return;
+    };
+    let _ = std::fs::remove_file(path);
+}
+
+pub fn rng_log(message: &str) {
+    let Some(path) = nitpick_rng_log_path() else {
+        return;
+    };
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{message}");
+    }
+}
+
 pub struct TestDriver {
     tokio_runtime: Option<tokio::runtime::Runtime>,
     state: Arc<Mutex<TestRuntimeState>>,
@@ -93,7 +122,11 @@ impl TestDriver {
         };
         Self {
             tokio_runtime: Some(tokio_runtime),
-            state: Arc::new(Mutex::new(TestRuntimeState { rng, creation_time })),
+            state: Arc::new(Mutex::new(TestRuntimeState {
+                creation_time,
+                rng,
+                rng_next_u64_calls: 0,
+            })),
             pause_client,
         }
     }
@@ -127,6 +160,10 @@ impl TestDriver {
             .expect("tokio_runtime disappeared?")
             .block_on(f)
     }
+
+    pub fn rng_next_u64_call_count(&self) -> usize {
+        self.state.lock().rng_next_u64_calls
+    }
 }
 
 impl Drop for TestDriver {
@@ -149,6 +186,7 @@ impl Drop for TestDriver {
 struct TestRuntimeState {
     creation_time: tokio::time::Instant,
     rng: ChaCha12Rng,
+    rng_next_u64_calls: usize,
 }
 
 #[derive(Clone)]
@@ -229,13 +267,51 @@ struct TestRng {
     rt: TestRuntime,
 }
 
+fn rng_backtrace_summary() -> String {
+    let mut frames = vec![];
+    let raw = format!("{:?}", Backtrace::force_capture());
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line == "stack backtrace:" {
+            continue;
+        }
+        if line.contains("common::runtime::testing::rng_backtrace_summary")
+            || line.contains("common::runtime::testing::TestRng::next_u64")
+        {
+            continue;
+        }
+        frames.push(line.to_string());
+        if frames.len() >= 6 {
+            break;
+        }
+    }
+    if frames.is_empty() {
+        "no_frames".to_string()
+    } else {
+        frames.join(" | ")
+    }
+}
+
 impl RngCore for TestRng {
     fn next_u32(&mut self) -> u32 {
         self.rt.with_state(|state| state.rng.next_u32())
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.rt.with_state(|state| state.rng.next_u64())
+        let (value, call_count) = self.rt.with_state(|state| {
+            let value = state.rng.next_u64();
+            state.rng_next_u64_calls += 1;
+            (value, state.rng_next_u64_calls)
+        });
+        // #region agent log
+        rng_log(&format!(
+            "RNG_NEXT_U64 call={} value={} backtrace={}",
+            call_count,
+            value,
+            rng_backtrace_summary()
+        ));
+        // #endregion
+        value
     }
 
     fn fill_bytes(&mut self, dest: &mut [u8]) {

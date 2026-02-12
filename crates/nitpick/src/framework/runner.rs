@@ -27,6 +27,8 @@ use futures::{
 };
 use rand::Rng;
 use runtime::testing::{
+    reset_rng_log_for_current_run,
+    rng_log,
     TestDriver,
     TestRuntime,
 };
@@ -282,16 +284,57 @@ pub fn check_determinism_in_process<S: Scenario>(
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            let run1 = {
+            struct RunIdEnvGuard;
+            impl Drop for RunIdEnvGuard {
+                fn drop(&mut self) {
+                    unsafe {
+                        std::env::remove_var("NITPICK_RUN_ID");
+                    }
+                }
+            }
+
+            let _run_id_guard = RunIdEnvGuard;
+            // #region agent log
+            unsafe {
+                std::env::set_var("NITPICK_RUN_ID", "1");
+            }
+            reset_rng_log_for_current_run();
+            // #endregion
+            let (run1, run1_rng_next_u64_calls) = {
                 let td = TestDriver::new_with_seed(config.seed);
-                run_once(&scenario, &td, config)?
+                let run1 = run_once(&scenario, &td, config)?;
+                let call_count = td.rng_next_u64_call_count();
+                // #region agent log
+                rng_log(&format!(
+                    "RUN_SUMMARY run=1 rng_next_u64_calls={call_count}"
+                ));
+                // #endregion
+                (run1, call_count)
             };
             tracing::info!(
-                "[nitpick] Running determinism check for seed {}",
-                config.seed
+                "[nitpick] Running determinism check for seed {} (run1 rng_next_u64_calls={})",
+                config.seed,
+                run1_rng_next_u64_calls
             );
+            // #region agent log
+            unsafe {
+                std::env::set_var("NITPICK_RUN_ID", "2");
+            }
+            reset_rng_log_for_current_run();
+            // #endregion
             let td = TestDriver::new_with_seed(config.seed);
             let run2 = run_once(&scenario, &td, config)?;
+            let run2_rng_next_u64_calls = td.rng_next_u64_call_count();
+            // #region agent log
+            rng_log(&format!(
+                "RUN_SUMMARY run=2 rng_next_u64_calls={run2_rng_next_u64_calls}"
+            ));
+            // #endregion
+            tracing::info!(
+                "[nitpick] Determinism check seed {} run2 rng_next_u64_calls={}",
+                config.seed,
+                run2_rng_next_u64_calls
+            );
             if run1 != run2 {
                 anyhow::bail!(
                     "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
