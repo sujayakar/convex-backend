@@ -9,6 +9,8 @@ use std::{
             Ordering,
         },
         Arc,
+        LazyLock,
+        Mutex,
     },
     task::{
         Context,
@@ -34,6 +36,7 @@ const WAKER_TRACE_LOG_PATH: &str = "/tmp/nitpick_waker_trace.log";
 static THREAD_FUTURE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static TOKIO_POLL_SEQ_COUNTER: AtomicU64 = AtomicU64::new(1);
 static WAKER_FIRE_SEQ_COUNTER: AtomicU64 = AtomicU64::new(1);
+static WAKER_TRACE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn next_thread_future_id() -> u64 {
     THREAD_FUTURE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -59,6 +62,7 @@ fn append_waker_trace(
     message: &'static str,
     data: serde_json::Value,
 ) {
+    let _guard = WAKER_TRACE_LOCK.lock().expect("WAKER_TRACE_LOCK poisoned");
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
