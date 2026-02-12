@@ -27,14 +27,10 @@ use futures::{
 };
 use rand::Rng;
 use runtime::testing::{
-    dst_log,
+    reset_thread_future_poll_tracking,
     TestDriver,
     TestRuntime,
 };
-// #region agent log
-use runtime::testing::{DST_RUN_ID, DST_TF_ID};
-use std::sync::atomic::Ordering;
-// #endregion
 
 use super::scenario::{
     Scenario,
@@ -96,14 +92,6 @@ fn run_once<S: Scenario>(
     let rt = td.rt_with_event_recorder(recorder.clone());
     let application = td.run_until(async {
         let application = Application::new_for_tests(&rt).await?;
-        // #region agent log
-        {
-            let wpc = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!("RUN_ONCE after_application_new_for_tests wpc={}", wpc));
-        }
-        // #endregion
         tracing::info!(
             "[nitpick] Created application in {:?}",
             test_start.elapsed()
@@ -113,14 +101,6 @@ fn run_once<S: Scenario>(
 
     let test_run = td.run_until(async {
         let run = scenario.start_run(td.rt(), &application).await?;
-        // #region agent log
-        {
-            let wpc = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!("RUN_ONCE after_scenario_start_run wpc={}", wpc));
-        }
-        // #endregion
         tracing::info!(
             "[nitpick] Initialized scenario {:?} in {:?}",
             scenario.name(),
@@ -130,46 +110,16 @@ fn run_once<S: Scenario>(
     })?;
 
     let num_polls = td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
-    // #region agent log
-    dst_log(&format!(
-        "RUN_ONCE after_run_transactions returned_num_polls={}",
-        num_polls
-    ));
-    // #endregion
 
     // Always run validation at the end.
     let start = Instant::now();
-    let wpc_after_validate = td.run_until(async {
-        test_run.validate(&application).await?;
-        let wpc = tokio::runtime::Handle::current()
-            .metrics()
-            .worker_poll_count(0);
-        anyhow::Ok(wpc)
-    })?;
-    // #region agent log
-    dst_log(&format!(
-        "RUN_ONCE after_test_run_validate wpc={}",
-        wpc_after_validate
-    ));
-    // #endregion
+    td.run_until(test_run.validate(&application))?;
     tracing::info!(
         "[nitpick] Final verification passed in {:?}",
         start.elapsed()
     );
 
-    let (output, wpc_after_finalize) = td.run_until(async {
-        let output = test_run.finalize(&application).await?;
-        let wpc = tokio::runtime::Handle::current()
-            .metrics()
-            .worker_poll_count(0);
-        anyhow::Ok((output, wpc))
-    })?;
-    // #region agent log
-    dst_log(&format!(
-        "RUN_ONCE after_test_run_finalize wpc={}",
-        wpc_after_finalize
-    ));
-    // #endregion
+    let output = td.run_until(test_run.finalize(&application))?;
 
     let trace = recorder.drain();
     let result = TestResult {
@@ -204,21 +154,6 @@ async fn run_transactions<TR: TestRun>(
     let max_tx_attempts = config.transactions * 10;
 
     loop {
-        // #region agent log
-        {
-            let wpc = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!(
-                "RUN_TX loop_start completed={} in_flight={} next_tx_id={} max_tx_attempts={} wpc={}",
-                num_completed,
-                transactions.len(),
-                next_tx_id,
-                max_tx_attempts,
-                wpc
-            ));
-        }
-        // #endregion
         if test_start.elapsed() > TEST_TIMEOUT {
             anyhow::bail!(
                 "Test timed out after {:?} ({num_completed} completed, {} in flight)",
@@ -243,86 +178,14 @@ async fn run_transactions<TR: TestRun>(
         for r in results {
             if let Err(e) = r {
                 if e.is_occ() {
-                    // #region agent log
-                    {
-                        let wpc = tokio::runtime::Handle::current()
-                            .metrics()
-                            .worker_poll_count(0);
-                        dst_log(&format!(
-                            "RUN_TX tx_complete status=occ completed={} in_flight={} next_tx_id={} wpc={}",
-                            num_completed,
-                            transactions.len(),
-                            next_tx_id,
-                            wpc
-                        ));
-                    }
-                    // #endregion
                     tracing::debug!("[nitpick] Transaction OCC'd");
                     continue;
                 }
-                // #region agent log
-                {
-                    let wpc = tokio::runtime::Handle::current()
-                        .metrics()
-                        .worker_poll_count(0);
-                    dst_log(&format!(
-                        "RUN_TX tx_complete status=error completed={} in_flight={} next_tx_id={} err={:?} wpc={}",
-                        num_completed,
-                        transactions.len(),
-                        next_tx_id,
-                        e,
-                        wpc
-                    ));
-                }
-                // #endregion
                 return Err(e);
             }
             num_completed += 1;
-            // #region agent log
-            {
-                let wpc = tokio::runtime::Handle::current()
-                    .metrics()
-                    .worker_poll_count(0);
-                dst_log(&format!(
-                    "RUN_TX tx_complete status=ok completed={} in_flight={} next_tx_id={} wpc={}",
-                    num_completed,
-                    transactions.len(),
-                    next_tx_id,
-                    wpc
-                ));
-            }
-            // #endregion
         }
-        // #region agent log
-        {
-            let wpc = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!(
-                "RUN_TX loop_after_drain completed={} in_flight={} next_tx_id={} wpc={}",
-                num_completed,
-                transactions.len(),
-                next_tx_id,
-                wpc
-            ));
-        }
-        // #endregion
         if num_completed >= config.transactions {
-            // #region agent log
-            {
-                let wpc = tokio::runtime::Handle::current()
-                    .metrics()
-                    .worker_poll_count(0);
-                dst_log(&format!(
-                    "RUN_TX loop_break_target_reached completed={} target={} in_flight={} next_tx_id={} wpc={}",
-                    num_completed,
-                    config.transactions,
-                    transactions.len(),
-                    next_tx_id,
-                    wpc
-                ));
-            }
-            // #endregion
             break;
         }
 
@@ -346,83 +209,21 @@ async fn run_transactions<TR: TestRun>(
             .boxed_local();
             transactions.push(future);
         }
-        // #region agent log
-        {
-            let wpc = tokio::runtime::Handle::current()
-                .metrics()
-                .worker_poll_count(0);
-            dst_log(&format!(
-                "RUN_TX loop_after_refill completed={} in_flight={} next_tx_id={} wpc={}",
-                num_completed,
-                transactions.len(),
-                next_tx_id,
-                wpc
-            ));
-        }
-        // #endregion
 
         // Probabilistically validate.
         if rt.rng().random_bool(VERIFY_PROBABILITY) {
-            // #region agent log
-            {
-                let wpc_before = tokio::runtime::Handle::current()
-                    .metrics()
-                    .worker_poll_count(0);
-                dst_log(&format!(
-                    "RUN_TX verify_branch taken completed={} in_flight={} next_tx_id={} wpc_before={}",
-                    num_completed,
-                    transactions.len(),
-                    next_tx_id,
-                    wpc_before
-                ));
-            }
-            // #endregion
             test_run.validate(application).await?;
-            // #region agent log
-            {
-                let wpc_after = tokio::runtime::Handle::current()
-                    .metrics()
-                    .worker_poll_count(0);
-                dst_log(&format!(
-                    "RUN_TX verify_branch_done completed={} in_flight={} next_tx_id={} wpc_after={}",
-                    num_completed,
-                    transactions.len(),
-                    next_tx_id,
-                    wpc_after
-                ));
-            }
-            // #endregion
-        } else {
-            // #region agent log
-            {
-                let wpc = tokio::runtime::Handle::current()
-                    .metrics()
-                    .worker_poll_count(0);
-                dst_log(&format!(
-                    "RUN_TX verify_branch skipped completed={} in_flight={} next_tx_id={} wpc={}",
-                    num_completed,
-                    transactions.len(),
-                    next_tx_id,
-                    wpc
-                ));
-            }
-            // #endregion
         }
     }
 
     let num_polls = tokio::runtime::Handle::current()
         .metrics()
         .worker_poll_count(0);
-    // #region agent log
-    dst_log(&format!("RUN_TX return_num_polls={}", num_polls));
-    // #endregion
     Ok(num_polls as usize)
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
-// #region agent log
 const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
-// #endregion
 
 /// Run a scenario with the given config on a dedicated thread with a large
 /// stack. Probabilistically checks determinism by re-running with the same seed.
@@ -430,23 +231,18 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            // #region agent log
-            DST_RUN_ID.store(1, Ordering::Relaxed);
-            DST_TF_ID.store(0, Ordering::Relaxed);
-            // #endregion
-            let (run1, should_check) = {
+            let should_check = {
                 let td = TestDriver::new_with_seed(config.seed);
-                let run1 = run_once(&scenario, &td, config)?;
-                let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
-                (run1, should_check)
+                let _run1 = run_once(&scenario, &td, config)?;
+                td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY)
             };
 
             if should_check {
                 tracing::info!(
-                    "[nitpick] Running determinism check for seed {}",
+                    "[nitpick] Running determinism check for seed {} (subprocess)",
                     config.seed
                 );
-                check_determinism(&scenario, config, &run1)?;
+                check_determinism_subprocess(scenario.name(), config)?;
             }
 
             anyhow::Ok(())
@@ -460,40 +256,110 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            let run1 = {
-                let td = TestDriver::new_with_seed(config.seed);
-                run_once(&scenario, &td, config)?
-            };
-            check_determinism(&scenario, config, &run1)?;
+            check_determinism_subprocess(scenario.name(), config)?;
             anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
     Ok(())
 }
 
-fn check_determinism<S: Scenario>(
-    scenario: &S,
+/// Run the determinism check for a single seed in the current process.
+/// This is called from the subprocess spawned by
+/// `check_determinism_subprocess`.  Both run1 and run2 share the same
+/// fresh V8 platform state, so the only V8 state visible to run2 is
+/// what run1 created — exactly mirroring the isolated-replay case.
+pub fn check_determinism_in_process<S: Scenario>(
+    scenario: S,
     config: Config,
-    run1: &TestResult<<S::TestRun as TestRun>::Output>,
 ) -> anyhow::Result<()> {
-    tracing::info!(
-        "[nitpick] Running determinism check for seed {}",
-        config.seed
-    );
-    // #region agent log
-    DST_RUN_ID.store(2, Ordering::Relaxed);
-    DST_TF_ID.store(0, Ordering::Relaxed);
-    // #endregion
-    let td = TestDriver::new_with_seed(config.seed);
-    let run2 = run_once(scenario, &td, config)?;
-    if *run1 != run2 {
+    let thread_handle = std::thread::Builder::new()
+        .stack_size(*RUNTIME_STACK_SIZE)
+        .spawn(move || {
+            struct RunIdEnvGuard;
+            impl Drop for RunIdEnvGuard {
+                fn drop(&mut self) {
+                    // #region agent log
+                    unsafe {
+                        std::env::remove_var("NITPICK_RUN_ID");
+                    }
+                    // #endregion
+                }
+            }
+            let _run_id_guard = RunIdEnvGuard;
+            // #region agent log
+            unsafe {
+                std::env::set_var("NITPICK_RUN_ID", "1");
+            }
+            reset_thread_future_poll_tracking();
+            // #endregion
+            let run1 = {
+                let td = TestDriver::new_with_seed(config.seed);
+                run_once(&scenario, &td, config)?
+            };
+            tracing::info!(
+                "[nitpick] Running determinism check for seed {}",
+                config.seed
+            );
+            // #region agent log
+            unsafe {
+                std::env::set_var("NITPICK_RUN_ID", "2");
+            }
+            reset_thread_future_poll_tracking();
+            // #endregion
+            let td = TestDriver::new_with_seed(config.seed);
+            let run2 = run_once(&scenario, &td, config)?;
+            if run1 != run2 {
+                anyhow::bail!(
+                    "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
+                    config.seed,
+                    &run1,
+                    &run2
+                );
+            }
+            tracing::info!("[nitpick] Determinism check passed");
+            anyhow::Ok(())
+        })?;
+    thread_handle.join().expect("nitpick thread panicked")?;
+    Ok(())
+}
+
+/// Spawn a child process to run the determinism check.
+///
+/// V8's platform is initialized once per process (`Once`) and its
+/// internal state (code cache, IC type-feedback, GC thresholds, heap
+/// statistics) accumulates across isolate lifetimes.  When multiple
+/// simulations share a process (batch mode), run1 sees different V8
+/// state than run2 because run1's own V8 work modifies the shared
+/// platform between the two runs.
+///
+/// By forking a child process, both run1 and run2 start from the same
+/// fresh V8 initialization state — the same condition that makes
+/// isolated single-seed replay deterministic.
+fn check_determinism_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<()> {
+    let exe = std::env::current_exe().expect("Failed to get current exe path");
+    let output = std::process::Command::new(&exe)
+        .args([
+            "--concurrency",
+            &config.concurrency.to_string(),
+            "--transactions",
+            &config.transactions.to_string(),
+            "determinism-check",
+            scenario_name,
+            &config.seed.to_string(),
+        ])
+        .output()
+        .expect("Failed to spawn determinism-check subprocess");
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!(
-            "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
+            "Determinism check subprocess failed for seed {}:\nstdout: \
+             {}\nstderr: {}",
             config.seed,
-            run1,
-            run2
+            stdout,
+            stderr
         );
     }
-    tracing::info!("[nitpick] Determinism check passed");
     Ok(())
 }

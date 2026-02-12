@@ -1,6 +1,17 @@
 use std::{
     cell::RefCell,
+    collections::BTreeMap,
+    fs::OpenOptions,
+    io::Write,
     pin::Pin,
+    sync::{
+        atomic::{
+            AtomicUsize,
+            Ordering,
+        },
+        LazyLock,
+        Mutex,
+    },
     task::{
         Context,
         Poll,
@@ -26,6 +37,68 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+static NEXT_THREAD_FUTURE_ID: AtomicUsize = AtomicUsize::new(1);
+static THREAD_FUTURE_POLL_COUNTS: LazyLock<Mutex<BTreeMap<usize, usize>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+fn nitpick_run_id() -> Option<usize> {
+    let run_id = std::env::var("NITPICK_RUN_ID").ok()?;
+    run_id.parse::<usize>().ok().filter(|id| *id > 0)
+}
+
+fn tf_log_path() -> Option<String> {
+    let run_id = nitpick_run_id()?;
+    Some(format!("/tmp/nitpick_tf_run{run_id}.log"))
+}
+
+fn append_tf_log(line: &str) {
+    let Some(path) = tf_log_path() else {
+        return;
+    };
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+pub(crate) fn reset_thread_future_poll_tracking() {
+    NEXT_THREAD_FUTURE_ID.store(1, Ordering::Relaxed);
+    THREAD_FUTURE_POLL_COUNTS
+        .lock()
+        .expect("thread future poll map lock poisoned")
+        .clear();
+    if let Some(path) = tf_log_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub(crate) fn write_thread_future_poll_summary() {
+    let Some(run_id) = nitpick_run_id() else {
+        return;
+    };
+    let snapshot = THREAD_FUTURE_POLL_COUNTS
+        .lock()
+        .expect("thread future poll map lock poisoned")
+        .clone();
+    // #region agent log
+    append_tf_log(&format!(
+        "THREAD_FUTURE_SUMMARY_BEGIN run_id={} total_thread_futures={}",
+        run_id,
+        snapshot.len()
+    ));
+    // #endregion
+    for (thread_future_id, poll_count) in snapshot {
+        // #region agent log
+        append_tf_log(&format!(
+            "THREAD_FUTURE_SUMMARY id={} total_polls={}",
+            thread_future_id, poll_count
+        ));
+        // #endregion
+    }
+    // #region agent log
+    append_tf_log(&format!("THREAD_FUTURE_SUMMARY_END run_id={run_id}"));
+    // #endregion
+}
+
 /// Defer a waker fire so it happens on the Tokio runtime thread instead
 /// of the current OS thread.  If called outside a `ThreadFuture` context,
 /// the waker is fired immediately (production runtime path).
@@ -42,6 +115,7 @@ pub fn defer_waker_to_tokio_thread(waker: Waker) {
 }
 
 pub struct ThreadFuture {
+    id: usize,
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
@@ -56,6 +130,14 @@ impl ThreadFuture {
         tokio_handle: tokio::runtime::Handle,
         f: F,
     ) -> Self {
+        let id = NEXT_THREAD_FUTURE_ID.fetch_add(1, Ordering::Relaxed);
+        THREAD_FUTURE_POLL_COUNTS
+            .lock()
+            .expect("thread future poll map lock poisoned")
+            .insert(id, 0);
+        // #region agent log
+        append_tf_log(&format!("THREAD_FUTURE_NEW id={id}"));
+        // #endregion
         let (poll_request_tx, poll_request_rx) = crossbeam_channel::bounded(1);
         let (poll_response_tx, poll_response_rx) = crossbeam_channel::bounded(1);
         let (deferred_waker_tx, deferred_waker_rx) = crossbeam_channel::unbounded();
@@ -90,6 +172,7 @@ impl ThreadFuture {
             })
             .expect("Failed to start new thread");
         Self {
+            id,
             std_handle: Some(std_handle),
             poll_request_tx: Some(poll_request_tx),
             poll_response_rx,
@@ -103,6 +186,14 @@ impl Future for ThreadFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+        let poll_number = {
+            let mut map = THREAD_FUTURE_POLL_COUNTS
+                .lock()
+                .expect("thread future poll map lock poisoned");
+            let entry = map.entry(this.id).or_insert(0);
+            *entry += 1;
+            *entry
+        };
 
         // Forward the poll request to the thread.
         if this
@@ -113,12 +204,24 @@ impl Future for ThreadFuture {
             .is_err()
         {
             tracing::error!("ThreadFuture worker thread terminated.");
+            // #region agent log
+            append_tf_log(&format!(
+                "THREAD_FUTURE_POLL id={} poll={} response=ReadyWorkerTerminatedOnSend",
+                this.id, poll_number
+            ));
+            // #endregion
             return Poll::Ready(());
         }
         let response = match this.poll_response_rx.recv() {
             Ok(response) => response,
             Err(..) => {
                 tracing::error!("ThreadFuture worker thread terminated.");
+                // #region agent log
+                append_tf_log(&format!(
+                    "THREAD_FUTURE_POLL id={} poll={} response=ReadyWorkerTerminatedOnRecv",
+                    this.id, poll_number
+                ));
+                // #endregion
                 return Poll::Ready(());
             },
         };
@@ -134,12 +237,26 @@ impl Future for ThreadFuture {
 
         match response {
             Poll::Ready(was_canceled) => {
+                // #region agent log
+                append_tf_log(&format!(
+                    "THREAD_FUTURE_POLL id={} poll={} response=Ready was_canceled={}",
+                    this.id, poll_number, was_canceled
+                ));
+                // #endregion
                 tracing::debug!(
                     "ThreadFuture completed (was_canceled: {was_canceled}), returning."
                 );
                 Poll::Ready(())
             },
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                // #region agent log
+                append_tf_log(&format!(
+                    "THREAD_FUTURE_POLL id={} poll={} response=Pending",
+                    this.id, poll_number
+                ));
+                // #endregion
+                Poll::Pending
+            },
         }
     }
 }
