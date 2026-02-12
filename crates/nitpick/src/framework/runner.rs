@@ -388,17 +388,9 @@ fn run_one_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<Sub
         .wait_with_output()
         .map_err(|e| anyhow::anyhow!("Failed to wait for subprocess: {e}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!(
-            "Subprocess failed for seed {} (exit code: {:?}):\nstdout: {stdout}\nstderr: {stderr}",
-            config.seed,
-            output.status.code()
-        );
-    }
-
-    // Parse the NITPICK_RESULT line from stdout
+    // Parse the NITPICK_RESULT line from stdout first. The subprocess may
+    // crash during V8 cleanup (after printing the result), which gives a
+    // non-zero exit code even though the simulation completed successfully.
     let reader = std::io::BufReader::new(&output.stdout[..]);
     for line in reader.lines() {
         let line = line?;
@@ -407,10 +399,13 @@ fn run_one_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<Sub
         }
     }
 
+    // No NITPICK_RESULT found - this is a real failure.
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     anyhow::bail!(
-        "Subprocess did not produce NITPICK_RESULT for seed {}:\nstdout: {stdout}",
-        config.seed
+        "Subprocess failed for seed {} (exit code: {:?}):\nstdout: {stdout}\nstderr: {stderr}",
+        config.seed,
+        output.status.code()
     );
 }
 
