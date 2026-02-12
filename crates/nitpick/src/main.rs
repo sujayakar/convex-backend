@@ -18,6 +18,7 @@ use nitpick::{
         batch::run_batch,
         runner::{
             run_scenario,
+            run_scenario_deterministic,
             Config,
         },
     },
@@ -70,6 +71,15 @@ enum Commands {
     },
     /// List available scenarios
     List,
+    /// Internal: run a determinism check in a fresh subprocess.
+    /// Both run1 and run2 execute here with clean V8 state.
+    #[command(hide = true)]
+    DeterminismCheck {
+        /// Scenario name
+        scenario: String,
+        /// Pseudorandom seed
+        seed: u64,
+    },
 }
 
 const SCENARIOS: &[&str] = &[
@@ -133,6 +143,14 @@ fn main() -> anyhow::Result<()> {
                 result.passed, result.total
             );
         },
+        Commands::DeterminismCheck { scenario, seed } => {
+            let config = Config {
+                transactions: cli.transactions,
+                concurrency: cli.concurrency,
+                seed,
+            };
+            run_determinism_check_by_name(&scenario, config)?;
+        },
     }
     Ok(())
 }
@@ -147,6 +165,26 @@ fn run_scenario_by_name(name: &str, config: Config) -> anyhow::Result<()> {
         "link_ring" => run_scenario(LinkRingScenario::default(), config),
         "link_ring_js" => run_scenario(LinkRingJsScenario::default(), config),
         "scheduled_js" => run_scenario(ScheduledJsScenario, config),
+        _ => {
+            anyhow::bail!(
+                "Unknown scenario: {name}. Available: {}",
+                SCENARIOS.join(", ")
+            )
+        },
+    }
+}
+
+/// Run a determinism check for a given scenario. Called from the subprocess.
+fn run_determinism_check_by_name(name: &str, config: Config) -> anyhow::Result<()> {
+    match name {
+        "counter" => run_scenario_deterministic(CounterScenario, config),
+        "counter_js" => run_scenario_deterministic(CounterJsScenario, config),
+        "elle" => run_scenario_deterministic(ElleScenario::default(), config),
+        "elle_js" => run_scenario_deterministic(ElleJsScenario, config),
+        "index_query_js" => run_scenario_deterministic(IndexQueryJsScenario, config),
+        "link_ring" => run_scenario_deterministic(LinkRingScenario::default(), config),
+        "link_ring_js" => run_scenario_deterministic(LinkRingJsScenario::default(), config),
+        "scheduled_js" => run_scenario_deterministic(ScheduledJsScenario, config),
         _ => {
             anyhow::bail!(
                 "Unknown scenario: {name}. Available: {}",

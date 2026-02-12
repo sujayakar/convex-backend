@@ -30,10 +30,6 @@ use runtime::testing::{
     TestDriver,
     TestRuntime,
 };
-// #region agent log
-use runtime::testing::{DST_RUN_ID, DST_TF_ID};
-use std::sync::atomic::Ordering;
-// #endregion
 
 use super::scenario::{
     Scenario,
@@ -226,33 +222,27 @@ async fn run_transactions<TR: TestRun>(
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
-// #region agent log
-const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1; // was 0.1
-// #endregion
+const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
 
 /// Run a scenario with the given config on a dedicated thread with a large
-/// stack. Probabilistically checks determinism by re-running with the same seed.
+/// stack. Probabilistically checks determinism by spawning a subprocess that
+/// runs the same seed twice with fresh V8 state.
 pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            // #region agent log
-            DST_RUN_ID.store(1, Ordering::Relaxed);
-            DST_TF_ID.store(0, Ordering::Relaxed);
-            // #endregion
-            let (run1, should_check) = {
+            let should_check = {
                 let td = TestDriver::new_with_seed(config.seed);
-                let run1 = run_once(&scenario, &td, config)?;
-                let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
-                (run1, should_check)
+                let _run1 = run_once(&scenario, &td, config)?;
+                td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY)
             };
 
             if should_check {
                 tracing::info!(
-                    "[nitpick] Running determinism check for seed {}",
+                    "[nitpick] Running determinism check for seed {} (subprocess)",
                     config.seed
                 );
-                check_determinism(&scenario, config, &run1)?;
+                check_determinism_subprocess(scenario.name(), config)?;
             }
 
             anyhow::Ok(())
@@ -262,6 +252,7 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
 }
 
 /// Run a scenario and always verify determinism (run twice with the same seed).
+/// This is called by the subprocess spawned for determinism checks.
 pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
@@ -277,6 +268,49 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
     Ok(())
 }
 
+/// Spawn a subprocess of the nitpick binary to run a determinism check.
+///
+/// V8's global platform state (code caches, IC type feedback, GC thresholds)
+/// accumulates across isolate lifetimes within a single process. In batch mode,
+/// the first run of a determinism check sees V8 state polluted by prior
+/// simulations, while the second run sees state polluted by the first run +
+/// prior simulations. This asymmetry causes poll count differences.
+///
+/// By running both run1 and run2 in a fresh subprocess, both runs start with
+/// identical (clean) V8 state, eliminating this source of non-determinism.
+fn check_determinism_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<()> {
+    let exe = std::env::current_exe().expect("Failed to get current executable path");
+    let output = std::process::Command::new(&exe)
+        .args([
+            "-c",
+            &config.concurrency.to_string(),
+            "-t",
+            &config.transactions.to_string(),
+            "determinism-check",
+            scenario_name,
+            &config.seed.to_string(),
+        ])
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn determinism check subprocess: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "Determinism check subprocess failed for seed {} (exit code: {:?}):\nstdout: \
+             {stdout}\nstderr: {stderr}",
+            config.seed,
+            output.status.code()
+        );
+    }
+
+    tracing::info!(
+        "[nitpick] Determinism check passed (subprocess) for seed {}",
+        config.seed
+    );
+    Ok(())
+}
+
 fn check_determinism<S: Scenario>(
     scenario: &S,
     config: Config,
@@ -286,10 +320,6 @@ fn check_determinism<S: Scenario>(
         "[nitpick] Running determinism check for seed {}",
         config.seed
     );
-    // #region agent log
-    DST_RUN_ID.store(2, Ordering::Relaxed);
-    DST_TF_ID.store(0, Ordering::Relaxed);
-    // #endregion
     let td = TestDriver::new_with_seed(config.seed);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
