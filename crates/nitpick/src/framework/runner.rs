@@ -301,15 +301,13 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
         // rare outlier results; the majority result is the canonical one.
         let majority_threshold = all_results.len() / 2 + 1;
         let mut best_count = 0;
-        let mut best_idx = 0;
-        for (i, candidate) in all_results.iter().enumerate() {
+        for candidate in all_results.iter() {
             let count = all_results
                 .iter()
                 .filter(|r| **r == *candidate)
                 .count();
             if count > best_count {
                 best_count = count;
-                best_idx = i;
             }
         }
 
