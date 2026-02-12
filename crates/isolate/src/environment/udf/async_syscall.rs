@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
+use futures::future::join_all;
 use common::{
     bootstrap_model::components::handles::FunctionHandle,
     components::{
@@ -164,6 +165,7 @@ pub fn system_table_guard(name: &TableName, expect_system_table: bool) -> anyhow
 pub enum AsyncSyscallBatch {
     Reads(Vec<AsyncRead>),
     StorageGetUrls(Vec<JsonValue>),
+    RunUdfBatch(Vec<JsonValue>),
     Unbatched { name: String, args: JsonValue },
 }
 
@@ -179,6 +181,7 @@ impl AsyncSyscallBatch {
             "1.0/get" => Self::Reads(vec![AsyncRead::Get(args)]),
             "1.0/queryStreamNext" => Self::Reads(vec![AsyncRead::QueryStreamNext(args)]),
             "1.0/storageGetUrl" => Self::StorageGetUrls(vec![args]),
+            "1.0/runUdf" => Self::RunUdfBatch(vec![args]),
             _ => Self::Unbatched { name, args },
         }
     }
@@ -193,6 +196,8 @@ impl AsyncSyscallBatch {
             (Self::Reads(_), _) => false,
             (Self::StorageGetUrls(_), "1.0/storageGetUrl") => true,
             (Self::StorageGetUrls(_), _) => false,
+            (Self::RunUdfBatch(_), "1.0/runUdf") => true,
+            (Self::RunUdfBatch(_), _) => false,
             (Self::Unbatched { .. }, _) => false,
         }
     }
@@ -206,6 +211,9 @@ impl AsyncSyscallBatch {
             (Self::StorageGetUrls(batch_args), "1.0/storageGetUrl") => {
                 batch_args.push(args);
             },
+            (Self::RunUdfBatch(batch_args), "1.0/runUdf") => {
+                batch_args.push(args);
+            },
             _ => anyhow::bail!("cannot push {name} onto {self:?}"),
         }
         Ok(())
@@ -216,6 +224,7 @@ impl AsyncSyscallBatch {
             // 1.0/get is grouped in with 1.0/queryStreamNext.
             Self::Reads(_) => "1.0/queryStreamNext",
             Self::StorageGetUrls(_) => "1.0/storageGetUrl",
+            Self::RunUdfBatch(_) => "1.0/runUdf",
             Self::Unbatched { name, .. } => name,
         }
     }
@@ -224,6 +233,7 @@ impl AsyncSyscallBatch {
         match self {
             Self::Reads(args) => args.len(),
             Self::StorageGetUrls(args) => args.len(),
+            Self::RunUdfBatch(args) => args.len(),
             Self::Unbatched { .. } => 1,
         }
     }
@@ -322,6 +332,17 @@ pub trait AsyncSyscallProvider<RT: Runtime> {
         path: ResolvedComponentFunctionPath,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue>;
+
+    /// Execute multiple query subtransactions concurrently. Each item is
+    /// (path, args, validated_path_and_args). All must be UdfType::Query.
+    /// Returns one result per query in the same order.
+    async fn run_query_batch(
+        &mut self,
+        queries: Vec<(
+            ResolvedComponentFunctionPath,
+            ValidatedPathAndArgs,
+        )>,
+    ) -> anyhow::Result<Vec<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>>;
 
     async fn create_function_handle(
         &mut self,
@@ -656,6 +677,111 @@ impl<RT: Runtime> AsyncSyscallProvider<RT> for DatabaseUdfEnvironment<RT> {
             .lookup(handle)
             .await
     }
+
+    async fn run_query_batch(
+        &mut self,
+        queries: Vec<(
+            ResolvedComponentFunctionPath,
+            ValidatedPathAndArgs,
+        )>,
+    ) -> anyhow::Result<Vec<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>> {
+        let new_reactor_depth = {
+            if self.reactor_depth >= *MAX_REACTOR_CALL_DEPTH {
+                anyhow::bail!(ErrorMetadata::bad_request(
+                    "MaximumCallDepthExceeded",
+                    "Cross component call depth limit exceeded. Do you have an infinite loop in \
+                     your app?"
+                ));
+            }
+            self.reactor_depth + 1
+        };
+
+        let mut tx = self.phase.take_tx()?;
+
+        // Fork the transaction for each concurrent query.
+        let mut forks = Vec::with_capacity(queries.len());
+        for _ in &queries {
+            forks.push(tx.fork_for_query()?);
+        }
+
+        // Build and execute all query futures concurrently.
+        let udf_callback = self.udf_callback.clone();
+        let environment_data = EnvironmentData {
+            key_broker: self.key_broker.clone(),
+            default_system_env_vars: BTreeMap::new(),
+            file_storage: self.file_storage.clone(),
+            module_loader: self.phase.module_loader().clone(),
+        };
+
+        let futures: Vec<_> = forks
+            .into_iter()
+            .zip(queries.iter())
+            .map(|(fork_tx, (_path, path_and_args))| {
+                let cb = udf_callback.clone();
+                let env = environment_data.clone();
+                let ctx = self.context.clone();
+                let client_id = self.client_id.clone();
+                let pa = path_and_args.clone();
+                async move {
+                    cb.execute_udf(
+                        client_id,
+                        UdfType::Query,
+                        pa,
+                        env,
+                        fork_tx,
+                        QueryJournal::new(),
+                        ctx,
+                        new_reactor_depth,
+                    )
+                    .await
+                }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+
+        // Process results: merge reads, propagate log lines/identity/journals.
+        let mut final_results = Vec::with_capacity(results.len());
+        for (result, (path, _)) in results.into_iter().zip(queries.iter()) {
+            match result {
+                Ok((result_tx, outcome)) => {
+                    tx.merge_query_reads(result_tx)?;
+
+                    // Propagate log lines, identity, and journals from the
+                    // outcome (mirroring the sequential run_udf path).
+                    if let FunctionOutcome::Query(ref udf_outcome) = outcome {
+                        log_run_udf(
+                            self.udf_type,
+                            UdfType::Query,
+                            self.phase.observed_identity(),
+                            udf_outcome.observed_identity,
+                        );
+                        if udf_outcome.observed_identity {
+                            self.observe_identity()?;
+                        }
+                        if self.is_system()
+                            && udf_outcome.result.is_ok()
+                        {
+                            self.next_journal = udf_outcome.journal.clone();
+                        }
+                        self.emit_sub_function_log_lines(
+                            path.for_logging(),
+                            udf_outcome.log_lines.clone(),
+                        );
+                    }
+
+                    let dummy_tx = tx.fork_for_query()?;
+                    final_results.push(Ok((dummy_tx, outcome)));
+                },
+                Err(e) => {
+                    final_results.push(Err(e));
+                },
+            }
+        }
+
+        self.phase.put_tx(tx)?;
+        Ok(final_results)
+    }
 }
 
 /// These are syscalls that exist on `db` in `convex/server` for npm versions >=
@@ -685,6 +811,9 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
             AsyncSyscallBatch::Reads(batch_args) => Self::query_batch(provider, batch_args).await,
             AsyncSyscallBatch::StorageGetUrls(batch_args) => {
                 Self::storage_get_url_batch(provider, batch_args).await
+            },
+            AsyncSyscallBatch::RunUdfBatch(batch_args) => {
+                Self::run_udf_batch(provider, batch_args).await
             },
             AsyncSyscallBatch::Unbatched { name, args } => {
                 let result = match &name[..] {
@@ -1371,6 +1500,180 @@ impl<RT: Runtime, P: AsyncSyscallProvider<RT>> DatabaseSyscallsV1<RT, P> {
         };
         let value = provider.run_udf(udf_type, path, args).await?;
         Ok(value.into())
+    }
+
+    /// Handle a batch of `1.0/runUdf` syscalls. If all are queries, execute
+    /// them concurrently via `run_query_batch`. Otherwise, fall back to
+    /// sequential execution.
+    async fn run_udf_batch(
+        provider: &mut P,
+        batch_args: Vec<JsonValue>,
+    ) -> Vec<anyhow::Result<JsonValue>> {
+        // If only one call, just delegate to the existing sequential path.
+        if batch_args.len() == 1 {
+            let args = batch_args.into_iter().next().unwrap();
+            let result = Self::run_udf(provider, args).await;
+            return vec![result];
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RunUdfArgs {
+            udf_type: String,
+            name: Option<String>,
+            reference: Option<String>,
+            function_handle: Option<String>,
+            args: JsonValue,
+        }
+
+        // Phase 1: Parse all args and resolve all paths sequentially.
+        struct PreparedCall {
+            #[allow(dead_code)]
+            udf_type: UdfType,
+            path: ResolvedComponentFunctionPath,
+            path_and_args: ValidatedPathAndArgs,
+        }
+
+        let mut prepared: Vec<Result<PreparedCall, anyhow::Error>> =
+            Vec::with_capacity(batch_args.len());
+        let mut all_queries = true;
+
+        for args in &batch_args {
+            let result: anyhow::Result<PreparedCall> = async {
+                let parsed: RunUdfArgs =
+                    with_argument_error("runUdf", || Ok(serde_json::from_value(args.clone())?))?;
+                let (udf_type, call_args) = with_argument_error("runUdf", || {
+                    let udf_type: UdfType = parsed.udf_type.parse().context(ArgName("udfType"))?;
+                    let call_args: ConvexObject = ConvexValue::try_from(parsed.args.clone())
+                        .context(ArgName("args"))?
+                        .try_into()
+                        .context(ArgName("args"))?;
+                    Ok((udf_type, call_args))
+                })?;
+
+                if udf_type != UdfType::Query {
+                    all_queries = false;
+                }
+
+                let path = match parsed.function_handle {
+                    Some(function_handle) => {
+                        let handle: FunctionHandle =
+                            with_argument_error("runUdf", || function_handle.parse())?;
+                        let p = provider.lookup_function_handle(handle).await?;
+                        let tx = provider.tx()?;
+                        let (_, component) = BootstrapComponentsModel::new(tx)
+                            .must_component_path_to_ids(&p.component)?;
+                        ResolvedComponentFunctionPath {
+                            component,
+                            udf_path: p.udf_path,
+                            component_path: Some(p.component),
+                        }
+                    },
+                    None => {
+                        let reference = parse_name_or_reference(
+                            "runUdf",
+                            parsed.name,
+                            parsed.reference,
+                        )?;
+                        let resource = provider.resolve(reference).await?;
+                        match resource {
+                            Resource::ResolvedSystemUdf(p) => p,
+                            Resource::Value(_) => {
+                                anyhow::bail!(ErrorMetadata::bad_request(
+                                    "InvalidResource",
+                                    "Cannot execute a value resource"
+                                ));
+                            },
+                            Resource::Function(p) => {
+                                let tx = provider.tx()?;
+                                let (_, component) = BootstrapComponentsModel::new(tx)
+                                    .must_component_path_to_ids(&p.component)?;
+                                ResolvedComponentFunctionPath {
+                                    component,
+                                    udf_path: p.udf_path,
+                                    component_path: Some(p.component),
+                                }
+                            },
+                        }
+                    },
+                };
+
+                let tx = provider.tx()?;
+                let path_and_args_result = ValidatedPathAndArgs::new_with_returns_validator(
+                    AllowedVisibility::All,
+                    tx,
+                    PublicFunctionPath::ResolvedComponent(path.clone()),
+                    ConvexArray::try_from(vec![call_args.into()])?,
+                    udf_type,
+                )
+                .await?;
+                let (path_and_args, _returns_validator) = match path_and_args_result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        anyhow::bail!(ErrorMetadata::bad_request("InvalidArgs", e.message));
+                    },
+                };
+
+                Ok(PreparedCall {
+                    udf_type,
+                    path,
+                    path_and_args,
+                })
+            }
+            .await;
+            prepared.push(result);
+        }
+
+        // If any preparation failed or not all queries, fall back to sequential.
+        let any_prep_failed = prepared.iter().any(|r| r.is_err());
+        if !all_queries || any_prep_failed {
+            // Fall back: run each one sequentially using the existing path.
+            // We need to re-parse since we consumed the args above.
+            let mut results = Vec::with_capacity(batch_args.len());
+            for args in batch_args {
+                let result = Self::run_udf(provider, args).await;
+                results.push(result);
+            }
+            return results;
+        }
+
+        // Phase 2: All queries -- execute concurrently.
+        let query_calls: Vec<_> = prepared
+            .into_iter()
+            .map(|r| {
+                let p = r.unwrap(); // safe: checked no errors above
+                (p.path, p.path_and_args)
+            })
+            .collect();
+
+        let batch_results = match provider.run_query_batch(query_calls).await {
+            Ok(results) => results,
+            Err(e) => {
+                // System error -- fail all
+                return batch_args
+                    .iter()
+                    .map(|_| Err(e.clone_error()))
+                    .collect();
+            },
+        };
+
+        // Phase 3: Process outcomes into return values.
+        batch_results
+            .into_iter()
+            .map(|result| {
+                let (_tx, outcome) = result.map_err(remove_rejected_before_execution)?;
+                let outcome = match outcome {
+                    FunctionOutcome::Query(outcome) => outcome,
+                    _ => anyhow::bail!("Unexpected non-query outcome in query batch"),
+                };
+                let UdfOutcome { result, .. } = outcome;
+                let result = match result {
+                    Ok(r) => r.unpack()?,
+                    Err(e) => anyhow::bail!(e),
+                };
+                Ok(result.into())
+            })
+            .collect()
     }
 
     async fn create_function_handle(

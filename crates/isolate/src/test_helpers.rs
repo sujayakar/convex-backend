@@ -29,7 +29,7 @@ use common::{
         ComponentPath,
         PublicFunctionPath,
     },
-    errors::JsError,
+    errors::{ExecutionResult, JsError},
     execution_context::ExecutionContext,
     fastrace_helpers::EncodedSpan,
     http::{
@@ -312,7 +312,7 @@ impl<RT: Runtime, P: Persistence> UdfTest<RT, P> {
         persistence: Arc<P>,
         config: UdfTestConfig,
         max_isolate_workers: usize,
-    ) -> anyhow::Result<Result<Self, JsError>> {
+    ) -> ExecutionResult<Self> {
         let DbFixtures {
             db: database,
             search_storage,
@@ -1250,7 +1250,7 @@ impl<RT: Runtime> UdfTest<RT, TestPersistence> {
     pub async fn default_with_modules(
         modules: Vec<ModuleConfig>,
         rt: RT,
-    ) -> anyhow::Result<Result<Self, JsError>> {
+    ) -> ExecutionResult<Self> {
         Self::new(
             modules,
             rt,
@@ -1489,7 +1489,7 @@ pub async fn bogus_udf_request<RT: Runtime>(
         environment_data: test_environment_data(db.runtime().clone())?,
         response: sender,
         queue_timer: queue_timer(),
-        udf_callback: Box::new(BogusUdfCallback),
+        udf_callback: Arc::new(BogusUdfCallback),
         reactor_depth: 0,
         function_started_sender: None,
     };

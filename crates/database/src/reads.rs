@@ -410,8 +410,65 @@ impl TransactionReadSet {
         self.read_set
     }
 
+    /// Consume the read set and return all its parts for merging into another
+    /// TransactionReadSet.
+    pub fn into_parts(
+        self,
+    ) -> (ReadSet, usize, TransactionReadSize, TransactionReadSize) {
+        (
+            self.read_set,
+            self.num_intervals,
+            self.user_tx_size,
+            self.system_tx_size,
+        )
+    }
+
     pub fn read_set(&self) -> &ReadSet {
         &self.read_set
+    }
+
+    /// Check that the current accumulated read sizes don't exceed transaction
+    /// limits. Used after merging reads from concurrent query forks back
+    /// into a parent transaction.
+    pub fn check_limits(&self) -> anyhow::Result<()> {
+        let tx_size = &self.user_tx_size;
+        anyhow::ensure!(
+            tx_size.total_document_count <= *TRANSACTION_MAX_READ_SIZE_ROWS,
+            ErrorMetadata::pagination_limit(
+                "TooManyDocumentsRead",
+                format!(
+                    "Too many documents read in a single function execution (limit: {}). \
+                     {OVER_LIMIT_HELP}",
+                    *TRANSACTION_MAX_READ_SIZE_ROWS,
+                )
+            ),
+        );
+        anyhow::ensure!(
+            tx_size.total_document_size <= *TRANSACTION_MAX_READ_SIZE_BYTES,
+            ErrorMetadata::pagination_limit(
+                "TooManyBytesRead",
+                format!(
+                    "Too many bytes read in a single function execution (limit: {} bytes). \
+                     {OVER_LIMIT_HELP}",
+                    *TRANSACTION_MAX_READ_SIZE_BYTES,
+                )
+            ),
+        );
+        if self.num_intervals > *TRANSACTION_MAX_READ_SET_INTERVALS {
+            anyhow::bail!(
+                anyhow::anyhow!("top three: {}", self.top_three_intervals()).context(
+                    ErrorMetadata::pagination_limit(
+                        "TooManyReads",
+                        format!(
+                            "Too many reads in a single function execution (limit: {}). \
+                             {OVER_LIMIT_HELP}",
+                            *TRANSACTION_MAX_READ_SET_INTERVALS,
+                        ),
+                    )
+                )
+            );
+        }
+        Ok(())
     }
 
     fn _record_indexed(

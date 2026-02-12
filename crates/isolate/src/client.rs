@@ -40,6 +40,7 @@ use common::{
     },
     errors::{
         recapture_stacktrace,
+        ExecutionResult,
         JsError,
     },
     execution_context::ExecutionContext,
@@ -382,7 +383,7 @@ pub enum RequestType<RT: Runtime> {
         response: oneshot::Sender<anyhow::Result<(Transaction<RT>, FunctionOutcome)>>,
         queue_timer: Timer<VMHistogram>,
         reactor_depth: usize,
-        udf_callback: Box<dyn UdfCallback<RT>>,
+        udf_callback: Arc<dyn UdfCallback<RT>>,
         function_started_sender: Option<oneshot::Sender<()>>,
     },
     Action {
@@ -411,7 +412,7 @@ pub enum RequestType<RT: Runtime> {
         modules: BTreeMap<CanonicalizedModulePath, ModuleConfig>,
         environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
         response: oneshot::Sender<
-            anyhow::Result<Result<BTreeMap<CanonicalizedModulePath, AnalyzedModule>, JsError>>,
+            ExecutionResult<BTreeMap<CanonicalizedModulePath, AnalyzedModule>>,
         >,
     },
     EvaluateSchema {
@@ -707,7 +708,7 @@ impl<RT: Runtime> IsolateClient<RT> {
             response: tx,
             queue_timer: queue_timer(),
             reactor_depth,
-            udf_callback: Box::new(self.clone()),
+            udf_callback: Arc::new(self.clone()),
             function_started_sender,
         };
         self.send_request(Request::new(
@@ -818,7 +819,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         modules: BTreeMap<CanonicalizedModulePath, ModuleConfig>,
         environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
         instance_name: String,
-    ) -> anyhow::Result<Result<BTreeMap<CanonicalizedModulePath, AnalyzedModule>, JsError>> {
+    ) -> ExecutionResult<BTreeMap<CanonicalizedModulePath, AnalyzedModule>> {
         anyhow::ensure!(
             modules
                 .values()

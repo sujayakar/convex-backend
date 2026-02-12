@@ -588,3 +588,23 @@ async fn test_component_status_skips_staged_index(
     assert_eq!(component_status.indexes_total, 1);
     Ok(())
 }
+
+#[convex_macro::test_runtime]
+async fn test_concurrent_query_subtransactions(rt: TestRuntime) -> anyhow::Result<()> {
+    let application = Application::new_for_tests(&rt).await?;
+    application.load_component_tests_modules("basic").await?;
+    let result = run_function(
+        &application,
+        "componentEntry:concurrentQueries".parse()?,
+        json!({}),
+    )
+    .await??;
+    // Result should be an object with `messages` and `dateNow` fields.
+    let value = result.value.unpack()?;
+    let ConvexValue::Object(obj) = value else {
+        anyhow::bail!("Expected object, got {:?}", value);
+    };
+    assert!(obj.get("messages").is_some(), "missing messages field");
+    assert!(obj.get("dateNow").is_some(), "missing dateNow field");
+    Ok(())
+}
