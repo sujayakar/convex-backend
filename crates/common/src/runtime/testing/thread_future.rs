@@ -60,7 +60,7 @@ fn append_tf_log(line: &str) {
     }
 }
 
-pub(crate) fn reset_thread_future_poll_tracking() {
+pub fn reset_thread_future_poll_tracking() {
     NEXT_THREAD_FUTURE_ID.store(1, Ordering::Relaxed);
     THREAD_FUTURE_POLL_COUNTS
         .lock()
