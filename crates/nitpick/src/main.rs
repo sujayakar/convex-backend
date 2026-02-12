@@ -4,8 +4,9 @@
 //! Nitpick CLI: deterministic simulation testing for the Convex storage engine.
 //!
 //! Usage:
-//!   nitpick replay <SCENARIO> <SEED>     Run a specific scenario with a given seed
-//!   nitpick batch <SCENARIO>             Run many simulations with random seeds
+//!   nitpick replay <SCENARIO> <SEED>     Run a specific scenario with a given
+//! seed   nitpick batch <SCENARIO>             Run many simulations with random
+//! seeds
 
 use clap::{
     Parser,
@@ -18,7 +19,7 @@ use nitpick::{
         batch::run_batch,
         runner::{
             run_scenario,
-            run_scenario_deterministic,
+            run_single_subprocess,
             Config,
         },
     },
@@ -35,7 +36,10 @@ use nitpick::{
 };
 
 #[derive(Parser)]
-#[command(name = "nitpick", about = "Deterministic simulation testing for Convex")]
+#[command(
+    name = "nitpick",
+    about = "Deterministic simulation testing for Convex"
+)]
 struct Cli {
     /// Concurrent transactions per simulation
     #[arg(short, long, default_value_t = 5)]
@@ -138,10 +142,7 @@ fn main() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            println!(
-                "Batch complete: {}/{} passed",
-                result.passed, result.total
-            );
+            println!("Batch complete: {}/{} passed", result.passed, result.total);
         },
         Commands::DeterminismCheck { scenario, seed } => {
             let config = Config {
@@ -149,7 +150,7 @@ fn main() -> anyhow::Result<()> {
                 concurrency: cli.concurrency,
                 seed,
             };
-            run_determinism_check_by_name(&scenario, config)?;
+            run_single_subprocess_by_name(&scenario, config)?;
         },
     }
     Ok(())
@@ -174,17 +175,18 @@ fn run_scenario_by_name(name: &str, config: Config) -> anyhow::Result<()> {
     }
 }
 
-/// Run a determinism check for a given scenario. Called from the subprocess.
-fn run_determinism_check_by_name(name: &str, config: Config) -> anyhow::Result<()> {
+/// Run a single simulation in a subprocess and print its result.
+/// Called from the subprocess spawned by the determinism check.
+fn run_single_subprocess_by_name(name: &str, config: Config) -> anyhow::Result<()> {
     match name {
-        "counter" => run_scenario_deterministic(CounterScenario, config),
-        "counter_js" => run_scenario_deterministic(CounterJsScenario, config),
-        "elle" => run_scenario_deterministic(ElleScenario::default(), config),
-        "elle_js" => run_scenario_deterministic(ElleJsScenario, config),
-        "index_query_js" => run_scenario_deterministic(IndexQueryJsScenario, config),
-        "link_ring" => run_scenario_deterministic(LinkRingScenario::default(), config),
-        "link_ring_js" => run_scenario_deterministic(LinkRingJsScenario::default(), config),
-        "scheduled_js" => run_scenario_deterministic(ScheduledJsScenario, config),
+        "counter" => run_single_subprocess(CounterScenario, config),
+        "counter_js" => run_single_subprocess(CounterJsScenario, config),
+        "elle" => run_single_subprocess(ElleScenario::default(), config),
+        "elle_js" => run_single_subprocess(ElleJsScenario, config),
+        "index_query_js" => run_single_subprocess(IndexQueryJsScenario, config),
+        "link_ring" => run_single_subprocess(LinkRingScenario::default(), config),
+        "link_ring_js" => run_single_subprocess(LinkRingJsScenario::default(), config),
+        "scheduled_js" => run_single_subprocess(ScheduledJsScenario, config),
         _ => {
             anyhow::bail!(
                 "Unknown scenario: {name}. Available: {}",
@@ -202,10 +204,20 @@ fn run_batch_by_name(
     threads: usize,
 ) -> anyhow::Result<nitpick::framework::batch::BatchResult> {
     let result = match name {
-        "counter" => run_batch(CounterScenario, concurrency, transactions, simulations, threads),
-        "counter_js" => {
-            run_batch(CounterJsScenario, concurrency, transactions, simulations, threads)
-        },
+        "counter" => run_batch(
+            CounterScenario,
+            concurrency,
+            transactions,
+            simulations,
+            threads,
+        ),
+        "counter_js" => run_batch(
+            CounterJsScenario,
+            concurrency,
+            transactions,
+            simulations,
+            threads,
+        ),
         "elle" => run_batch(
             ElleScenario::default(),
             concurrency,
@@ -213,10 +225,20 @@ fn run_batch_by_name(
             simulations,
             threads,
         ),
-        "elle_js" => run_batch(ElleJsScenario, concurrency, transactions, simulations, threads),
-        "index_query_js" => {
-            run_batch(IndexQueryJsScenario, concurrency, transactions, simulations, threads)
-        },
+        "elle_js" => run_batch(
+            ElleJsScenario,
+            concurrency,
+            transactions,
+            simulations,
+            threads,
+        ),
+        "index_query_js" => run_batch(
+            IndexQueryJsScenario,
+            concurrency,
+            transactions,
+            simulations,
+            threads,
+        ),
         "link_ring" => run_batch(
             LinkRingScenario::default(),
             concurrency,
@@ -231,9 +253,13 @@ fn run_batch_by_name(
             simulations,
             threads,
         ),
-        "scheduled_js" => {
-            run_batch(ScheduledJsScenario, concurrency, transactions, simulations, threads)
-        },
+        "scheduled_js" => run_batch(
+            ScheduledJsScenario,
+            concurrency,
+            transactions,
+            simulations,
+            threads,
+        ),
         _ => {
             anyhow::bail!(
                 "Unknown scenario: {name}. Available: {}",

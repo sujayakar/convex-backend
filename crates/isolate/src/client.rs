@@ -1132,12 +1132,12 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     /// `last_used_ts` older than `ISOLATE_IDLE_TIMEOUT` has already been
     /// recreated and there will be no penalty for reassigning this worker to a
     /// new client.
-    available_workers: HashMap<String, VecDeque<IdleWorkerState>>,
+    available_workers: BTreeMap<String, VecDeque<IdleWorkerState>>,
     /// Set of futures awaiting a response from an active worker.
     in_progress_workers: FuturesUnordered<DoneReceiver>,
     /// Counts the number of active workers per client. Should only contain a
     /// key if the value is greater than 0.
-    in_progress_count: HashMap<String, usize>,
+    in_progress_count: BTreeMap<String, usize>,
     /// The max number of workers this scheduler is permitted to create.
     max_workers: usize,
     handles: Arc<Mutex<Vec<IsolateWorkerHandle>>>,
@@ -1166,8 +1166,8 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             worker,
             worker_senders: Vec::new(),
             in_progress_workers: FuturesUnordered::new(),
-            in_progress_count: HashMap::new(),
-            available_workers: HashMap::new(),
+            in_progress_count: BTreeMap::new(),
+            available_workers: BTreeMap::new(),
             max_workers,
             handles,
             max_percent_per_client,

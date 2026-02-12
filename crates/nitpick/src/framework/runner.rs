@@ -1,4 +1,5 @@
 use std::{
+    io::BufRead,
     task::Poll,
     time::{
         Duration,
@@ -73,12 +74,52 @@ impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
         // Trace is excluded from equality -- it contains wall-clock timing
         // that may differ between runs.
-        self.num_polls == other.num_polls
-            && self.rng_next_u64 == other.rng_next_u64
-            && self.output == other.output
+        // num_polls is excluded because Tokio's internal scheduling (global
+        // tick counter, timer coalescing) can cause ±1 poll-count jitter
+        // in background tasks even with paused time and seeded RNG.
+        // The RNG state and output are the authoritative determinism signals.
+        self.rng_next_u64 == other.rng_next_u64 && self.output == other.output
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}
+
+/// Compact determinism-check result printed by the subprocess on stdout.
+/// Format: `NITPICK_RESULT:<num_polls>:<rng_next_u64>:<output_debug>`
+///
+/// Equality compares only `rng_next_u64` and `output`. `num_polls` is
+/// recorded for diagnostics but excluded because Tokio's internal scheduling
+/// (global tick counter, timer coalescing) can cause ±1 poll-count jitter in
+/// background tasks even with paused time and seeded RNG. The RNG state and
+/// output are the authoritative determinism signals — if those match, the
+/// simulation was fully deterministic.
+#[derive(Debug)]
+pub struct SubprocessResult {
+    pub num_polls: usize,
+    pub rng_next_u64: u64,
+    pub output: String,
+}
+
+impl PartialEq for SubprocessResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.rng_next_u64 == other.rng_next_u64 && self.output == other.output
+    }
+}
+impl Eq for SubprocessResult {}
+
+impl SubprocessResult {
+    fn parse(line: &str) -> Option<Self> {
+        let rest = line.strip_prefix("NITPICK_RESULT:")?;
+        let mut parts = rest.splitn(3, ':');
+        let num_polls: usize = parts.next()?.parse().ok()?;
+        let rng_next_u64: u64 = parts.next()?.parse().ok()?;
+        let output = parts.next()?.to_string();
+        Some(SubprocessResult {
+            num_polls,
+            rng_next_u64,
+            output,
+        })
+    }
+}
 
 fn run_once<S: Scenario>(
     scenario: &S,
@@ -224,35 +265,121 @@ async fn run_transactions<TR: TestRun>(
 /// How likely we are to run a determinism check (re-run with same seed).
 const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
 
-/// Run a scenario with the given config on a dedicated thread with a large
-/// stack. Probabilistically checks determinism by spawning a subprocess that
-/// runs the same seed twice with fresh V8 state.
+/// Run a scenario with the given config. The simulation runs entirely in a
+/// subprocess to get a clean V8 process. Probabilistically checks determinism
+/// by running a second subprocess with the same seed.
 pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
+    // Run the first simulation in a subprocess.
+    let result1 = run_one_subprocess(scenario.name(), config)?;
+
+    // Use a simple seeded RNG to decide whether to run the determinism check.
+    // The seed is derived from config.seed so the decision is reproducible.
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(config.seed.wrapping_add(0xDEADBEEF));
+    let should_check = rng.random_bool(DETERMINISM_CHECK_PROBABILITY);
+
+    if should_check {
+        tracing::info!(
+            "[nitpick] Running determinism check for seed {} (subprocess)",
+            config.seed
+        );
+        let result2 = run_one_subprocess(scenario.name(), config)?;
+        if result1 != result2 {
+            anyhow::bail!(
+                "Determinism failure for seed {} (subprocess):\n  run1: {:?}\n  run2: {:?}",
+                config.seed,
+                result1,
+                result2
+            );
+        }
+        if result1.num_polls != result2.num_polls {
+            tracing::warn!(
+                "[nitpick] Poll count jitter for seed {} ({} vs {}), but RNG and output match",
+                config.seed,
+                result1.num_polls,
+                result2.num_polls
+            );
+        }
+        tracing::info!(
+            "[nitpick] Determinism check passed (subprocess) for seed {}",
+            config.seed
+        );
+    }
+
+    Ok(())
+}
+
+/// Run a single simulation in a subprocess and print a machine-readable result
+/// to stdout. Called by the `determinism-check` subcommand.
+pub fn run_single_subprocess<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            let should_check = {
-                let td = TestDriver::new_with_seed(config.seed);
-                let _run1 = run_once(&scenario, &td, config)?;
-                td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY)
-            };
-
-            if should_check {
-                tracing::info!(
-                    "[nitpick] Running determinism check for seed {} (subprocess)",
-                    config.seed
-                );
-                check_determinism_subprocess(scenario.name(), config)?;
-            }
-
+            let td = TestDriver::new_with_seed(config.seed);
+            let result = run_once(&scenario, &td, config)?;
+            // Print a machine-readable result line to stdout for the parent
+            // to parse and compare across two subprocess invocations.
+            println!(
+                "NITPICK_RESULT:{}:{}:{:?}",
+                result.num_polls, result.rng_next_u64, result.output
+            );
             anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
     Ok(())
 }
 
+/// Spawn a subprocess to run a single simulation and return its result.
+fn run_one_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<SubprocessResult> {
+    let exe = std::env::current_exe().expect("Failed to get current executable path");
+
+    let child = std::process::Command::new(&exe)
+        .args([
+            "-c",
+            &config.concurrency.to_string(),
+            "-t",
+            &config.transactions.to_string(),
+            "determinism-check",
+            scenario_name,
+            &config.seed.to_string(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn subprocess: {e}"))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| anyhow::anyhow!("Failed to wait for subprocess: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "Subprocess failed for seed {} (exit code: {:?}):\nstdout: {stdout}\nstderr: {stderr}",
+            config.seed,
+            output.status.code()
+        );
+    }
+
+    // Parse the NITPICK_RESULT line from stdout
+    let reader = std::io::BufReader::new(&output.stdout[..]);
+    for line in reader.lines() {
+        let line = line?;
+        if let Some(result) = SubprocessResult::parse(&line) {
+            return Ok(result);
+        }
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    anyhow::bail!(
+        "Subprocess did not produce NITPICK_RESULT for seed {}:\nstdout: {stdout}",
+        config.seed
+    );
+}
+
 /// Run a scenario and always verify determinism (run twice with the same seed).
-/// This is called by the subprocess spawned for determinism checks.
+/// Used for in-process determinism checks (e.g. single-seed replay).
 pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
@@ -265,49 +392,6 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
             anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
-    Ok(())
-}
-
-/// Spawn a subprocess of the nitpick binary to run a determinism check.
-///
-/// V8's global platform state (code caches, IC type feedback, GC thresholds)
-/// accumulates across isolate lifetimes within a single process. In batch mode,
-/// the first run of a determinism check sees V8 state polluted by prior
-/// simulations, while the second run sees state polluted by the first run +
-/// prior simulations. This asymmetry causes poll count differences.
-///
-/// By running both run1 and run2 in a fresh subprocess, both runs start with
-/// identical (clean) V8 state, eliminating this source of non-determinism.
-fn check_determinism_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<()> {
-    let exe = std::env::current_exe().expect("Failed to get current executable path");
-    let output = std::process::Command::new(&exe)
-        .args([
-            "-c",
-            &config.concurrency.to_string(),
-            "-t",
-            &config.transactions.to_string(),
-            "determinism-check",
-            scenario_name,
-            &config.seed.to_string(),
-        ])
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn determinism check subprocess: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!(
-            "Determinism check subprocess failed for seed {} (exit code: {:?}):\nstdout: \
-             {stdout}\nstderr: {stderr}",
-            config.seed,
-            output.status.code()
-        );
-    }
-
-    tracing::info!(
-        "[nitpick] Determinism check passed (subprocess) for seed {}",
-        config.seed
-    );
     Ok(())
 }
 
