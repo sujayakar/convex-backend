@@ -74,11 +74,13 @@ pub fn module_origin<'s>(
 /// Run all queued tasks from this isolate's foreground task runner.
 /// In particular, this runs minor GC tasks that are scheduled.
 ///
-/// In deterministic simulation mode this is a no-op.  The V8 platform's
-/// foreground task runner is shared across all isolates in the process.
-/// Under CPU contention from concurrent simulations, GC-related tasks
-/// land in the queue at timing-dependent points, making the number of
-/// pumped tasks non-deterministic across replay runs.
+/// In deterministic simulation mode this is a no-op.  The V8 platform is
+/// initialized once per process (`Once`) and its foreground task runner
+/// accumulates GC/compilation tasks across isolate lifetimes.  When
+/// multiple simulations share a process (batch mode), earlier simulations
+/// leave residual platform state that makes `pump_message_loop` return
+/// different results for the determinism-check replay run, breaking
+/// `worker_poll_count` equality.
 pub fn pump_message_loop(isolate: &v8::Isolate) {
     if crate::client::is_v8_deterministic() {
         return;

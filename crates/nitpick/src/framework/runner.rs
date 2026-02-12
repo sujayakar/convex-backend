@@ -227,7 +227,7 @@ async fn run_transactions<TR: TestRun>(
 
 /// How likely we are to run a determinism check (re-run with same seed).
 // #region agent log
-const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0; // was 0.1
+const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1; // was 0.1
 // #endregion
 
 /// Run a scenario with the given config on a dedicated thread with a large

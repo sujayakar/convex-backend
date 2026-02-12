@@ -1095,17 +1095,36 @@ impl<RT: Runtime> UdfCallback<RT> for IsolateClient<RT> {
     }
 }
 
+/// In testing/DST mode, use a custom oneshot channel that defers waker
+/// fires to the Tokio thread (via `defer_waker_to_tokio_thread`) to avoid
+/// non-deterministic injection-queue scheduling.  In production, use the
+/// standard `tokio::sync::oneshot`.
+#[cfg(any(test, feature = "testing"))]
+pub type DstDoneSender<T> = common::runtime::testing::DstOneshotSender<T>;
+#[cfg(not(any(test, feature = "testing")))]
+pub type DstDoneSender<T> = oneshot::Sender<T>;
+
+#[cfg(any(test, feature = "testing"))]
+type DoneReceiver = common::runtime::testing::DstOneshotReceiver<ActiveWorkerState>;
+#[cfg(not(any(test, feature = "testing")))]
+type DoneReceiver = oneshot::Receiver<ActiveWorkerState>;
+
+fn dst_done_channel() -> (DstDoneSender<ActiveWorkerState>, DoneReceiver) {
+    #[cfg(any(test, feature = "testing"))]
+    {
+        common::runtime::testing::dst_oneshot_channel()
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        oneshot::channel()
+    }
+}
+
 pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     rt: RT,
     worker: W,
     /// Vec of channels for sending work to individual workers.
-    worker_senders: Vec<
-        mpsc::Sender<(
-            Request<RT>,
-            oneshot::Sender<ActiveWorkerState>,
-            ActiveWorkerState,
-        )>,
-    >,
+    worker_senders: Vec<mpsc::Sender<(Request<RT>, DstDoneSender<ActiveWorkerState>, ActiveWorkerState)>>,
     /// Map from client_id to stack of workers (implemented with a deque). The
     /// most recently used worker for a given client is at the front of the
     /// deque. These workers were previously used by this client, but may
@@ -1115,7 +1134,7 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     /// new client.
     available_workers: HashMap<String, VecDeque<IdleWorkerState>>,
     /// Set of futures awaiting a response from an active worker.
-    in_progress_workers: FuturesUnordered<oneshot::Receiver<ActiveWorkerState>>,
+    in_progress_workers: FuturesUnordered<DoneReceiver>,
     /// Counts the number of active workers per client. Should only contain a
     /// key if the value is greater than 0.
     in_progress_count: HashMap<String, usize>,
@@ -1226,7 +1245,8 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                     // #region agent log
                     {
                         let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
-                        common::runtime::testing::dst_log(&format!("SCHED completed {:?}", ids));
+                        let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
+                        common::runtime::testing::dst_log(&format!("SCHED completed {:?} @{}", ids, wpc));
                     }
                     // #endregion
                     for w in completions {
@@ -1246,7 +1266,7 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         request.reject();
                         continue;
                     };
-                    let (done_sender, done_receiver) = oneshot::channel();
+                    let (done_sender, done_receiver) = dst_done_channel();
                     self.in_progress_workers.push(done_receiver);
                     let entry = self
                         .in_progress_count
@@ -1331,7 +1351,10 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 .expect("Available worker map should never contain an empty list");
             let worker = workers.remove(idx).expect("index is valid");
             // #region agent log
-            common::runtime::testing::dst_log(&format!("SCHED get_worker -> {}", worker.worker_id));
+            {
+                let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
+                common::runtime::testing::dst_log(&format!("SCHED get_worker -> {} @{}", worker.worker_id, wpc));
+            }
             // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
@@ -1436,7 +1459,7 @@ impl SharedIsolateHeapStats {
 pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
     async fn service_requests<T>(
         self,
-        reqs: mpsc::Receiver<(Request<RT>, oneshot::Sender<T>, T)>,
+        reqs: mpsc::Receiver<(Request<RT>, DstDoneSender<T>, T)>,
         heap_stats: SharedIsolateHeapStats,
     ) {
         let IsolateConfig {
@@ -1445,7 +1468,7 @@ pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
             ..
         } = self.config();
         let mut reqs = std::pin::pin!(ReceiverStream::new(reqs).peekable());
-        let mut ready: Option<(oneshot::Sender<_>, _)> = None;
+        let mut ready: Option<(DstDoneSender<_>, _)> = None;
         'recreate_isolate: loop {
             let mut last_client_id: Option<String> = None;
             let mut last_request: Option<String> = None;

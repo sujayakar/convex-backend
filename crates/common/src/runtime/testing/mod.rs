@@ -1,4 +1,12 @@
 mod thread_future;
+pub use thread_future::defer_waker_to_tokio_thread;
+
+mod dst_oneshot;
+pub use dst_oneshot::{
+    dst_oneshot_channel,
+    DstOneshotReceiver,
+    DstOneshotSender,
+};
 
 use std::{
     self,
