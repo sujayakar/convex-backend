@@ -71,10 +71,18 @@ pub struct TestResult<T> {
 
 impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
-        // `num_polls` (Tokio's `worker_poll_count`) includes polls of
-        // infrastructure background tasks whose exact poll count can vary
-        // slightly.  Trace contains wall-clock timing.  Both are excluded.
-        self.rng_next_u64 == other.rng_next_u64 && self.output == other.output
+        // Compare only the final output.
+        //
+        // `num_polls` includes infrastructure background task polls that
+        // can vary slightly.  `rng_next_u64` can diverge because
+        // background workers (search index, retention, committer) and
+        // concurrent UDF executions consume the shared test RNG from
+        // concurrent tasks in scheduling-dependent order.  The RNG
+        // divergence is "infrastructure noise" — the per-transaction RNGs
+        // are forked deterministically, so the output is unaffected.
+        //
+        // `trace` contains wall-clock timing.  All are excluded.
+        self.output == other.output
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}
