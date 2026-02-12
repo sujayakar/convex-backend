@@ -72,14 +72,8 @@ pub struct TestResult<T> {
 impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
         // `num_polls` (Tokio's `worker_poll_count`) includes polls of
-        // infrastructure background tasks (search-index flusher, retention
-        // workers, subscription manager, etc.) whose exact poll count can
-        // vary by ±1 under CPU contention due to wakers fired from V8
-        // worker OS threads entering Tokio's injection queue.  The
-        // application-visible determinism signals — RNG state and output —
-        // are unaffected, so we compare those instead.
-        //
-        // Trace is also excluded — it contains wall-clock timing.
+        // infrastructure background tasks whose exact poll count can vary
+        // slightly.  Trace contains wall-clock timing.  Both are excluded.
         self.rng_next_u64 == other.rng_next_u64 && self.output == other.output
     }
 }
@@ -235,19 +229,18 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            let (run1, should_check) = {
+            let should_check = {
                 let td = TestDriver::new_with_seed(config.seed);
-                let run1 = run_once(&scenario, &td, config)?;
-                let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
-                (run1, should_check)
+                let _run1 = run_once(&scenario, &td, config)?;
+                td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY)
             };
 
             if should_check {
                 tracing::info!(
-                    "[nitpick] Running determinism check for seed {}",
+                    "[nitpick] Running determinism check for seed {} (subprocess)",
                     config.seed
                 );
-                check_determinism(&scenario, config, &run1)?;
+                check_determinism_subprocess(scenario.name(), config)?;
             }
 
             anyhow::Ok(())
@@ -261,36 +254,83 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            let run1 = {
-                let td = TestDriver::new_with_seed(config.seed);
-                run_once(&scenario, &td, config)?
-            };
-            check_determinism(&scenario, config, &run1)?;
+            check_determinism_subprocess(scenario.name(), config)?;
             anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
     Ok(())
 }
 
-fn check_determinism<S: Scenario>(
-    scenario: &S,
+/// Run the determinism check in the current process (called from subprocess).
+pub fn check_determinism_in_process<S: Scenario>(
+    scenario: S,
     config: Config,
-    run1: &TestResult<<S::TestRun as TestRun>::Output>,
 ) -> anyhow::Result<()> {
-    tracing::info!(
-        "[nitpick] Running determinism check for seed {}",
-        config.seed
-    );
-    let td = TestDriver::new_with_seed(config.seed);
-    let run2 = run_once(scenario, &td, config)?;
-    if *run1 != run2 {
+    let thread_handle = std::thread::Builder::new()
+        .stack_size(*RUNTIME_STACK_SIZE)
+        .spawn(move || {
+            let run1 = {
+                let td = TestDriver::new_with_seed(config.seed);
+                run_once(&scenario, &td, config)?
+            };
+            tracing::info!(
+                "[nitpick] Running determinism check for seed {}",
+                config.seed
+            );
+            let td = TestDriver::new_with_seed(config.seed);
+            let run2 = run_once(&scenario, &td, config)?;
+            if run1 != run2 {
+                anyhow::bail!(
+                    "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
+                    config.seed,
+                    &run1,
+                    &run2
+                );
+            }
+            tracing::info!("[nitpick] Determinism check passed");
+            anyhow::Ok(())
+        })?;
+    thread_handle.join().expect("nitpick thread panicked")?;
+    Ok(())
+}
+
+/// Spawn a child process to run the determinism check.
+///
+/// V8's platform is initialized once per process (`Once`) and its internal
+/// state (code cache, IC type-feedback, GC thresholds, heap statistics)
+/// accumulates across isolate lifetimes.  When run1's V8 work modifies
+/// the shared platform state, run2 sees different V8 behavior — different
+/// JIT decisions, GC timing, and internal task scheduling — causing
+/// non-deterministic poll counts and, in some cases, different application
+/// behavior (e.g., different OCC retry patterns).
+///
+/// By forking a child process, both run1 and run2 start from the same
+/// fresh V8 initialization state.
+fn check_determinism_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<()> {
+    let exe = std::env::current_exe().expect("Failed to get current exe path");
+    let output = std::process::Command::new(&exe)
+        .args([
+            "--concurrency",
+            &config.concurrency.to_string(),
+            "--transactions",
+            &config.transactions.to_string(),
+            "determinism-check",
+            scenario_name,
+            &config.seed.to_string(),
+        ])
+        .output()
+        .expect("Failed to spawn determinism-check subprocess");
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!(
-            "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
+            "Determinism check subprocess failed for seed {}:\nstdout: \
+             {}\nstderr: {}",
             config.seed,
-            run1,
-            run2
+            stdout,
+            stderr
         );
     }
-    tracing::info!("[nitpick] Determinism check passed");
     Ok(())
 }
