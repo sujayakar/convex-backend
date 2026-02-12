@@ -13,6 +13,7 @@ use futures::{
     FutureExt,
 };
 
+use super::dst_log;
 use crate::knobs::RUNTIME_STACK_SIZE;
 
 /// Channel for deferring waker fires from the OS thread to the Tokio
@@ -102,6 +103,15 @@ impl Future for ThreadFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let start_polls = tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|handle| handle.metrics().worker_poll_count(0))
+            .map(|polls| polls.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        // #region agent log
+        dst_log(&format!("TF_POLL start @{start_polls}"));
+        // #endregion
+
         let this = self.get_mut();
 
         // Forward the poll request to the thread.
@@ -134,12 +144,30 @@ impl Future for ThreadFuture {
 
         match response {
             Poll::Ready(was_canceled) => {
+                let done_polls = tokio::runtime::Handle::try_current()
+                    .ok()
+                    .map(|handle| handle.metrics().worker_poll_count(0))
+                    .map(|polls| polls.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                // #region agent log
+                dst_log(&format!("TF_POLL done ready @{done_polls}"));
+                // #endregion
                 tracing::debug!(
                     "ThreadFuture completed (was_canceled: {was_canceled}), returning."
                 );
                 Poll::Ready(())
             },
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                let done_polls = tokio::runtime::Handle::try_current()
+                    .ok()
+                    .map(|handle| handle.metrics().worker_poll_count(0))
+                    .map(|polls| polls.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                // #region agent log
+                dst_log(&format!("TF_POLL done pending @{done_polls}"));
+                // #endregion
+                Poll::Pending
+            },
         }
     }
 }

@@ -10,6 +10,7 @@ pub use dst_oneshot::{
 
 use std::{
     self,
+    cell::Cell,
     pin::Pin,
     sync::{
         Arc,
@@ -49,6 +50,55 @@ use crate::pause::PauseClient;
 
 pub static CONVEX_EPOCH: LazyLock<SystemTime> =
     LazyLock::new(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1620198000)); // May 5th, 2021 :)
+
+thread_local! {
+    static DST_RUN_ID: Cell<u32> = const { Cell::new(0) };
+}
+
+pub fn set_dst_run_id(n: u32) {
+    DST_RUN_ID.with(|run_id| run_id.set(n));
+}
+
+pub fn get_dst_run_id() -> u32 {
+    DST_RUN_ID.with(Cell::get)
+}
+
+pub fn dst_log(msg: &str) {
+    use std::io::Write;
+
+    let run_id = get_dst_run_id();
+    if run_id == 0 {
+        return;
+    }
+
+    let thread_name = std::thread::current()
+        .name()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{:?}", std::thread::current().id()));
+    let thread_name = thread_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let path = format!(
+        "/tmp/nitpick_{}_{}_run{}.log",
+        std::process::id(),
+        thread_name,
+        run_id
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{msg}");
+    }
+}
 
 pub struct TestDriver {
     tokio_runtime: Option<tokio::runtime::Runtime>,
@@ -194,27 +244,10 @@ impl Runtime for TestRuntime {
         // is manually advanced forward, or the Tokio runtime runs out of work to do and
         // auto advances to the next pending timer.
         //
-        // Minimum duration of 1ns to prevent zero-duration timers.
-        //
-        // When `duration == 0`, `tokio::time::sleep(0)` creates a timer at
-        // exactly the current virtual time, which is immediately "elapsed" when
-        // Tokio processes it.  Inside `park_internal`, an already-elapsed timer
-        // causes the `else` branch (`park.park_timeout(0)`) to be taken instead
-        // of `park_thread_timeout`.  The key difference: `park_thread_timeout`
-        // calls `handle.did_wake()` which **reads and clears** the `did_wake`
-        // flag, while the `else` branch does not.
-        //
-        // When `did_wake=true` is not cleared by `park_yield`, real `park()`
-        // may also see `did_wake=true` and skip virtual time auto-advancement.
-        // This creates a timing-dependent feedback loop that breaks determinism
-        // in batch mode (the flag is set by OS thread wakeups whose timing
-        // varies between simulations due to V8 JIT warmup).
-        //
-        // With a minimum 1ns duration, all timers are strictly in the future
-        // when created.  At the time of every `park_yield`, the next pending
-        // timer has `duration > 0`, so `park_thread_timeout` is always called
-        // and `did_wake` is always cleared.  This breaks the feedback loop and
-        // makes virtual time advancement fully deterministic.
+        // Minimum 1ns to avoid zero-duration timers which map to tick=now and
+        // prevent park_yield from calling park_thread_timeout (which clears
+        // the did_wake flag).  With 1ms tick resolution, 1ns rounds up to
+        // tick+1, guaranteeing every timer is strictly in the future.
         let duration = duration.max(Duration::from_nanos(1));
         Box::pin(tokio::time::sleep(duration).fuse())
     }

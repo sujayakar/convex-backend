@@ -16,6 +16,24 @@ use crate::Database;
 // 10ish minutes, probably something has gone wrong.
 const MAX_OVERLOADED_RETRIES: usize = 20;
 
+#[cfg(any(test, feature = "testing"))]
+fn dst_retriable_worker_log(name: &'static str, phase: &'static str, delay: Duration) {
+    let polls = tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|handle| handle.metrics().worker_poll_count(0))
+        .map(|polls| polls.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    // #region agent log
+    common::runtime::testing::dst_log(&format!(
+        "RETRY_WAIT name={name} phase={phase} delay_ms={} @{polls}",
+        delay.as_millis()
+    ));
+    // #endregion
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+fn dst_retriable_worker_log(_name: &'static str, _phase: &'static str, _delay: Duration) {}
+
 #[async_trait]
 pub(crate) trait RetriableWorker<RT: Runtime> {
     async fn work_loop(
@@ -102,7 +120,9 @@ async fn retry_failures_impl<RT: Runtime>(
                 max_backoff.as_millis(),
                 expected_error,
             );
+            dst_retriable_worker_log(name, "call", delay);
             runtime.wait(delay).await;
+            dst_retriable_worker_log(name, "fired", delay);
         } else {
             overloaded_errors = 0;
             occ_errors = 0;
