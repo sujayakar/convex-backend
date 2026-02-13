@@ -480,6 +480,7 @@ mod tests {
     };
 
     use super::{
+        debug_string_preview,
         determinism_diff,
         determinism_failure_message,
         signed_delta_usize,
@@ -903,6 +904,22 @@ mod tests {
         assert_eq!(signed_delta_usize(7, 3), 4);
         assert_eq!(signed_delta_usize(3, 7), -4);
         assert_eq!(signed_delta_usize(7, 3), -signed_delta_usize(3, 7));
+    }
+
+    #[test]
+    fn test_debug_string_preview_not_truncated_at_exact_limit() {
+        let preview = debug_string_preview(&"🙂🙂🙂".to_string(), 5);
+        assert_eq!(preview.full_len, 5);
+        assert_eq!(preview.preview, "\"🙂🙂🙂\"");
+        assert!(!preview.truncated);
+    }
+
+    #[test]
+    fn test_debug_string_preview_truncates_when_above_limit() {
+        let preview = debug_string_preview(&"abcdef".to_string(), 4);
+        assert_eq!(preview.full_len, 8);
+        assert_eq!(preview.preview, "\"abc…<truncated>");
+        assert!(preview.truncated);
     }
 
     #[test]
