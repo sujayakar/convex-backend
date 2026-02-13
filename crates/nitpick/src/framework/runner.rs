@@ -558,4 +558,28 @@ mod tests {
         assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_event_mismatch_index: Some(0)"));
     }
+
+    #[test]
+    fn test_determinism_failure_message_reports_trace_length_mismatch() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionCommit,
+            }],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+
+        let message = determinism_failure_message(123, &run1, &run2);
+        assert!(message.contains("trace_len_mismatch: true"));
+        assert!(message.contains("trace_event_mismatch_index: None"));
+    }
 }
