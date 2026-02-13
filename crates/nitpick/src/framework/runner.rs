@@ -40,6 +40,7 @@ use super::scenario::{
 const VERIFY_PROBABILITY: f64 = 0.01;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(120);
+const OUTPUT_DEBUG_PREVIEW_CHARS: usize = 256;
 
 /// Configuration for a single simulation run.
 #[derive(Clone, Copy, Debug)]
@@ -385,15 +386,21 @@ fn determinism_failure_message<T: std::fmt::Debug>(
     run2: &TestResult<T>,
     diff: &DeterminismDiff,
 ) -> String {
+    let (run1_output_debug_len, run1_output_debug_preview) =
+        debug_string_preview(&run1.output, OUTPUT_DEBUG_PREVIEW_CHARS);
+    let (run2_output_debug_len, run2_output_debug_preview) =
+        debug_string_preview(&run2.output, OUTPUT_DEBUG_PREVIEW_CHARS);
     format!(
-        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_len_delta: {}, paired_trace_event_count: {}, trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  run2: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_output_debug_len: {}, run2_output_debug_len: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_len_delta: {}, paired_trace_event_count: {}, trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
         seed,
         run1.rng_next_u64,
-        run1.output,
+        run1_output_debug_preview,
         run2.rng_next_u64,
-        run2.output,
+        run2_output_debug_preview,
         diff.rng_mismatch,
         diff.output_mismatch,
+        run1_output_debug_len,
+        run2_output_debug_len,
         run1.num_polls,
         run2.num_polls,
         run1.trace.len(),
@@ -407,6 +414,16 @@ fn determinism_failure_message<T: std::fmt::Debug>(
         diff.trace_event_mismatch_run1_kind,
         diff.trace_event_mismatch_run2_kind,
     )
+}
+
+fn debug_string_preview<T: std::fmt::Debug>(value: &T, max_chars: usize) -> (usize, String) {
+    let debug_string = format!("{value:?}");
+    let debug_char_count = debug_string.chars().count();
+    if debug_char_count <= max_chars {
+        return (debug_char_count, debug_string);
+    }
+    let preview = debug_string.chars().take(max_chars).collect::<String>();
+    (debug_char_count, format!("{preview}…<truncated>"))
 }
 
 fn event_kind(event: &Event) -> &'static str {
@@ -797,6 +814,8 @@ mod tests {
         assert!(message.contains("Determinism failure for seed 123"));
         assert!(message.contains("rng_mismatch: true"));
         assert!(message.contains("output_mismatch: true"));
+        assert!(message.contains("run1_output_debug_len: 4"));
+        assert!(message.contains("run2_output_debug_len: 8"));
         assert!(message.contains("run1_num_polls: 100"));
         assert!(message.contains("run2_num_polls: 103"));
         assert!(message.contains("run1_trace_len: 1"));
@@ -809,6 +828,10 @@ mod tests {
         assert!(message.contains("trace_event_mismatch_index: None"));
         assert!(message.contains("trace_event_mismatch_run1_kind: None"));
         assert!(message.contains("trace_event_mismatch_run2_kind: None"));
+        assert!(
+            !message.contains("<truncated>"),
+            "short outputs should not be truncated"
+        );
         assert!(
             !message.contains("TraceEvent"),
             "message should avoid dumping full traces"
@@ -912,6 +935,28 @@ mod tests {
         assert!(message.contains("trace_event_mismatch_index: Some(0)"));
         assert!(message.contains("trace_event_mismatch_run1_kind: None"));
         assert!(message.contains("trace_event_mismatch_run2_kind: Some(\"TransactionCommit\")"));
+    }
+
+    #[test]
+    fn test_determinism_failure_message_truncates_large_output_previews() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "a".repeat(600),
+            trace: vec![],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 43,
+            output: "b".repeat(600),
+            trace: vec![],
+        };
+        let diff = determinism_diff(&run1, &run2);
+        let message = determinism_failure_message(123, &run1, &run2, &diff);
+
+        assert!(message.contains("run1_output_debug_len: 602"));
+        assert!(message.contains("run2_output_debug_len: 602"));
+        assert!(message.contains("…<truncated>"));
     }
 
     #[test]

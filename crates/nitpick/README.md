@@ -96,7 +96,9 @@ diverge, and first differing trace event index when available (or the shorter
 trace boundary when only lengths differ). `trace_mismatch_kind` indicates
 whether the trace mismatch comes from differing event payloads or a length
 boundary. `trace_len_delta` and `paired_trace_event_count` provide quick
-context for how far the traces diverge.
+context for how far the traces diverge. Output values are shown as debug
+previews and truncated when large (with full debug lengths included) to keep
+failure logs readable.
 
 Why not include `num_polls` in equality? Tokio's `worker_poll_count` is a
 scheduler metric that is flushed at scheduler submit points, and can vary
