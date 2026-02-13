@@ -384,17 +384,21 @@ fn check_determinism<S: Scenario>(
         );
     }
     if run1.num_polls != run2.num_polls {
-        let num_polls_delta = signed_delta_usize(run1.num_polls, run2.num_polls);
         tracing::debug!(
-            "[nitpick] Determinism diagnostics for seed {}: num_polls differed (run1: {}, run2: {}, delta: {}), but deterministic fields matched",
-            config.seed,
-            run1.num_polls,
-            run2.num_polls,
-            num_polls_delta
+            "{}",
+            poll_mismatch_debug_message(config.seed, run1.num_polls, run2.num_polls)
         );
     }
     tracing::info!("[nitpick] Determinism check passed");
     Ok(())
+}
+
+fn poll_mismatch_debug_message(seed: u64, run1_num_polls: usize, run2_num_polls: usize) -> String {
+    let num_polls_delta = signed_delta_usize(run1_num_polls, run2_num_polls);
+    format!(
+        "[nitpick] Determinism diagnostics for seed {}: num_polls differed (run1: {}, run2: {}, delta: {}), but deterministic fields matched",
+        seed, run1_num_polls, run2_num_polls, num_polls_delta
+    )
 }
 
 fn determinism_failure_message<T: std::fmt::Debug>(
@@ -485,6 +489,7 @@ mod tests {
         debug_string_preview,
         determinism_diff,
         determinism_failure_message,
+        poll_mismatch_debug_message,
         signed_delta_usize,
         DeterminismDiff,
         TestResult,
@@ -922,6 +927,24 @@ mod tests {
         assert_eq!(preview.full_len, 8);
         assert_eq!(preview.preview, "\"abc…<truncated>");
         assert!(preview.truncated);
+    }
+
+    #[test]
+    fn test_poll_mismatch_debug_message_reports_positive_delta() {
+        let message = poll_mismatch_debug_message(123, 105, 100);
+        assert!(message.contains("seed 123"));
+        assert!(message.contains("run1: 105"));
+        assert!(message.contains("run2: 100"));
+        assert!(message.contains("delta: 5"));
+    }
+
+    #[test]
+    fn test_poll_mismatch_debug_message_reports_negative_delta() {
+        let message = poll_mismatch_debug_message(456, 100, 105);
+        assert!(message.contains("seed 456"));
+        assert!(message.contains("run1: 100"));
+        assert!(message.contains("run2: 105"));
+        assert!(message.contains("delta: -5"));
     }
 
     #[test]
