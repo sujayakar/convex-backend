@@ -12,6 +12,7 @@ use application::{
 };
 use common::{
     event_recorder::{
+        Event,
         EventRecorder,
         TraceEvent,
     },
@@ -323,8 +324,14 @@ fn determinism_failure_message<T: std::fmt::Debug + PartialEq>(
         .iter()
         .zip(run2.trace.iter())
         .position(|(a, b)| a.event != b.event);
+    let trace_event_mismatch_run1_kind = trace_event_mismatch_index
+        .and_then(|i| run1.trace.get(i))
+        .map(|e| event_kind(&e.event));
+    let trace_event_mismatch_run2_kind = trace_event_mismatch_index
+        .and_then(|i| run2.trace.get(i))
+        .map(|e| event_kind(&e.event));
     format!(
-        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_event_mismatch_index: {:?} }}",
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
         seed,
         run1.rng_next_u64,
         run1.output,
@@ -338,7 +345,21 @@ fn determinism_failure_message<T: std::fmt::Debug + PartialEq>(
         run2.trace.len(),
         trace_len_mismatch,
         trace_event_mismatch_index,
+        trace_event_mismatch_run1_kind,
+        trace_event_mismatch_run2_kind,
     )
+}
+
+fn event_kind(event: &Event) -> &'static str {
+    match event {
+        Event::TransactionBegin { .. } => "TransactionBegin",
+        Event::TransactionCommit => "TransactionCommit",
+        Event::TransactionConflict => "TransactionConflict",
+        Event::UdfStart { .. } => "UdfStart",
+        Event::UdfEnd { .. } => "UdfEnd",
+        Event::PausePointHit { .. } => "PausePointHit",
+        Event::Custom { .. } => "Custom",
+    }
 }
 
 #[cfg(test)]
@@ -523,6 +544,8 @@ mod tests {
         assert!(message.contains("run2_trace_len: 1"));
         assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_event_mismatch_index: None"));
+        assert!(message.contains("trace_event_mismatch_run1_kind: None"));
+        assert!(message.contains("trace_event_mismatch_run2_kind: None"));
         assert!(
             !message.contains("TraceEvent"),
             "message should avoid dumping full traces"
@@ -557,6 +580,8 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2);
         assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_event_mismatch_index: Some(0)"));
+        assert!(message.contains("trace_event_mismatch_run1_kind: Some(\"TransactionBegin\")"));
+        assert!(message.contains("trace_event_mismatch_run2_kind: Some(\"TransactionCommit\")"));
     }
 
     #[test]
@@ -581,5 +606,7 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2);
         assert!(message.contains("trace_len_mismatch: true"));
         assert!(message.contains("trace_event_mismatch_index: None"));
+        assert!(message.contains("trace_event_mismatch_run1_kind: None"));
+        assert!(message.contains("trace_event_mismatch_run2_kind: None"));
     }
 }
