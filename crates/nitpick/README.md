@@ -1,8 +1,8 @@
 # Nitpick
 
-Deterministic simulation testing for the Convex storage engine. The
-spiritual successor to `pedant`, operating at the Application layer with
-real JavaScript UDF execution through V8 isolates.
+Deterministic simulation testing for the Convex storage engine. The spiritual
+successor to `pedant`, operating at the Application layer with real JavaScript
+UDF execution through V8 isolates.
 
 ## Quick Start
 
@@ -25,10 +25,10 @@ cargo run -p nitpick -- list
 Each scenario has two variants: a **database-level** version (raw Rust
 transactions) and a **JS** version (real TypeScript UDFs through V8).
 
-| Scenario | DB | JS | What it tests |
-|----------|----|----|---------------|
-| counter  | `counter.rs` | `counter_js.rs` + `counter.ts` | Contended increment. Invariant: `triangle == (linear+1)*linear/2` |
-| elle     | `elle.rs` | `elle_js.rs` + `elle.ts` | Append-register with Elle-style dependency graph serializability check |
+| Scenario  | DB             | JS                                 | What it tests                                                                   |
+| --------- | -------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
+| counter   | `counter.rs`   | `counter_js.rs` + `counter.ts`     | Contended increment. Invariant: `triangle == (linear+1)*linear/2`               |
+| elle      | `elle.rs`      | `elle_js.rs` + `elle.ts`           | Append-register with Elle-style dependency graph serializability check          |
 | link_ring | `link_ring.rs` | `link_ring_js.rs` + `link_ring.ts` | Ring of linked documents. Each tx reverses a sub-chain. Invariant: single cycle |
 
 ## CLI
@@ -77,30 +77,32 @@ Commands:
 ## Determinism
 
 All simulations are deterministic given a seed. The `TestRuntime` provides:
+
 - Seeded RNG (`ChaCha12Rng`)
 - Virtualized time (starts from `CONVEX_EPOCH`)
 - Single-threaded Tokio with paused timer
 
-Determinism is verified by running the same (scenario, seed) twice and
-comparing deterministic `TestResult` fields:
+Determinism is verified by running the same (scenario, seed) twice and comparing
+deterministic `TestResult` fields:
+
 - `rng_next_u64`
 - `output`
-- trace event payload sequence (ignoring sequence numbers and elapsed wall-clock timing)
+- trace event payload sequence (ignoring sequence numbers and elapsed wall-clock
+  timing)
 
-`num_polls` is still captured for diagnostics but is not used for equality.
-When a determinism mismatch occurs, nitpick reports compact diagnostics
-including each run's poll count and trace length.
-The diagnostics also include mismatch flags (`rng_mismatch`,
-`output_mismatch`, `trace_len_mismatch`), which trace is longer when lengths
-diverge, and first differing trace event index when available (or the shorter
-trace boundary when only lengths differ). `trace_mismatch_kind` indicates
-whether the trace mismatch comes from differing event payloads or a length
-boundary. `trace_len_delta` and `paired_trace_event_count` provide quick
-context for how far the traces diverge. Output values are shown as debug
-previews and truncated when large (with full debug lengths included), and
-diagnostics explicitly report whether previews were truncated and the preview
-character limit. Poll counts remain diagnostic-only, and `num_polls_delta`
-gives a quick signed difference between runs.
+`num_polls` is still captured for diagnostics but is not used for equality. When
+a determinism mismatch occurs, nitpick reports compact diagnostics including
+each run's poll count and trace length. The diagnostics also include mismatch
+flags (`rng_mismatch`, `output_mismatch`, `trace_len_mismatch`), which trace is
+longer when lengths diverge, and first differing trace event index when
+available (or the shorter trace boundary when only lengths differ).
+`trace_mismatch_kind` indicates whether the trace mismatch comes from differing
+event payloads or a length boundary. `trace_len_delta` and
+`paired_trace_event_count` provide quick context for how far the traces diverge.
+Output values are shown as debug previews and truncated when large (with full
+debug lengths included), and diagnostics explicitly report whether previews were
+truncated and the preview character limit. Poll counts remain diagnostic-only,
+and `num_polls_delta` gives a quick signed difference between runs.
 
 Why not include `num_polls` in equality? Tokio's `worker_poll_count` is a
 scheduler metric that is flushed at scheduler submit points, and can vary
