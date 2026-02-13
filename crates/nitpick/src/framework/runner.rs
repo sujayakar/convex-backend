@@ -420,6 +420,28 @@ mod tests {
     }
 
     #[test]
+    fn test_result_equality_detects_trace_length_difference() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionCommit,
+            }],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+
+        assert_ne!(run1, run2);
+    }
+
+    #[test]
     fn test_result_equality_detects_rng_difference() {
         let run1 = TestResult {
             num_polls: 100,
