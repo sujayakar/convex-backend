@@ -273,6 +273,8 @@ mod tests {
     fn cloned_active_recorders_share_state() {
         let recorder = EventRecorder::active();
         let clone = recorder.clone();
+        assert!(recorder.is_empty());
+        assert!(clone.is_empty());
 
         clone.record(Event::TransactionCommit);
         recorder.record(Event::TransactionConflict);
@@ -281,5 +283,12 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0].event, Event::TransactionCommit));
         assert!(matches!(events[1].event, Event::TransactionConflict));
+        assert_eq!(clone.len(), 2);
+        assert!(!clone.is_empty());
+
+        let drained = clone.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(recorder.is_empty());
+        assert!(clone.is_empty());
     }
 }
