@@ -323,7 +323,8 @@ async fn run_transactions<TR: TestRun>(
 const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1;
 
 /// Run a scenario with the given config on a dedicated thread with a large
-/// stack. Probabilistically checks determinism by re-running with the same seed.
+/// stack. Probabilistically checks determinism by re-running with the same
+/// seed.
 pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
@@ -397,8 +398,9 @@ fn check_determinism<S: Scenario>(
 fn poll_mismatch_debug_message(seed: u64, run1_num_polls: usize, run2_num_polls: usize) -> String {
     let num_polls_delta = signed_delta_usize(run1_num_polls, run2_num_polls);
     format!(
-        "[nitpick] Determinism diagnostics for seed {}: num_polls differed (run1: {}, run2: {}, delta: {}), but deterministic fields matched",
-        seed, run1_num_polls, run2_num_polls, num_polls_delta
+        "[nitpick] Determinism diagnostics for seed {seed}: num_polls differed (run1: \
+         {run1_num_polls}, run2: {run2_num_polls}, delta: {num_polls_delta}), but deterministic \
+         fields matched"
     )
 }
 
@@ -412,7 +414,15 @@ fn determinism_failure_message<T: std::fmt::Debug>(
     let run2_output_debug = debug_string_preview(&run2.output, OUTPUT_DEBUG_PREVIEW_CHARS);
     let num_polls_delta = signed_delta_usize(run1.num_polls, run2.num_polls);
     format!(
-        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  run2: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_output_debug_len: {}, run2_output_debug_len: {}, run1_output_debug_truncated: {}, run2_output_debug_truncated: {}, output_debug_preview_chars_limit: {}, run1_num_polls: {}, run2_num_polls: {}, num_polls_delta: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_len_delta: {}, paired_trace_event_count: {}, trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output_debug_preview: {} \
+         }}\n  run2: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  diagnostics: {{ \
+         rng_mismatch: {}, output_mismatch: {}, run1_output_debug_len: {}, run2_output_debug_len: \
+         {}, run1_output_debug_truncated: {}, run2_output_debug_truncated: {}, \
+         output_debug_preview_chars_limit: {}, run1_num_polls: {}, run2_num_polls: {}, \
+         num_polls_delta: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, \
+         trace_len_mismatch_side: {:?}, trace_len_delta: {}, paired_trace_event_count: {}, \
+         trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, \
+         trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
         seed,
         run1.rng_next_u64,
         run1_output_debug.preview,
@@ -1028,7 +1038,8 @@ mod tests {
         let message = poll_mismatch_debug_message(7, 10, 8);
         assert_eq!(
             message,
-            "[nitpick] Determinism diagnostics for seed 7: num_polls differed (run1: 10, run2: 8, delta: 2), but deterministic fields matched"
+            "[nitpick] Determinism diagnostics for seed 7: num_polls differed (run1: 10, run2: 8, \
+             delta: 2), but deterministic fields matched"
         );
     }
 
@@ -1363,17 +1374,11 @@ mod tests {
 
         let diff_pos = determinism_diff(&run_max, &run_zero);
         let message_pos = determinism_failure_message(123, &run_max, &run_zero, &diff_pos);
-        assert!(message_pos.contains(&format!(
-            "num_polls_delta: {}",
-            usize::MAX as i128
-        )));
+        assert!(message_pos.contains(&format!("num_polls_delta: {}", usize::MAX as i128)));
 
         let diff_neg = determinism_diff(&run_zero, &run_max);
         let message_neg = determinism_failure_message(123, &run_zero, &run_max, &diff_neg);
-        assert!(message_neg.contains(&format!(
-            "num_polls_delta: {}",
-            -(usize::MAX as i128)
-        )));
+        assert!(message_neg.contains(&format!("num_polls_delta: {}", -(usize::MAX as i128))));
     }
 
     #[test]
@@ -1399,7 +1404,10 @@ mod tests {
                 event: Event::TransactionCommit,
             }],
         };
-        assert_eq!(base == poll_only_diff, determinism_diff(&base, &poll_only_diff).is_match());
+        assert_eq!(
+            base == poll_only_diff,
+            determinism_diff(&base, &poll_only_diff).is_match()
+        );
 
         let output_diff = TestResult {
             num_polls: 101,
@@ -1411,7 +1419,10 @@ mod tests {
                 event: Event::TransactionCommit,
             }],
         };
-        assert_eq!(base == output_diff, determinism_diff(&base, &output_diff).is_match());
+        assert_eq!(
+            base == output_diff,
+            determinism_diff(&base, &output_diff).is_match()
+        );
 
         let trace_event_diff = TestResult {
             num_polls: 101,

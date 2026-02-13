@@ -162,22 +162,15 @@ impl TestRun for LinkRingRun {
 
             // Second element now points to last (end of chain).
             UserFacingModel::new_root_for_test(&mut tx)
-                .replace(
-                    doc_ids[second].into(),
-                    ring_obj(second as i64, last as i64),
-                )
+                .replace(doc_ids[second].into(), ring_obj(second as i64, last as i64))
                 .await?;
 
             // Reverse the middle section: each middle element points to its
             // predecessor in the original chain.
             let mut target = second;
-            for i in 2..(rotate_length + 1) {
-                let key = chain_indices[i];
+            for &key in chain_indices.iter().take(rotate_length + 1).skip(2) {
                 UserFacingModel::new_root_for_test(&mut tx)
-                    .replace(
-                        doc_ids[key].into(),
-                        ring_obj(key as i64, target as i64),
-                    )
+                    .replace(doc_ids[key].into(), ring_obj(key as i64, target as i64))
                     .await?;
                 target = key;
             }
@@ -188,17 +181,11 @@ impl TestRun for LinkRingRun {
         future.boxed()
     }
 
-    async fn validate(
-        &self,
-        application: &Application<TestRuntime>,
-    ) -> anyhow::Result<()> {
+    async fn validate(&self, application: &Application<TestRuntime>) -> anyhow::Result<()> {
         validate_ring(application, &self.doc_ids, self.size).await
     }
 
-    async fn finalize(
-        &self,
-        application: &Application<TestRuntime>,
-    ) -> anyhow::Result<()> {
+    async fn finalize(&self, application: &Application<TestRuntime>) -> anyhow::Result<()> {
         validate_ring(application, &self.doc_ids, self.size).await
     }
 }

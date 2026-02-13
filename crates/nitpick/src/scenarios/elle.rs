@@ -1,8 +1,8 @@
 //! Elle-style append-register serializability test.
 //!
 //! Uses an append-only register pattern where multiple concurrent transactions
-//! append values. After execution, builds a dependency graph (direct write deps,
-//! direct read deps, anti-read deps) and checks it for cycles.
+//! append values. After execution, builds a dependency graph (direct write
+//! deps, direct read deps, anti-read deps) and checks it for cycles.
 //!
 //! A cycle in the dependency graph indicates a serializability violation.
 //! This is based on the Elle framework: https://github.com/jepsen-io/elle
@@ -130,7 +130,9 @@ pub struct ElleRun {
 
 #[async_trait]
 impl TestRun for ElleRun {
-    type Output = usize; // number of events
+    type Output = usize;
+
+    // number of events
 
     fn run_transaction(
         &self,
@@ -187,25 +189,25 @@ impl TestRun for ElleRun {
         future.boxed()
     }
 
-    async fn validate(
-        &self,
-        _application: &Application<TestRuntime>,
-    ) -> anyhow::Result<()> {
+    async fn validate(&self, _application: &Application<TestRuntime>) -> anyhow::Result<()> {
         // Validation happens in finalize via the dependency graph.
         Ok(())
     }
 
-    async fn finalize(
-        &self,
-        _application: &Application<TestRuntime>,
-    ) -> anyhow::Result<usize> {
+    async fn finalize(&self, _application: &Application<TestRuntime>) -> anyhow::Result<usize> {
         let events = self.events.lock().unwrap().clone();
         let num_events = events.len();
         tracing::info!(
             "[elle] Finalizing with {} events ({} writes, {} reads)",
             num_events,
-            events.iter().filter(|e| matches!(e, ElleEvent::Write { .. })).count(),
-            events.iter().filter(|e| matches!(e, ElleEvent::Read { .. })).count(),
+            events
+                .iter()
+                .filter(|e| matches!(e, ElleEvent::Write { .. }))
+                .count(),
+            events
+                .iter()
+                .filter(|e| matches!(e, ElleEvent::Read { .. }))
+                .count(),
         );
 
         verify_serializability(&events)?;
@@ -214,7 +216,8 @@ impl TestRun for ElleRun {
     }
 }
 
-/// Verify serializability by building a dependency graph and checking for cycles.
+/// Verify serializability by building a dependency graph and checking for
+/// cycles.
 fn verify_serializability(events: &[ElleEvent]) -> anyhow::Result<()> {
     let mut write_tx: BTreeMap<WriteId, TxId> = BTreeMap::new();
     // Register length -> tx_ids. Duplicates indicate a lost-update anomaly.
@@ -243,8 +246,8 @@ fn verify_serializability(events: &[ElleEvent]) -> anyhow::Result<()> {
     for (len, txs) in &len_txs {
         if txs.len() > 1 {
             anyhow::bail!(
-                "Serializability violation: register length {len} produced by \
-                 multiple transactions: {txs:?} (lost-update anomaly)"
+                "Serializability violation: register length {len} produced by multiple \
+                 transactions: {txs:?} (lost-update anomaly)"
             );
         }
     }
@@ -267,11 +270,11 @@ fn verify_serializability(events: &[ElleEvent]) -> anyhow::Result<()> {
             } => {
                 // Direct write dependency: the previous write (at len-1)
                 // must happen before this one.
-                if register_after.len() >= 1 {
-                    if let Some(prev_txs) = len_txs.get(&(register_after.len() - 1)) {
-                        for &prev_tx in prev_txs {
-                            edges.insert((prev_tx, *tx_id, "WW"));
-                        }
+                if !register_after.is_empty()
+                    && let Some(prev_txs) = len_txs.get(&(register_after.len() - 1))
+                {
+                    for &prev_tx in prev_txs {
+                        edges.insert((prev_tx, *tx_id, "WW"));
                     }
                 }
             },
@@ -280,10 +283,10 @@ fn verify_serializability(events: &[ElleEvent]) -> anyhow::Result<()> {
                 register_value,
             } => {
                 // Direct read dependency: this read depends on the last write.
-                if let Some(last_write_id) = register_value.last() {
-                    if let Some(&write_tx_id) = write_tx.get(last_write_id) {
-                        edges.insert((write_tx_id, *tx_id, "WR"));
-                    }
+                if let Some(last_write_id) = register_value.last()
+                    && let Some(&write_tx_id) = write_tx.get(last_write_id)
+                {
+                    edges.insert((write_tx_id, *tx_id, "WR"));
                 }
                 // Anti-read dependency: the next write after what we read
                 // must come after this read.
@@ -351,9 +354,7 @@ fn check_acyclic(
         while let Some((node, entering)) = stack.pop() {
             if entering {
                 if state[&node] == State::InProgress {
-                    anyhow::bail!(
-                        "Serializability violation: cycle detected involving tx {node}"
-                    );
+                    anyhow::bail!("Serializability violation: cycle detected involving tx {node}");
                 }
                 if state[&node] == State::Done {
                     continue;
@@ -395,6 +396,9 @@ fn read_register(obj: &ConvexObject) -> anyhow::Result<Vec<WriteId>> {
 }
 
 fn write_register(values: &[WriteId]) -> ConvexObject {
-    let arr: Vec<ConvexValue> = values.iter().map(|v| ConvexValue::Int64(*v as i64)).collect();
+    let arr: Vec<ConvexValue> = values
+        .iter()
+        .map(|v| ConvexValue::Int64(*v as i64))
+        .collect();
     assert_obj!("values" => ConvexValue::Array(arr.try_into().unwrap()))
 }
