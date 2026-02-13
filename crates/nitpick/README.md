@@ -99,6 +99,29 @@ scheduler metric that is flushed at scheduler submit points, and can vary
 slightly under host CPU contention even when the logical test execution is
 identical.
 
+### Debugging nondeterminism under contention
+
+When investigating flaky parallel determinism failures, prefer a single-seed
+repro loop under external contention over large random-seed batches. This
+reduces noise and helps isolate scheduler-sensitive behavior.
+
+Example pattern:
+
+```bash
+# First, find a failing seed from a batch run.
+cargo run --release -p nitpick -- -t 20 -c 4 batch index_query_js -s 1000 --threads 4
+
+# Then hammer the same seed in parallel in separate processes.
+python3 - <<'PY'
+import concurrent.futures, subprocess
+seed = "PUT_SEED_HERE"
+cmd = ["target/release/nitpick", "-t", "20", "-c", "4", "replay", "index_query_js", seed]
+with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+    results = list(ex.map(lambda _: subprocess.run(cmd, cwd=".", capture_output=True).returncode, range(100)))
+print("failures:", sum(code != 0 for code in results))
+PY
+```
+
 ## Code Coverage
 
 ```bash

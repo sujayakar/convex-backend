@@ -694,4 +694,57 @@ mod tests {
         assert!(message.contains("trace_event_mismatch_run1_kind: None"));
         assert!(message.contains("trace_event_mismatch_run2_kind: None"));
     }
+
+    #[test]
+    fn test_partial_eq_consistent_with_determinism_diff() {
+        let base = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        let poll_only_diff = TestResult {
+            num_polls: 101,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 99,
+                elapsed: Duration::from_secs(9),
+                event: Event::TransactionCommit,
+            }],
+        };
+        assert_eq!(base == poll_only_diff, determinism_diff(&base, &poll_only_diff).is_match());
+
+        let output_diff = TestResult {
+            num_polls: 101,
+            rng_next_u64: 42,
+            output: "not_ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 99,
+                elapsed: Duration::from_secs(9),
+                event: Event::TransactionCommit,
+            }],
+        };
+        assert_eq!(base == output_diff, determinism_diff(&base, &output_diff).is_match());
+
+        let trace_event_diff = TestResult {
+            num_polls: 101,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 99,
+                elapsed: Duration::from_secs(9),
+                event: Event::TransactionConflict,
+            }],
+        };
+        assert_eq!(
+            base == trace_event_diff,
+            determinism_diff(&base, &trace_event_diff).is_match()
+        );
+    }
 }
