@@ -73,6 +73,51 @@ pub struct TestResult<T> {
     pub trace: Vec<TraceEvent>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct DeterminismDiff {
+    rng_mismatch: bool,
+    output_mismatch: bool,
+    trace_len_mismatch: bool,
+    trace_event_mismatch_index: Option<usize>,
+    trace_event_mismatch_run1_kind: Option<&'static str>,
+    trace_event_mismatch_run2_kind: Option<&'static str>,
+}
+
+impl DeterminismDiff {
+    fn is_match(&self) -> bool {
+        !self.rng_mismatch
+            && !self.output_mismatch
+            && !self.trace_len_mismatch
+            && self.trace_event_mismatch_index.is_none()
+    }
+}
+
+fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) -> DeterminismDiff {
+    let rng_mismatch = run1.rng_next_u64 != run2.rng_next_u64;
+    let output_mismatch = run1.output != run2.output;
+    let trace_len_mismatch = run1.trace.len() != run2.trace.len();
+    let trace_event_mismatch_index = run1
+        .trace
+        .iter()
+        .zip(run2.trace.iter())
+        .position(|(a, b)| a.event != b.event);
+    let trace_event_mismatch_run1_kind = trace_event_mismatch_index
+        .and_then(|i| run1.trace.get(i))
+        .map(|e| event_kind(&e.event));
+    let trace_event_mismatch_run2_kind = trace_event_mismatch_index
+        .and_then(|i| run2.trace.get(i))
+        .map(|e| event_kind(&e.event));
+
+    DeterminismDiff {
+        rng_mismatch,
+        output_mismatch,
+        trace_len_mismatch,
+        trace_event_mismatch_index,
+        trace_event_mismatch_run1_kind,
+        trace_event_mismatch_run2_kind,
+    }
+}
+
 impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
         // `num_polls` is excluded from determinism equality. Tokio's
@@ -83,14 +128,7 @@ impl<T: Eq> PartialEq for TestResult<T> {
         // We still compare trace *event payloads* (excluding seq/elapsed wall
         // clock fields) to avoid weakening determinism checks after removing
         // `num_polls` from equality.
-        self.rng_next_u64 == other.rng_next_u64
-            && self.output == other.output
-            && self.trace.len() == other.trace.len()
-            && self
-                .trace
-                .iter()
-                .zip(other.trace.iter())
-                .all(|(a, b)| a.event == b.event)
+        determinism_diff(self, other).is_match()
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}
@@ -316,20 +354,7 @@ fn determinism_failure_message<T: std::fmt::Debug + PartialEq>(
     run1: &TestResult<T>,
     run2: &TestResult<T>,
 ) -> String {
-    let rng_mismatch = run1.rng_next_u64 != run2.rng_next_u64;
-    let output_mismatch = run1.output != run2.output;
-    let trace_len_mismatch = run1.trace.len() != run2.trace.len();
-    let trace_event_mismatch_index = run1
-        .trace
-        .iter()
-        .zip(run2.trace.iter())
-        .position(|(a, b)| a.event != b.event);
-    let trace_event_mismatch_run1_kind = trace_event_mismatch_index
-        .and_then(|i| run1.trace.get(i))
-        .map(|e| event_kind(&e.event));
-    let trace_event_mismatch_run2_kind = trace_event_mismatch_index
-        .and_then(|i| run2.trace.get(i))
-        .map(|e| event_kind(&e.event));
+    let diff = determinism_diff(run1, run2);
     format!(
         "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
         seed,
@@ -337,16 +362,16 @@ fn determinism_failure_message<T: std::fmt::Debug + PartialEq>(
         run1.output,
         run2.rng_next_u64,
         run2.output,
-        rng_mismatch,
-        output_mismatch,
+        diff.rng_mismatch,
+        diff.output_mismatch,
         run1.num_polls,
         run2.num_polls,
         run1.trace.len(),
         run2.trace.len(),
-        trace_len_mismatch,
-        trace_event_mismatch_index,
-        trace_event_mismatch_run1_kind,
-        trace_event_mismatch_run2_kind,
+        diff.trace_len_mismatch,
+        diff.trace_event_mismatch_index,
+        diff.trace_event_mismatch_run1_kind,
+        diff.trace_event_mismatch_run2_kind,
     )
 }
 
@@ -372,7 +397,9 @@ mod tests {
     };
 
     use super::{
+        determinism_diff,
         determinism_failure_message,
+        DeterminismDiff,
         TestResult,
     };
 
@@ -472,6 +499,38 @@ mod tests {
         };
 
         assert_ne!(run1, run2);
+    }
+
+    #[test]
+    fn test_determinism_diff_reports_trace_length_only_mismatch() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionCommit,
+            }],
+        };
+        let run2 = TestResult {
+            num_polls: 101,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+
+        assert_eq!(
+            determinism_diff(&run1, &run2),
+            DeterminismDiff {
+                rng_mismatch: false,
+                output_mismatch: false,
+                trace_len_mismatch: true,
+                trace_event_mismatch_index: None,
+                trace_event_mismatch_run1_kind: None,
+                trace_event_mismatch_run2_kind: None,
+            }
+        );
     }
 
     #[test]
