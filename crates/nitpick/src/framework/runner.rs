@@ -1065,6 +1065,66 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_failure_message_reports_multi_event_trace_length_delta() {
+        let long_run = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 0,
+                    elapsed: Duration::from_secs(1),
+                    event: Event::TransactionCommit,
+                },
+                TraceEvent {
+                    seq: 1,
+                    elapsed: Duration::from_secs(2),
+                    event: Event::UdfStart {
+                        udf_path: "x:y".to_string(),
+                        udf_type: "query".to_string(),
+                    },
+                },
+                TraceEvent {
+                    seq: 2,
+                    elapsed: Duration::from_secs(3),
+                    event: Event::UdfEnd {
+                        udf_path: "x:y".to_string(),
+                        success: true,
+                    },
+                },
+            ],
+        };
+        let short_run = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 9,
+                elapsed: Duration::from_secs(9),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        let diff_pos = determinism_diff(&long_run, &short_run);
+        let message_pos = determinism_failure_message(123, &long_run, &short_run, &diff_pos);
+        assert!(message_pos.contains("trace_len_mismatch_side: Some(\"run1_longer\")"));
+        assert!(message_pos.contains("trace_len_delta: 2"));
+        assert!(message_pos.contains("paired_trace_event_count: 1"));
+        assert!(message_pos.contains("trace_event_mismatch_index: Some(1)"));
+        assert!(message_pos.contains("trace_event_mismatch_run1_kind: Some(\"UdfStart\")"));
+        assert!(message_pos.contains("trace_event_mismatch_run2_kind: None"));
+
+        let diff_neg = determinism_diff(&short_run, &long_run);
+        let message_neg = determinism_failure_message(123, &short_run, &long_run, &diff_neg);
+        assert!(message_neg.contains("trace_len_mismatch_side: Some(\"run2_longer\")"));
+        assert!(message_neg.contains("trace_len_delta: -2"));
+        assert!(message_neg.contains("paired_trace_event_count: 1"));
+        assert!(message_neg.contains("trace_event_mismatch_index: Some(1)"));
+        assert!(message_neg.contains("trace_event_mismatch_run1_kind: None"));
+        assert!(message_neg.contains("trace_event_mismatch_run2_kind: Some(\"UdfStart\")"));
+    }
+
+    #[test]
     fn test_determinism_failure_message_truncates_large_output_previews() {
         let run1 = TestResult {
             num_polls: 100,
