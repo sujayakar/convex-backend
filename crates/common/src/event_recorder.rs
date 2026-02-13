@@ -127,11 +127,13 @@ mod test_recorder {
         }
 
         /// Check if this recorder is actively collecting events.
+        #[must_use]
         pub fn is_active(&self) -> bool {
             self.inner.is_some()
         }
 
         /// Drain all recorded events.
+        #[must_use]
         pub fn drain(&self) -> Vec<TraceEvent> {
             match &self.inner {
                 Some(inner) => {
@@ -143,6 +145,7 @@ mod test_recorder {
         }
 
         /// Get a snapshot of all recorded events (without draining).
+        #[must_use]
         pub fn snapshot(&self) -> Vec<TraceEvent> {
             match &self.inner {
                 Some(inner) => inner.events.lock().clone(),
@@ -151,6 +154,7 @@ mod test_recorder {
         }
 
         /// Number of events recorded so far.
+        #[must_use]
         pub fn len(&self) -> usize {
             match &self.inner {
                 Some(inner) => inner.events.lock().len(),
@@ -159,6 +163,7 @@ mod test_recorder {
         }
 
         /// Whether no events have been recorded.
+        #[must_use]
         pub fn is_empty(&self) -> bool {
             match &self.inner {
                 Some(inner) => inner.events.lock().is_empty(),
@@ -196,22 +201,27 @@ mod prod_recorder {
 
         pub fn record_custom(&self, _label: impl Into<String>, _data: serde_json::Value) {}
 
+        #[must_use]
         pub fn is_active(&self) -> bool {
             false
         }
 
+        #[must_use]
         pub fn drain(&self) -> Vec<TraceEvent> {
             vec![]
         }
 
+        #[must_use]
         pub fn snapshot(&self) -> Vec<TraceEvent> {
             vec![]
         }
 
+        #[must_use]
         pub fn len(&self) -> usize {
             0
         }
 
+        #[must_use]
         pub fn is_empty(&self) -> bool {
             true
         }
