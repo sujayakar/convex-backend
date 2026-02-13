@@ -310,27 +310,33 @@ fn check_determinism<S: Scenario>(
     Ok(())
 }
 
-fn determinism_failure_message<T: std::fmt::Debug>(
+fn determinism_failure_message<T: std::fmt::Debug + PartialEq>(
     seed: u64,
     run1: &TestResult<T>,
     run2: &TestResult<T>,
 ) -> String {
+    let rng_mismatch = run1.rng_next_u64 != run2.rng_next_u64;
+    let output_mismatch = run1.output != run2.output;
+    let trace_len_mismatch = run1.trace.len() != run2.trace.len();
     let trace_event_mismatch_index = run1
         .trace
         .iter()
         .zip(run2.trace.iter())
         .position(|(a, b)| a.event != b.event);
     format!(
-        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_event_mismatch_index: {:?} }}",
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_event_mismatch_index: {:?} }}",
         seed,
         run1.rng_next_u64,
         run1.output,
         run2.rng_next_u64,
         run2.output,
+        rng_mismatch,
+        output_mismatch,
         run1.num_polls,
         run2.num_polls,
         run1.trace.len(),
         run2.trace.len(),
+        trace_len_mismatch,
         trace_event_mismatch_index,
     )
 }
@@ -509,10 +515,13 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2);
 
         assert!(message.contains("Determinism failure for seed 123"));
+        assert!(message.contains("rng_mismatch: true"));
+        assert!(message.contains("output_mismatch: true"));
         assert!(message.contains("run1_num_polls: 100"));
         assert!(message.contains("run2_num_polls: 103"));
         assert!(message.contains("run1_trace_len: 1"));
         assert!(message.contains("run2_trace_len: 1"));
+        assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_event_mismatch_index: None"));
         assert!(
             !message.contains("TraceEvent"),
@@ -546,6 +555,7 @@ mod tests {
         };
 
         let message = determinism_failure_message(123, &run1, &run2);
+        assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_event_mismatch_index: Some(0)"));
     }
 }
