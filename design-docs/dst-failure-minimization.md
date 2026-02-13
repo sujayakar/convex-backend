@@ -4,20 +4,20 @@
 
 ## Problem
 
-When the DST framework finds a failure (serializability violation,
-invariant breach, panic), the failing rollout may involve hundreds of
-transactions across multiple clients with many fault injection points.
-Understanding *why* the failure occurred requires distilling the trace
-down to the minimal set of actions that reproduces the bug.
+When the DST framework finds a failure (serializability violation, invariant
+breach, panic), the failing rollout may involve hundreds of transactions across
+multiple clients with many fault injection points. Understanding _why_ the
+failure occurred requires distilling the trace down to the minimal set of
+actions that reproduces the bug.
 
 ## Goals
 
-1. **Minimize**: Given a failing (scenario, seed, config), find the
-   smallest config (fewest transactions, lowest concurrency, fewest
-   fault injections) that still reproduces the failure.
+1. **Minimize**: Given a failing (scenario, seed, config), find the smallest
+   config (fewest transactions, lowest concurrency, fewest fault injections)
+   that still reproduces the failure.
 
-2. **Distill**: Produce a standalone, deterministic test case that can
-   be checked into the repo as a regression test.
+2. **Distill**: Produce a standalone, deterministic test case that can be
+   checked into the repo as a regression test.
 
 3. **Explain**: Produce a human-readable explanation of what went wrong.
 
@@ -52,8 +52,8 @@ impl Minimizer {
 }
 ```
 
-Key insight: since rollouts are deterministic, we can replay with
-modified action sequences and get reproducible results.
+Key insight: since rollouts are deterministic, we can replay with modified
+action sequences and get reproducible results.
 
 ### Configuration Minimization
 
@@ -114,14 +114,14 @@ Generated test: tests/regression/counter_12345678.rs
 
 ## Key Design Questions
 
-- How to handle non-determinism in minimization (some action removals
-  may change the interleaving in ways that mask or reveal the bug)
-- Whether to minimize at the action level or the seed level (try
-  nearby seeds that also fail, find the simplest one)
-- How to handle scenarios where the failure requires specific timing
-  (fault injection at a specific breakpoint)
-- Cost of re-running rollouts during minimization (each is a full
-  Application startup)
+- How to handle non-determinism in minimization (some action removals may change
+  the interleaving in ways that mask or reveal the bug)
+- Whether to minimize at the action level or the seed level (try nearby seeds
+  that also fail, find the simplest one)
+- How to handle scenarios where the failure requires specific timing (fault
+  injection at a specific breakpoint)
+- Cost of re-running rollouts during minimization (each is a full Application
+  startup)
 
 ## Dependencies
 

@@ -4,26 +4,26 @@
 
 ## Problem
 
-The DST framework explores the system's state space by randomly choosing
-actions and injecting faults. This is effective but can miss deep bugs
-that require specific sequences of actions to reach. Two complementary
-techniques can improve exploration:
+The DST framework explores the system's state space by randomly choosing actions
+and injecting faults. This is effective but can miss deep bugs that require
+specific sequences of actions to reach. Two complementary techniques can improve
+exploration:
 
-1. **Coverage-guided exploration**: Track which code paths have been
-   exercised and bias exploration toward unexercised paths (similar to
-   AFL/libFuzzer for fuzzing).
+1. **Coverage-guided exploration**: Track which code paths have been exercised
+   and bias exploration toward unexercised paths (similar to AFL/libFuzzer for
+   fuzzing).
 
-2. **LLM-guided instrumentation**: An LLM reads the codebase and
-   execution traces, then suggests adding instrumentation points to
-   gain observability into specific subsystems. The harness modifies
-   the source code, recompiles, and re-runs with richer traces.
+2. **LLM-guided instrumentation**: An LLM reads the codebase and execution
+   traces, then suggests adding instrumentation points to gain observability
+   into specific subsystems. The harness modifies the source code, recompiles,
+   and re-runs with richer traces.
 
 ## Coverage-Guided Exploration
 
 ### Approach
 
-Use Rust's built-in coverage instrumentation (`-C instrument-coverage`)
-to collect branch/line coverage during simulation runs:
+Use Rust's built-in coverage instrumentation (`-C instrument-coverage`) to
+collect branch/line coverage during simulation runs:
 
 ```rust
 struct GuidedExplorer {
@@ -52,14 +52,14 @@ impl GuidedExplorer {
 4. Use the coverage map to weight action selection in subsequent rollouts
 5. Report overall coverage achieved across all rollouts
 
-This is similar to what pedant's README describes with `grcov`, but
-integrated into the exploration loop rather than as a post-hoc report.
+This is similar to what pedant's README describes with `grcov`, but integrated
+into the exploration loop rather than as a post-hoc report.
 
 ### Breakpoint Coverage
 
-In addition to code coverage, track which `PauseClient` breakpoints
-were hit during each rollout. This provides a coarser but more
-meaningful coverage metric for the DST framework:
+In addition to code coverage, track which `PauseClient` breakpoints were hit
+during each rollout. This provides a coarser but more meaningful coverage metric
+for the DST framework:
 
 ```rust
 struct BreakpointCoverage {
@@ -76,8 +76,8 @@ struct BreakpointCoverage {
 
 ### Vision
 
-The most novel aspect of the whitebox DST framework. The harness can
-**modify source code** to add instrumentation, recompile, and re-run:
+The most novel aspect of the whitebox DST framework. The harness can **modify
+source code** to add instrumentation, recompile, and re-run:
 
 ```
 1. Run rollout with baseline instrumentation
@@ -168,14 +168,13 @@ The recompilation loop is expensive (full `cargo build`). Mitigations:
 
 ## Key Design Questions
 
-- How to make coverage collection fast enough for the inner loop
-  (coverage instrumentation adds ~10-20% overhead)
+- How to make coverage collection fast enough for the inner loop (coverage
+  instrumentation adds ~10-20% overhead)
 - Whether to use source-level or LLVM-IR-level coverage
-- How to scope LLM instrumentation suggestions (which files to show
-  the LLM, how much context)
+- How to scope LLM instrumentation suggestions (which files to show the LLM, how
+  much context)
 - How to handle the recompilation latency (minutes per cycle)
-- Whether instrumentation should persist across rollouts or be
-  per-investigation
+- Whether instrumentation should persist across rollouts or be per-investigation
 
 ## Dependencies
 

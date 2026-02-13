@@ -13,7 +13,10 @@ export const setup = mutation({
   args: {},
   returns: v.id("scheduledCounter"),
   handler: async (ctx) => {
-    return await ctx.db.insert("scheduledCounter", { count: 0, jobsScheduled: 0 });
+    return await ctx.db.insert("scheduledCounter", {
+      count: 0,
+      jobsScheduled: 0,
+    });
   },
 });
 
@@ -32,11 +35,9 @@ export const scheduleJob = mutation({
     });
 
     // Schedule the job to run after a delay.
-    await ctx.scheduler.runAfter(
-      args.delayMs,
-      internal.scheduled._executeJob,
-      { counterId: args.counterId },
-    );
+    await ctx.scheduler.runAfter(args.delayMs, internal.scheduled._executeJob, {
+      counterId: args.counterId,
+    });
     return null;
   },
 });

@@ -4,10 +4,9 @@
 
 ## Problem
 
-Phase 1 collects event logs specific to each scenario (e.g., Elle model
-events for serializability checking). There is no unified, structured event
-stream that captures everything happening inside the system during a
-simulation run.
+Phase 1 collects event logs specific to each scenario (e.g., Elle model events
+for serializability checking). There is no unified, structured event stream that
+captures everything happening inside the system during a simulation run.
 
 A structured event stream would enable:
 
@@ -19,10 +18,10 @@ A structured event stream would enable:
 
 ## Current State
 
-- `PauseClient` breakpoints exist at 20+ points in the codebase but are
-  binary (pause/resume) -- they don't emit structured events.
-- `tracing` spans exist throughout the codebase but are unstructured text
-  aimed at human debugging, not machine analysis.
+- `PauseClient` breakpoints exist at 20+ points in the codebase but are binary
+  (pause/resume) -- they don't emit structured events.
+- `tracing` spans exist throughout the codebase but are unstructured text aimed
+  at human debugging, not machine analysis.
 - Elle model events (`ElleModelEvent`) are scenario-specific, not generic.
 - Pedant's `PedantDatabase` logs operations via `slog_trace!` but this is
   unstructured.
@@ -41,8 +40,8 @@ trait Runtime {
 }
 ```
 
-`TraceRecorder` is a no-op in production. In simulation, it records
-structured events to a thread-safe append-only log:
+`TraceRecorder` is a no-op in production. In simulation, it records structured
+events to a thread-safe append-only log:
 
 ```rust
 struct TraceEvent {
@@ -80,8 +79,8 @@ Add `trace_recorder().record(...)` calls at the same locations where
 
 ### Serialization
 
-The `ExecutionTrace` (ordered list of `TraceEvent`s) should be
-serializable to JSON/MessagePack for:
+The `ExecutionTrace` (ordered list of `TraceEvent`s) should be serializable to
+JSON/MessagePack for:
 
 - Storage alongside rollout results
 - Input to LLM analysis
@@ -92,10 +91,10 @@ serializable to JSON/MessagePack for:
 
 - Should `TraceRecorder` be on the `Runtime` trait or passed separately?
   (Following the `PauseClient` precedent, it could be on `Runtime`.)
-- How much overhead is acceptable for recording? (Must be cheap enough
-  to not distort simulation timing.)
-- What is the right granularity? Too fine-grained produces huge traces;
-  too coarse misses important events.
+- How much overhead is acceptable for recording? (Must be cheap enough to not
+  distort simulation timing.)
+- What is the right granularity? Too fine-grained produces huge traces; too
+  coarse misses important events.
 - Should events be typed (enum) or stringly-typed (for extensibility)?
 
 ## Dependencies
