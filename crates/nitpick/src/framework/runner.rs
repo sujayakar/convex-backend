@@ -118,7 +118,7 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
     }
 }
 
-impl<T: Eq> PartialEq for TestResult<T> {
+impl<T: PartialEq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
         // `num_polls` is excluded from determinism equality. Tokio's
         // `worker_poll_count` includes scheduler-internal/background task polls
