@@ -572,6 +572,42 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_diff_reports_trace_length_only_mismatch_other_direction() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+        let run2 = TestResult {
+            num_polls: 101,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        assert_eq!(
+            determinism_diff(&run1, &run2),
+            DeterminismDiff {
+                rng_mismatch: false,
+                output_mismatch: false,
+                trace_len_mismatch: true,
+                trace_len_mismatch_side: Some("run2_longer"),
+                trace_len_delta: -1,
+                paired_trace_event_count: 0,
+                trace_mismatch_kind: "length_boundary",
+                trace_event_mismatch_index: Some(0),
+                trace_event_mismatch_run1_kind: None,
+                trace_event_mismatch_run2_kind: Some("TransactionCommit"),
+            }
+        );
+    }
+
+    #[test]
     fn test_determinism_diff_prefers_event_mismatch_over_length_boundary() {
         let run1 = TestResult {
             num_polls: 100,
