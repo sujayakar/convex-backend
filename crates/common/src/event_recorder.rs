@@ -252,14 +252,20 @@ mod tests {
         assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[0].seq, 0);
         assert_eq!(snapshot[1].seq, 1);
+        assert!(snapshot[0].elapsed <= snapshot[1].elapsed);
         assert!(matches!(
             snapshot[0].event,
-            Event::TransactionBegin { .. }
+            Event::TransactionBegin { ref identity } if identity == "id1"
         ));
-        assert!(matches!(snapshot[1].event, Event::Custom { .. }));
+        assert!(matches!(
+            snapshot[1].event,
+            Event::Custom { ref label, ref data } if label == "label" && *data == json!({ "value": 1 })
+        ));
 
         let drained = recorder.drain();
         assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].seq, 0);
+        assert_eq!(drained[1].seq, 1);
         assert_eq!(recorder.len(), 0);
         assert!(recorder.is_empty());
 
