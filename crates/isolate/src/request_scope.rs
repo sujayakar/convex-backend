@@ -515,7 +515,7 @@ impl<'a, 's: 'a, 'i: 'a, RT: Runtime, E: IsolateEnvironment<RT>> RequestScope<'a
 
                 let mut exec_scope = ExecutionScope::<RT, E>::new(scope);
                 let rejections = exec_scope.pending_unhandled_promise_rejections_mut();
-                rejections.exceptions.push((promise_global, error_global));
+                rejections.exceptions.insert(promise_global, error_global);
             },
             v8::PromiseRejectEvent::PromiseHandlerAddedAfterReject => {
                 tracing::warn!("Promise handler added after reject");
@@ -525,9 +525,7 @@ impl<'a, 's: 'a, 'i: 'a, RT: Runtime, E: IsolateEnvironment<RT>> RequestScope<'a
                 let promise_global = v8::Global::new(scope, message.get_promise());
                 let mut exec_scope = ExecutionScope::<RT, E>::new(scope);
                 let rejections = exec_scope.pending_unhandled_promise_rejections_mut();
-                rejections
-                    .exceptions
-                    .retain(|(p, _)| p != &promise_global);
+                rejections.exceptions.remove(&promise_global);
                 log_promise_handler_added_after_reject();
             },
             v8::PromiseRejectEvent::PromiseRejectAfterResolved => {

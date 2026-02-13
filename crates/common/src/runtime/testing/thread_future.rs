@@ -1,12 +1,9 @@
 use std::{
     cell::RefCell,
     pin::Pin,
-    sync::Arc,
     task::{
         Context,
         Poll,
-        RawWaker,
-        RawWakerVTable,
         Waker,
     },
 };
@@ -18,12 +15,6 @@ use futures::{
 
 use crate::knobs::RUNTIME_STACK_SIZE;
 
-/// Channel for deferring waker fires from the OS thread to the Tokio
-/// thread.  Code running inside a `ThreadFuture` poll can call
-/// [`defer_waker_to_tokio_thread`] to enqueue a waker; it will be fired
-/// on the Tokio runtime thread after the poll completes, ensuring
-/// deterministic local-queue scheduling instead of non-deterministic
-/// injection-queue scheduling.
 thread_local! {
     static DEFERRED_WAKER_TX: RefCell<Option<crossbeam_channel::Sender<Waker>>> =
         const { RefCell::new(None) };
@@ -38,71 +29,20 @@ pub fn defer_waker_to_tokio_thread(waker: Waker) {
         if let Some(tx) = tx.as_ref() {
             let _ = tx.send(waker);
         } else {
-            // Not inside a ThreadFuture — fire immediately.
             waker.wake();
         }
     });
 }
 
-/// Create a waker that, when woken, defers the real waker through the
-/// `DEFERRED_WAKER_TX` channel.  This intercepts ALL waker fires from
-/// the OS thread — including those from `tokio::sync` primitives like
-/// `mpsc::Sender::send()` and `oneshot::Sender::send()` — routing them
-/// to the Tokio runtime thread's deterministic local queue instead of
-/// the non-deterministic injection queue.
-fn make_deferring_waker(real_waker: Waker) -> Waker {
-    // We box the real waker and pass it through the RawWaker data pointer.
-    let data = Arc::new(real_waker);
-    let raw = RawWaker::new(
-        Arc::into_raw(data) as *const (),
-        &DEFERRING_VTABLE,
-    );
-    // SAFETY: raw waker follows the contract — clone increments refcount,
-    // wake/wake_by_ref defer the inner waker, drop decrements refcount.
-    unsafe { Waker::from_raw(raw) }
-}
-
-const DEFERRING_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    deferring_clone,
-    deferring_wake,
-    deferring_wake_by_ref,
-    deferring_drop,
-);
-
-unsafe fn deferring_clone(data: *const ()) -> RawWaker {
-    let arc = unsafe { Arc::from_raw(data as *const Waker) };
-    let cloned = arc.clone();
-    std::mem::forget(arc); // Don't decrement the original's refcount.
-    RawWaker::new(
-        Arc::into_raw(cloned) as *const (),
-        &DEFERRING_VTABLE,
-    )
-}
-
-unsafe fn deferring_wake(data: *const ()) {
-    let arc = unsafe { Arc::from_raw(data as *const Waker) };
-    defer_waker_to_tokio_thread((*arc).clone());
-    // arc is dropped here, decrementing the refcount.
-}
-
-unsafe fn deferring_wake_by_ref(data: *const ()) {
-    let arc = unsafe { Arc::from_raw(data as *const Waker) };
-    defer_waker_to_tokio_thread((*arc).clone());
-    std::mem::forget(arc); // Don't decrement the refcount.
-}
-
-unsafe fn deferring_drop(data: *const ()) {
-    let _arc = unsafe { Arc::from_raw(data as *const Waker) };
-    // arc is dropped here, decrementing the refcount.
+/// Returns true if the current thread is inside a `ThreadFuture` context.
+pub fn is_inside_thread_future() -> bool {
+    DEFERRED_WAKER_TX.with(|tx| tx.borrow().is_some())
 }
 
 pub struct ThreadFuture {
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
-    /// Receives wakers that the OS thread deferred via
-    /// [`defer_waker_to_tokio_thread`].  Drained and fired on the Tokio
-    /// thread after each poll response.
     deferred_waker_rx: crossbeam_channel::Receiver<Waker>,
 }
 
@@ -118,22 +58,17 @@ impl ThreadFuture {
             .stack_size(*RUNTIME_STACK_SIZE)
             .spawn(move || {
                 let _guard = tokio_handle.enter();
-                // Install the deferred-waker channel for this thread.
                 DEFERRED_WAKER_TX.with(|tx| {
                     *tx.borrow_mut() = Some(deferred_waker_tx);
                 });
                 let fut = f();
                 tokio::pin!(fut);
                 loop {
-                    let Ok(real_waker) = poll_request_rx.recv() else {
+                    let Ok(waker) = poll_request_rx.recv() else {
                         tracing::debug!("ThreadFuture gone away, returning.");
                         return;
                     };
-                    // Wrap the real waker so that ANY waker.wake() call
-                    // from this poll (including tokio::sync internals)
-                    // goes through the deferred channel.
-                    let deferring_waker = make_deferring_waker(real_waker);
-                    let mut cx = Context::from_waker(&deferring_waker);
+                    let mut cx = Context::from_waker(&waker);
                     let response = match fut.poll_unpin(&mut cx) {
                         Poll::Ready(()) => Poll::Ready(false),
                         Poll::Pending => Poll::Pending,
@@ -163,7 +98,6 @@ impl Future for ThreadFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        // Forward the poll request to the thread.
         if this
             .poll_request_tx
             .as_ref()
@@ -182,12 +116,7 @@ impl Future for ThreadFuture {
             },
         };
 
-        // Fire any wakers that the OS thread deferred via
-        // `defer_waker_to_tokio_thread` or through the deferring waker.
-        // Because we're on the Tokio runtime thread,
-        // `Waker::wake()` routes through `Schedule::schedule` →
-        // local queue (deterministic), instead of the injection queue
-        // (non-deterministic).
+        // Fire deferred wakers on the Tokio thread (local queue).
         while let Ok(waker) = this.deferred_waker_rx.try_recv() {
             waker.wake();
         }

@@ -44,34 +44,6 @@ const VERIFY_PROBABILITY: f64 = 0.01;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(120);
 
-// #region agent log
-fn log_debug_event(
-    hypothesis_id: &'static str,
-    location: &'static str,
-    message: &'static str,
-    data_json: &str,
-) {
-    if std::env::var_os("NITPICK_INJECTION_DEBUG").is_none() {
-        return;
-    }
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/opt/cursor/logs/debug.log")
-    {
-        use std::io::Write as _;
-        let _ = writeln!(
-            file,
-            "{{\"hypothesisId\":\"{hypothesis_id}\",\"location\":\"{location}\",\"message\":\"{message}\",\"data\":{data_json},\"timestamp\":{timestamp}}}"
-        );
-    }
-}
-// #endregion
-
 /// Configuration for a single simulation run.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
@@ -265,18 +237,8 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
             // #region agent log
-            unsafe {
-                std::env::set_var("NITPICK_INJECTION_DEBUG", "1");
-                std::env::set_var("NITPICK_RUN_ID", "1");
-            }
             DST_RUN_ID.store(1, Ordering::Relaxed);
             DST_TF_ID.store(0, Ordering::Relaxed);
-            log_debug_event(
-                "H3",
-                "crates/nitpick/src/framework/runner.rs:run_scenario",
-                "run1_start",
-                &format!("{{\"seed\":{},\"runId\":1}}", config.seed),
-            );
             // #endregion
             let (run1, should_check) = {
                 let td = TestDriver::new_with_seed(config.seed);
@@ -304,18 +266,6 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            // #region agent log
-            unsafe {
-                std::env::set_var("NITPICK_INJECTION_DEBUG", "1");
-                std::env::set_var("NITPICK_RUN_ID", "1");
-            }
-            log_debug_event(
-                "H3",
-                "crates/nitpick/src/framework/runner.rs:run_scenario_deterministic",
-                "run1_start",
-                &format!("{{\"seed\":{},\"runId\":1}}", config.seed),
-            );
-            // #endregion
             let run1 = {
                 let td = TestDriver::new_with_seed(config.seed);
                 run_once(&scenario, &td, config)?
@@ -337,31 +287,11 @@ fn check_determinism<S: Scenario>(
         config.seed
     );
     // #region agent log
-    unsafe {
-        std::env::set_var("NITPICK_RUN_ID", "2");
-    }
     DST_RUN_ID.store(2, Ordering::Relaxed);
     DST_TF_ID.store(0, Ordering::Relaxed);
-    log_debug_event(
-        "H3",
-        "crates/nitpick/src/framework/runner.rs:check_determinism",
-        "run2_start",
-        &format!("{{\"seed\":{},\"runId\":2}}", config.seed),
-    );
     // #endregion
     let td = TestDriver::new_with_seed(config.seed);
     let run2 = run_once(scenario, &td, config)?;
-    // #region agent log
-    log_debug_event(
-        "H3",
-        "crates/nitpick/src/framework/runner.rs:check_determinism",
-        "run_comparison",
-        &format!(
-            "{{\"seed\":{},\"run1_polls\":{},\"run2_polls\":{},\"run1_rng\":{},\"run2_rng\":{}}}",
-            config.seed, run1.num_polls, run2.num_polls, run1.rng_next_u64, run2.rng_next_u64
-        ),
-    );
-    // #endregion
     if *run1 != run2 {
         anyhow::bail!(
             "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",

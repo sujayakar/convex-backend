@@ -17,7 +17,6 @@ use nitpick::{
     framework::{
         batch::run_batch,
         runner::{
-            check_determinism_in_process,
             run_scenario,
             Config,
         },
@@ -71,14 +70,6 @@ enum Commands {
     },
     /// List available scenarios
     List,
-    /// (Internal) Run determinism check for a single seed in a subprocess.
-    #[command(name = "determinism-check", hide = true)]
-    DeterminismCheck {
-        /// Scenario name
-        scenario: String,
-        /// Pseudorandom seed
-        seed: u64,
-    },
 }
 
 const SCENARIOS: &[&str] = &[
@@ -94,6 +85,10 @@ const SCENARIOS: &[&str] = &[
 
 fn main() -> anyhow::Result<()> {
     config_test();
+    // Enable deterministic V8 execution before any V8 initialization occurs.
+    // This disables background JIT compilation and concurrent GC sweeping,
+    // eliminating non-determinism from V8's shared platform thread pool when
+    // multiple simulations run in parallel.
     configure_v8_for_determinism();
     let cli = Cli::parse();
 
@@ -111,14 +106,6 @@ fn main() -> anyhow::Result<()> {
                 seed,
             };
             run_scenario_by_name(&scenario, config)?;
-        },
-        Commands::DeterminismCheck { scenario, seed } => {
-            let config = Config {
-                transactions: cli.transactions,
-                concurrency: cli.concurrency,
-                seed,
-            };
-            run_determinism_check_by_name(&scenario, config)?;
         },
         Commands::Batch {
             scenario,
@@ -160,25 +147,6 @@ fn run_scenario_by_name(name: &str, config: Config) -> anyhow::Result<()> {
         "link_ring" => run_scenario(LinkRingScenario::default(), config),
         "link_ring_js" => run_scenario(LinkRingJsScenario::default(), config),
         "scheduled_js" => run_scenario(ScheduledJsScenario, config),
-        _ => {
-            anyhow::bail!(
-                "Unknown scenario: {name}. Available: {}",
-                SCENARIOS.join(", ")
-            )
-        },
-    }
-}
-
-fn run_determinism_check_by_name(name: &str, config: Config) -> anyhow::Result<()> {
-    match name {
-        "counter" => check_determinism_in_process(CounterScenario, config),
-        "counter_js" => check_determinism_in_process(CounterJsScenario, config),
-        "elle" => check_determinism_in_process(ElleScenario::default(), config),
-        "elle_js" => check_determinism_in_process(ElleJsScenario, config),
-        "index_query_js" => check_determinism_in_process(IndexQueryJsScenario, config),
-        "link_ring" => check_determinism_in_process(LinkRingScenario::default(), config),
-        "link_ring_js" => check_determinism_in_process(LinkRingJsScenario::default(), config),
-        "scheduled_js" => check_determinism_in_process(ScheduledJsScenario, config),
         _ => {
             anyhow::bail!(
                 "Unknown scenario: {name}. Available: {}",

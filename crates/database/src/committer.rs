@@ -96,19 +96,12 @@ use rand::Rng;
 use search::TextIndexWriteSize;
 use tokio::sync::oneshot;
 
-// In testing/DST mode, use a custom MPSC channel that defers waker fires
-// from V8 worker OS threads to the Tokio runtime thread, preventing
-// non-deterministic injection-queue scheduling.
+// In testing/DST mode, use DstMpsc to defer waker fires from V8 worker
+// OS threads that call CommitterClient::_commit() → try_send().
 #[cfg(any(test, feature = "testing"))]
 type CommitterSender = common::runtime::testing::DstMpscSender<CommitterMessage>;
 #[cfg(any(test, feature = "testing"))]
 type CommitterReceiver = common::runtime::testing::DstMpscReceiver<CommitterMessage>;
-#[cfg(any(test, feature = "testing"))]
-fn committer_channel(
-    capacity: usize,
-) -> (CommitterSender, CommitterReceiver) {
-    common::runtime::testing::dst_mpsc_channel(capacity)
-}
 #[cfg(any(test, feature = "testing"))]
 type CommitterTrySendError<T> = common::runtime::testing::DstTrySendError<T>;
 
@@ -117,13 +110,20 @@ type CommitterSender = tokio::sync::mpsc::Sender<CommitterMessage>;
 #[cfg(not(any(test, feature = "testing")))]
 type CommitterReceiver = tokio::sync::mpsc::Receiver<CommitterMessage>;
 #[cfg(not(any(test, feature = "testing")))]
+type CommitterTrySendError<T> = tokio::sync::mpsc::error::TrySendError<T>;
+
 fn committer_channel(
     capacity: usize,
 ) -> (CommitterSender, CommitterReceiver) {
-    tokio::sync::mpsc::channel(capacity)
+    #[cfg(any(test, feature = "testing"))]
+    {
+        common::runtime::testing::dst_mpsc_channel(capacity)
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        tokio::sync::mpsc::channel(capacity)
+    }
 }
-#[cfg(not(any(test, feature = "testing")))]
-type CommitterTrySendError<T> = tokio::sync::mpsc::error::TrySendError<T>;
 use tokio_util::task::AbortOnDropHandle;
 use usage_tracking::FunctionUsageTracker;
 use value::{

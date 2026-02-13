@@ -1,6 +1,8 @@
 mod thread_future;
-// `defer_waker_to_tokio_thread` is still used by `DstOneshotSender`.
-pub use thread_future::defer_waker_to_tokio_thread;
+pub use thread_future::{
+    defer_waker_to_tokio_thread,
+    is_inside_thread_future,
+};
 
 mod dst_oneshot;
 pub use dst_oneshot::{
@@ -18,8 +20,13 @@ pub use dst_mpsc::{
 };
 
 use std::{
+    self,
     pin::Pin,
     sync::{
+        atomic::{
+            AtomicU32,
+            Ordering,
+        },
         Arc,
         LazyLock,
         Weak,
@@ -29,6 +36,20 @@ use std::{
         SystemTime,
     },
 };
+
+// #region agent log
+pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
+pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
+pub fn dst_log(msg: &str) {
+    use std::io::Write;
+    let r = DST_RUN_ID.load(Ordering::Relaxed);
+    if r == 0 { return; }
+    let p = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), r);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
+// #endregion
 
 use futures::{
     future::FusedFuture,
@@ -93,7 +114,7 @@ impl TestDriver {
         };
         Self {
             tokio_runtime: Some(tokio_runtime),
-            state: Arc::new(Mutex::new(TestRuntimeState { creation_time, rng })),
+            state: Arc::new(Mutex::new(TestRuntimeState { rng, creation_time })),
             pause_client,
         }
     }
@@ -116,7 +137,6 @@ impl TestDriver {
                 .handle()
                 .clone(),
             state: Arc::downgrade(&self.state),
-            _owned_state: None,
             pause_client: self.pause_client.clone(),
             event_recorder,
         }
@@ -156,9 +176,6 @@ struct TestRuntimeState {
 pub struct TestRuntime {
     tokio_handle: tokio::runtime::Handle,
     state: Weak<Mutex<TestRuntimeState>>,
-    /// If this runtime was created via `fork_rng()`, holds the owning Arc
-    /// to keep the forked state alive.
-    _owned_state: Option<Arc<Mutex<TestRuntimeState>>>,
     pause_client: PauseClient,
     event_recorder: crate::event_recorder::EventRecorder,
 }
@@ -175,27 +192,6 @@ impl TestRuntime {
 
     pub async fn advance_time(&self, duration: Duration) {
         tokio::time::advance(duration).await
-    }
-
-    /// Create a copy of this runtime with an independent RNG, seeded from
-    /// the current shared RNG.  This allows concurrent tasks to consume
-    /// their own deterministic RNG without the ordering of RNG calls
-    /// depending on task scheduling.
-    pub fn fork_rng(&self) -> Self {
-        let seed: u64 = self.with_state(|state| state.rng.next_u64());
-        let forked_rng = ChaCha12Rng::seed_from_u64(seed);
-        let creation_time = self.with_state(|state| state.creation_time);
-        let owned = Arc::new(Mutex::new(TestRuntimeState {
-            rng: forked_rng,
-            creation_time,
-        }));
-        TestRuntime {
-            tokio_handle: self.tokio_handle.clone(),
-            state: Arc::downgrade(&owned),
-            _owned_state: Some(owned),
-            pause_client: self.pause_client.clone(),
-            event_recorder: self.event_recorder.clone(),
-        }
     }
 }
 

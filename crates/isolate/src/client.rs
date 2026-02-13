@@ -2,6 +2,7 @@ use std::{
     collections::{
         BTreeMap,
         BTreeSet,
+        HashMap,
         VecDeque,
     },
     env,
@@ -594,7 +595,7 @@ pub fn initialize_v8() {
         // `--predictable` flag disables background compilation and concurrent GC,
         // so no background work is generated, but constraining the thread pool
         // to 1 is belt-and-suspenders against any remaining platform tasks.
-        let thread_pool_size = if deterministic { 0 } else { *V8_THREADS };
+        let thread_pool_size = if deterministic { 1 } else { *V8_THREADS };
         let platform =
             v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
 
@@ -624,7 +625,7 @@ pub fn initialize_v8() {
         // reproducible across runs.
         if deterministic {
             argv.push("--predictable".to_string());
-            tracing::info!("V8 deterministic mode enabled (--predictable, thread_pool_size=0)");
+            tracing::info!("V8 deterministic mode enabled (--predictable, thread_pool_size=1)");
         }
         if let Ok(flags) = env::var("ISOLATE_V8_FLAGS") {
             argv.extend(
@@ -1119,11 +1120,11 @@ fn dst_done_channel() -> (DstDoneSender<ActiveWorkerState>, DoneReceiver) {
     }
 }
 
-/// Response channel types used for UDF/action request-response pairs.
-/// In testing/DST mode, these use `DstOneshot` to defer waker fires
-/// from V8 worker OS threads to the Tokio runtime thread, preventing
-/// wakers from entering Tokio's injection queue (which has
-/// non-deterministic drain timing).
+/// Response channel for UDF/action request-response pairs.
+/// In testing/DST mode, uses `DstOneshot` to defer waker fires from V8
+/// worker OS threads to the Tokio runtime thread, preventing wakers from
+/// entering Tokio's injection queue (which has non-deterministic drain
+/// timing dependent on the `global_queue_interval` tick boundary).
 #[cfg(any(test, feature = "testing"))]
 pub type ResponseSender<T> = common::runtime::testing::DstOneshotSender<T>;
 #[cfg(not(any(test, feature = "testing")))]
@@ -1157,12 +1158,12 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     /// `last_used_ts` older than `ISOLATE_IDLE_TIMEOUT` has already been
     /// recreated and there will be no penalty for reassigning this worker to a
     /// new client.
-    available_workers: BTreeMap<String, VecDeque<IdleWorkerState>>,
+    available_workers: HashMap<String, VecDeque<IdleWorkerState>>,
     /// Set of futures awaiting a response from an active worker.
     in_progress_workers: FuturesUnordered<DoneReceiver>,
     /// Counts the number of active workers per client. Should only contain a
     /// key if the value is greater than 0.
-    in_progress_count: BTreeMap<String, usize>,
+    in_progress_count: HashMap<String, usize>,
     /// The max number of workers this scheduler is permitted to create.
     max_workers: usize,
     handles: Arc<Mutex<Vec<IsolateWorkerHandle>>>,
@@ -1191,8 +1192,8 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             worker,
             worker_senders: Vec::new(),
             in_progress_workers: FuturesUnordered::new(),
-            in_progress_count: BTreeMap::new(),
-            available_workers: BTreeMap::new(),
+            in_progress_count: HashMap::new(),
+            available_workers: HashMap::new(),
             max_workers,
             handles,
             max_percent_per_client,
@@ -1267,6 +1268,13 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         completions.push(w);
                     }
                     completions.sort_by_key(|w| w.worker_id);
+                    // #region agent log
+                    {
+                        let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
+                        let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
+                        common::runtime::testing::dst_log(&format!("SCHED completed {:?} @{}", ids, wpc));
+                    }
+                    // #endregion
                     for w in completions {
                         self.handle_completed_worker(w);
                     }
@@ -1368,6 +1376,12 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 })
                 .expect("Available worker map should never contain an empty list");
             let worker = workers.remove(idx).expect("index is valid");
+            // #region agent log
+            {
+                let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
+                common::runtime::testing::dst_log(&format!("SCHED get_worker -> {} @{}", worker.worker_id, wpc));
+            }
+            // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
             }
