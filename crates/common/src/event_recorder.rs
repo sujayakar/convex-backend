@@ -90,11 +90,13 @@ mod test_recorder {
 
     impl EventRecorder {
         /// Create an inactive recorder (no-op).
+        #[must_use]
         pub fn new() -> Self {
             Self { inner: None }
         }
 
         /// Create an active recorder that collects events.
+        #[must_use]
         pub fn active() -> Self {
             Self {
                 inner: Some(Arc::new(EventRecorderInner {
@@ -193,6 +195,7 @@ mod prod_recorder {
     pub struct EventRecorder;
 
     impl EventRecorder {
+        #[must_use]
         pub fn new() -> Self {
             Self
         }
