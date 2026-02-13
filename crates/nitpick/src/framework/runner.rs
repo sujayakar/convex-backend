@@ -284,26 +284,44 @@ fn check_determinism<S: Scenario>(
     let td = TestDriver::new_with_seed(config.seed);
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
-        anyhow::bail!(
-            "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {} }}",
-            config.seed,
-            run1.rng_next_u64,
-            run1.output,
-            run2.rng_next_u64,
-            run2.output,
-            run1.num_polls,
-            run2.num_polls,
-            run1.trace.len(),
-            run2.trace.len(),
-        );
+        anyhow::bail!("{}", determinism_failure_message(config.seed, run1, &run2));
     }
     tracing::info!("[nitpick] Determinism check passed");
     Ok(())
 }
 
+fn determinism_failure_message<T: std::fmt::Debug>(
+    seed: u64,
+    run1: &TestResult<T>,
+    run2: &TestResult<T>,
+) -> String {
+    format!(
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {} }}",
+        seed,
+        run1.rng_next_u64,
+        run1.output,
+        run2.rng_next_u64,
+        run2.output,
+        run1.num_polls,
+        run2.num_polls,
+        run1.trace.len(),
+        run2.trace.len(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::TestResult;
+    use std::time::Duration;
+
+    use common::event_recorder::{
+        Event,
+        TraceEvent,
+    };
+
+    use super::{
+        determinism_failure_message,
+        TestResult,
+    };
 
     #[test]
     fn test_result_equality_ignores_num_polls_and_trace() {
@@ -357,5 +375,41 @@ mod tests {
         };
 
         assert_ne!(run1, run2);
+    }
+
+    #[test]
+    fn test_determinism_failure_message_is_compact_and_diagnostic() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionCommit,
+            }],
+        };
+        let run2 = TestResult {
+            num_polls: 103,
+            rng_next_u64: 43,
+            output: "not_ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(2),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        let message = determinism_failure_message(123, &run1, &run2);
+
+        assert!(message.contains("Determinism failure for seed 123"));
+        assert!(message.contains("run1_num_polls: 100"));
+        assert!(message.contains("run2_num_polls: 103"));
+        assert!(message.contains("run1_trace_len: 1"));
+        assert!(message.contains("run2_trace_len: 1"));
+        assert!(
+            !message.contains("TraceEvent"),
+            "message should avoid dumping full traces"
+        );
     }
 }
