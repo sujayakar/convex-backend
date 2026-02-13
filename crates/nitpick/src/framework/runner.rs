@@ -79,6 +79,7 @@ struct DeterminismDiff {
     output_mismatch: bool,
     trace_len_mismatch: bool,
     trace_len_mismatch_side: Option<&'static str>,
+    trace_mismatch_kind: &'static str,
     trace_event_mismatch_index: Option<usize>,
     trace_event_mismatch_run1_kind: Option<&'static str>,
     trace_event_mismatch_run2_kind: Option<&'static str>,
@@ -109,6 +110,13 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
         .iter()
         .zip(run2.trace.iter())
         .position(|(a, b)| a.event != b.event);
+    let trace_mismatch_kind = if paired_trace_event_mismatch_index.is_some() {
+        "event_payload_mismatch"
+    } else if trace_len_mismatch {
+        "length_boundary"
+    } else {
+        "none"
+    };
     let trace_event_mismatch_index = paired_trace_event_mismatch_index
         .or_else(|| trace_len_mismatch.then_some(run1.trace.len().min(run2.trace.len())));
     let trace_event_mismatch_run1_kind = trace_event_mismatch_index
@@ -123,6 +131,7 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
         output_mismatch,
         trace_len_mismatch,
         trace_len_mismatch_side,
+        trace_mismatch_kind,
         trace_event_mismatch_index,
         trace_event_mismatch_run1_kind,
         trace_event_mismatch_run2_kind,
@@ -371,7 +380,7 @@ fn determinism_failure_message<T: std::fmt::Debug>(
     diff: &DeterminismDiff,
 ) -> String {
     format!(
-        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
         seed,
         run1.rng_next_u64,
         run1.output,
@@ -385,6 +394,7 @@ fn determinism_failure_message<T: std::fmt::Debug>(
         run2.trace.len(),
         diff.trace_len_mismatch,
         diff.trace_len_mismatch_side,
+        diff.trace_mismatch_kind,
         diff.trace_event_mismatch_index,
         diff.trace_event_mismatch_run1_kind,
         diff.trace_event_mismatch_run2_kind,
@@ -543,6 +553,7 @@ mod tests {
                 output_mismatch: false,
                 trace_len_mismatch: true,
                 trace_len_mismatch_side: Some("run1_longer"),
+                trace_mismatch_kind: "length_boundary",
                 trace_event_mismatch_index: Some(0),
                 trace_event_mismatch_run1_kind: Some("TransactionCommit"),
                 trace_event_mismatch_run2_kind: None,
@@ -647,6 +658,7 @@ mod tests {
         assert!(message.contains("run2_trace_len: 1"));
         assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_len_mismatch_side: None"));
+        assert!(message.contains("trace_mismatch_kind: \"none\""));
         assert!(message.contains("trace_event_mismatch_index: None"));
         assert!(message.contains("trace_event_mismatch_run1_kind: None"));
         assert!(message.contains("trace_event_mismatch_run2_kind: None"));
@@ -685,6 +697,7 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2, &diff);
         assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_len_mismatch_side: None"));
+        assert!(message.contains("trace_mismatch_kind: \"event_payload_mismatch\""));
         assert!(message.contains("trace_event_mismatch_index: Some(0)"));
         assert!(message.contains("trace_event_mismatch_run1_kind: Some(\"TransactionBegin\")"));
         assert!(message.contains("trace_event_mismatch_run2_kind: Some(\"TransactionCommit\")"));
@@ -713,6 +726,7 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2, &diff);
         assert!(message.contains("trace_len_mismatch: true"));
         assert!(message.contains("trace_len_mismatch_side: Some(\"run1_longer\")"));
+        assert!(message.contains("trace_mismatch_kind: \"length_boundary\""));
         assert!(message.contains("trace_event_mismatch_index: Some(0)"));
         assert!(message.contains("trace_event_mismatch_run1_kind: Some(\"TransactionCommit\")"));
         assert!(message.contains("trace_event_mismatch_run2_kind: None"));
@@ -741,6 +755,7 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2, &diff);
         assert!(message.contains("trace_len_mismatch: true"));
         assert!(message.contains("trace_len_mismatch_side: Some(\"run2_longer\")"));
+        assert!(message.contains("trace_mismatch_kind: \"length_boundary\""));
         assert!(message.contains("trace_event_mismatch_index: Some(0)"));
         assert!(message.contains("trace_event_mismatch_run1_kind: None"));
         assert!(message.contains("trace_event_mismatch_run2_kind: Some(\"TransactionCommit\")"));

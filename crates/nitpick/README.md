@@ -93,7 +93,9 @@ including each run's poll count and trace length.
 The diagnostics also include mismatch flags (`rng_mismatch`,
 `output_mismatch`, `trace_len_mismatch`), which trace is longer when lengths
 diverge, and first differing trace event index when available (or the shorter
-trace boundary when only lengths differ).
+trace boundary when only lengths differ). `trace_mismatch_kind` indicates
+whether the trace mismatch comes from differing event payloads or a length
+boundary.
 
 Why not include `num_polls` in equality? Tokio's `worker_poll_count` is a
 scheduler metric that is flushed at scheduler submit points, and can vary
