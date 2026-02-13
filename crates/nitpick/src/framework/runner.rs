@@ -71,11 +71,13 @@ pub struct TestResult<T> {
 
 impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
-        // Trace is excluded from equality -- it contains wall-clock timing
-        // that may differ between runs.
-        self.num_polls == other.num_polls
-            && self.rng_next_u64 == other.rng_next_u64
-            && self.output == other.output
+        // `num_polls` is excluded from determinism equality. Tokio's
+        // `worker_poll_count` includes scheduler-internal/background task polls
+        // and is only flushed at scheduler submit points, so it can differ under
+        // host CPU contention even when logical execution is identical.
+        //
+        // Trace is excluded as well since it includes wall-clock timing.
+        self.rng_next_u64 == other.rng_next_u64 && self.output == other.output
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}

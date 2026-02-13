@@ -82,7 +82,8 @@ All simulations are deterministic given a seed. The `TestRuntime` provides:
 - Single-threaded Tokio with paused timer
 
 Determinism is verified by running the same (scenario, seed) twice and
-comparing the `TestResult { num_polls, rng_next_u64, output }`.
+comparing the deterministic `TestResult` fields (`rng_next_u64`, `output`).
+`num_polls` is still captured for diagnostics but is not used for equality.
 
 ## Code Coverage
 
