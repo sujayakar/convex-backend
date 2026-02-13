@@ -286,6 +286,14 @@ fn check_determinism<S: Scenario>(
     if *run1 != run2 {
         anyhow::bail!("{}", determinism_failure_message(config.seed, run1, &run2));
     }
+    if run1.num_polls != run2.num_polls {
+        tracing::debug!(
+            "[nitpick] Determinism diagnostics for seed {}: num_polls differed (run1: {}, run2: {}), but deterministic fields matched",
+            config.seed,
+            run1.num_polls,
+            run2.num_polls
+        );
+    }
     tracing::info!("[nitpick] Determinism check passed");
     Ok(())
 }
@@ -336,6 +344,34 @@ mod tests {
             rng_next_u64: 42,
             output: "ok".to_string(),
             trace: vec![],
+        };
+
+        assert_eq!(run1, run2);
+    }
+
+    #[test]
+    fn test_result_equality_ignores_trace_contents() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionBegin {
+                    identity: "id1".to_string(),
+                },
+            }],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 1,
+                elapsed: Duration::from_secs(2),
+                event: Event::TransactionCommit,
+            }],
         };
 
         assert_eq!(run1, run2);
