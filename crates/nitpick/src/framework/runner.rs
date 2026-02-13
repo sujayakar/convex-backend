@@ -971,6 +971,16 @@ mod tests {
     }
 
     #[test]
+    fn test_signed_delta_usize_matches_small_value_subtraction() {
+        let values = [0usize, 1, 2, 7, 42, 1_000];
+        for lhs in values {
+            for rhs in values {
+                assert_eq!(signed_delta_usize(lhs, rhs), lhs as i128 - rhs as i128);
+            }
+        }
+    }
+
+    #[test]
     fn test_debug_string_preview_not_truncated_at_exact_limit() {
         let preview = debug_string_preview(&"🙂🙂🙂".to_string(), 5);
         assert_eq!(preview.full_len, 5);
