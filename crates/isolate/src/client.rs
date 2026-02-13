@@ -401,18 +401,10 @@ pub fn response_channel<T>() -> (ResponseSender<T>, ResponseReceiver<T>) {
     }
 }
 
-pub fn response_closed<'a, T>(
+pub fn response_closed<'a, T: Send + 'a>(
     response: &'a mut ResponseSender<T>,
 ) -> futures::future::BoxFuture<'a, ()> {
-    #[cfg(any(test, feature = "testing"))]
-    {
-        let _ = response;
-        futures::future::pending::<()>().boxed()
-    }
-    #[cfg(not(any(test, feature = "testing")))]
-    {
-        response.closed().boxed()
-    }
+    response.closed().boxed()
 }
 
 pub enum RequestType<RT: Runtime> {
