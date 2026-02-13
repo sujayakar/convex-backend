@@ -716,6 +716,62 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_diff_reports_nonzero_event_mismatch_index() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 0,
+                    elapsed: Duration::from_secs(1),
+                    event: Event::TransactionCommit,
+                },
+                TraceEvent {
+                    seq: 1,
+                    elapsed: Duration::from_secs(2),
+                    event: Event::TransactionBegin {
+                        identity: "id1".to_string(),
+                    },
+                },
+            ],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 9,
+                    elapsed: Duration::from_secs(9),
+                    event: Event::TransactionCommit,
+                },
+                TraceEvent {
+                    seq: 10,
+                    elapsed: Duration::from_secs(10),
+                    event: Event::TransactionConflict,
+                },
+            ],
+        };
+
+        assert_eq!(
+            determinism_diff(&run1, &run2),
+            DeterminismDiff {
+                rng_mismatch: false,
+                output_mismatch: false,
+                trace_len_mismatch: false,
+                trace_len_mismatch_side: None,
+                trace_len_delta: 0,
+                paired_trace_event_count: 2,
+                trace_mismatch_kind: "event_payload_mismatch",
+                trace_event_mismatch_index: Some(1),
+                trace_event_mismatch_run1_kind: Some("TransactionBegin"),
+                trace_event_mismatch_run2_kind: Some("TransactionConflict"),
+            }
+        );
+    }
+
+    #[test]
     fn test_determinism_diff_reports_boundary_after_matching_prefix() {
         let run1 = TestResult {
             num_polls: 100,
