@@ -102,7 +102,9 @@ event payloads or a length boundary. `trace_len_delta` and
 Output values are shown as debug previews and truncated when large (with full
 debug lengths included), and diagnostics explicitly report whether previews were
 truncated and the preview character limit. Poll counts remain diagnostic-only,
-and `num_polls_delta` gives a quick signed difference between runs.
+and `num_polls_delta` gives a quick signed difference between runs. When
+deterministic fields match but poll counts differ, nitpick emits a debug log
+that includes run1/run2 poll counts and the signed poll delta.
 
 Why not include `num_polls` in equality? Tokio's `worker_poll_count` is a
 scheduler metric that is flushed at scheduler submit points, and can vary

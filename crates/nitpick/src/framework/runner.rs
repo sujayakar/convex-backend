@@ -958,6 +958,15 @@ mod tests {
     }
 
     #[test]
+    fn test_poll_mismatch_debug_message_exact_format() {
+        let message = poll_mismatch_debug_message(7, 10, 8);
+        assert_eq!(
+            message,
+            "[nitpick] Determinism diagnostics for seed 7: num_polls differed (run1: 10, run2: 8, delta: 2), but deterministic fields matched"
+        );
+    }
+
+    #[test]
     fn test_determinism_failure_message_is_compact_and_diagnostic() {
         let run1 = TestResult {
             num_polls: 100,
