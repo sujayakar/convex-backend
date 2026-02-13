@@ -315,8 +315,13 @@ fn determinism_failure_message<T: std::fmt::Debug>(
     run1: &TestResult<T>,
     run2: &TestResult<T>,
 ) -> String {
+    let trace_event_mismatch_index = run1
+        .trace
+        .iter()
+        .zip(run2.trace.iter())
+        .position(|(a, b)| a.event != b.event);
     format!(
-        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {} }}",
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_event_mismatch_index: {:?} }}",
         seed,
         run1.rng_next_u64,
         run1.output,
@@ -326,6 +331,7 @@ fn determinism_failure_message<T: std::fmt::Debug>(
         run2.num_polls,
         run1.trace.len(),
         run2.trace.len(),
+        trace_event_mismatch_index,
     )
 }
 
@@ -507,9 +513,39 @@ mod tests {
         assert!(message.contains("run2_num_polls: 103"));
         assert!(message.contains("run1_trace_len: 1"));
         assert!(message.contains("run2_trace_len: 1"));
+        assert!(message.contains("trace_event_mismatch_index: None"));
         assert!(
             !message.contains("TraceEvent"),
             "message should avoid dumping full traces"
         );
+    }
+
+    #[test]
+    fn test_determinism_failure_message_reports_trace_mismatch_index() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionBegin {
+                    identity: "id1".to_string(),
+                },
+            }],
+        };
+        let run2 = TestResult {
+            num_polls: 103,
+            rng_next_u64: 43,
+            output: "not_ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 1,
+                elapsed: Duration::from_secs(2),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        let message = determinism_failure_message(123, &run1, &run2);
+        assert!(message.contains("trace_event_mismatch_index: Some(0)"));
     }
 }
