@@ -344,4 +344,32 @@ mod tests {
         assert!(recorder.is_empty());
         assert!(clone.is_empty());
     }
+
+    #[test]
+    fn interleaved_clone_recording_uses_shared_sequence_counter() {
+        let recorder = EventRecorder::active();
+        let clone1 = recorder.clone();
+        let clone2 = recorder.clone();
+
+        clone1.record(Event::TransactionBegin {
+            identity: "from_clone1".to_string(),
+        });
+        clone2.record(Event::TransactionCommit);
+        recorder.record_custom("from_root", json!({ "value": 3 }));
+
+        let snapshot = recorder.snapshot();
+        assert_eq!(snapshot.len(), 3);
+        assert_eq!(snapshot[0].seq, 0);
+        assert_eq!(snapshot[1].seq, 1);
+        assert_eq!(snapshot[2].seq, 2);
+        assert!(matches!(
+            snapshot[0].event,
+            Event::TransactionBegin { ref identity } if identity == "from_clone1"
+        ));
+        assert!(matches!(snapshot[1].event, Event::TransactionCommit));
+        assert!(matches!(
+            snapshot[2].event,
+            Event::Custom { ref label, ref data } if label == "from_root" && *data == json!({ "value": 3 })
+        ));
+    }
 }
