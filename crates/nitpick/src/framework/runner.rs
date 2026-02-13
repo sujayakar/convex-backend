@@ -1048,6 +1048,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "poll mismatch message should only be used when values differ")]
+    fn test_poll_mismatch_debug_message_panics_on_equal_counts() {
+        let _ = poll_mismatch_debug_message(7, 10, 10);
+    }
+
+    #[test]
     fn test_determinism_failure_message_is_compact_and_diagnostic() {
         let run1 = TestResult {
             num_polls: 100,
