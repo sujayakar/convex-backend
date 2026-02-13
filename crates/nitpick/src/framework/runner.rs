@@ -96,11 +96,13 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
     let rng_mismatch = run1.rng_next_u64 != run2.rng_next_u64;
     let output_mismatch = run1.output != run2.output;
     let trace_len_mismatch = run1.trace.len() != run2.trace.len();
-    let trace_event_mismatch_index = run1
+    let paired_trace_event_mismatch_index = run1
         .trace
         .iter()
         .zip(run2.trace.iter())
         .position(|(a, b)| a.event != b.event);
+    let trace_event_mismatch_index = paired_trace_event_mismatch_index
+        .or_else(|| trace_len_mismatch.then_some(run1.trace.len().min(run2.trace.len())));
     let trace_event_mismatch_run1_kind = trace_event_mismatch_index
         .and_then(|i| run1.trace.get(i))
         .map(|e| event_kind(&e.event));
@@ -530,8 +532,8 @@ mod tests {
                 rng_mismatch: false,
                 output_mismatch: false,
                 trace_len_mismatch: true,
-                trace_event_mismatch_index: None,
-                trace_event_mismatch_run1_kind: None,
+                trace_event_mismatch_index: Some(0),
+                trace_event_mismatch_run1_kind: Some("TransactionCommit"),
                 trace_event_mismatch_run2_kind: None,
             }
         );
@@ -697,8 +699,8 @@ mod tests {
         let diff = determinism_diff(&run1, &run2);
         let message = determinism_failure_message(123, &run1, &run2, &diff);
         assert!(message.contains("trace_len_mismatch: true"));
-        assert!(message.contains("trace_event_mismatch_index: None"));
-        assert!(message.contains("trace_event_mismatch_run1_kind: None"));
+        assert!(message.contains("trace_event_mismatch_index: Some(0)"));
+        assert!(message.contains("trace_event_mismatch_run1_kind: Some(\"TransactionCommit\")"));
         assert!(message.contains("trace_event_mismatch_run2_kind: None"));
     }
 
