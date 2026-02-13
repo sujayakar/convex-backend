@@ -1017,6 +1017,26 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_failure_message_reports_positive_num_polls_delta() {
+        let run1 = TestResult {
+            num_polls: 105,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "not_ok".to_string(),
+            trace: vec![],
+        };
+        let diff = determinism_diff(&run1, &run2);
+        let message = determinism_failure_message(123, &run1, &run2, &diff);
+
+        assert!(message.contains("num_polls_delta: 5"));
+    }
+
+    #[test]
     fn test_partial_eq_consistent_with_determinism_diff() {
         let base = TestResult {
             num_polls: 100,
