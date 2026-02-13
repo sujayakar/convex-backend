@@ -757,6 +757,79 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_diff_reports_multi_event_length_delta() {
+        let long_run = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 0,
+                    elapsed: Duration::from_secs(1),
+                    event: Event::TransactionCommit,
+                },
+                TraceEvent {
+                    seq: 1,
+                    elapsed: Duration::from_secs(2),
+                    event: Event::UdfStart {
+                        udf_path: "x:y".to_string(),
+                        udf_type: "query".to_string(),
+                    },
+                },
+                TraceEvent {
+                    seq: 2,
+                    elapsed: Duration::from_secs(3),
+                    event: Event::UdfEnd {
+                        udf_path: "x:y".to_string(),
+                        success: true,
+                    },
+                },
+            ],
+        };
+        let short_run = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 9,
+                elapsed: Duration::from_secs(9),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        assert_eq!(
+            determinism_diff(&long_run, &short_run),
+            DeterminismDiff {
+                rng_mismatch: false,
+                output_mismatch: false,
+                trace_len_mismatch: true,
+                trace_len_mismatch_side: Some("run1_longer"),
+                trace_len_delta: 2,
+                paired_trace_event_count: 1,
+                trace_mismatch_kind: "length_boundary",
+                trace_event_mismatch_index: Some(1),
+                trace_event_mismatch_run1_kind: Some("UdfStart"),
+                trace_event_mismatch_run2_kind: None,
+            }
+        );
+        assert_eq!(
+            determinism_diff(&short_run, &long_run),
+            DeterminismDiff {
+                rng_mismatch: false,
+                output_mismatch: false,
+                trace_len_mismatch: true,
+                trace_len_mismatch_side: Some("run2_longer"),
+                trace_len_delta: -2,
+                paired_trace_event_count: 1,
+                trace_mismatch_kind: "length_boundary",
+                trace_event_mismatch_index: Some(1),
+                trace_event_mismatch_run1_kind: None,
+                trace_event_mismatch_run2_kind: Some("UdfStart"),
+            }
+        );
+    }
+
+    #[test]
     fn test_determinism_diff_is_match_when_only_num_polls_differs() {
         let run1 = TestResult {
             num_polls: 100,
