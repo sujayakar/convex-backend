@@ -145,6 +145,11 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
     }
 }
 
+/// Compute a signed difference between two `usize` values.
+///
+/// Uses saturating semantics if the unsigned magnitude cannot fit in `i128`
+/// (theoretical on common targets, but keeps behavior well-defined on wider
+/// architectures).
 fn signed_delta_usize(lhs: usize, rhs: usize) -> i128 {
     use std::cmp::Ordering;
 
