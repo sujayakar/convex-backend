@@ -1,6 +1,7 @@
 mod thread_future;
 pub use thread_future::{
     defer_waker_to_tokio_thread,
+    enqueue_deferred_spawn,
     is_inside_thread_future,
 };
 
@@ -209,8 +210,24 @@ impl Runtime for TestRuntime {
         _name: &'static str,
         f: impl Future<Output = ()> + Send + 'static,
     ) -> Box<dyn SpawnHandle> {
-        let handle = self.tokio_handle.spawn(f);
-        Box::new(TokioSpawnHandle::from(handle))
+        // When called from a ThreadFuture OS thread, defer the spawn to
+        // the Tokio thread.  Direct `tokio_handle.spawn()` from an OS
+        // thread puts the task in Tokio's injection queue, whose drain
+        // timing depends on `global_queue_interval` tick boundaries —
+        // causing ±1 poll count non-determinism between replayed runs.
+        if is_inside_thread_future() {
+            // Defer the spawn to the Tokio thread to avoid injecting
+            // into Tokio's injection queue from this OS thread.
+            enqueue_deferred_spawn(Box::pin(f));
+            // Return a dummy handle — the real task will be spawned by
+            // ThreadFuture::poll.  We use a DeferredSpawnHandle that
+            // completes when the deferred task is done (via a crossbeam
+            // oneshot).
+            Box::new(DeferredSpawnHandle::new())
+        } else {
+            let handle = self.tokio_handle.spawn(f);
+            Box::new(TokioSpawnHandle::from(handle))
+        }
     }
 
     fn spawn_thread<Fut: Future<Output = ()>, F: FnOnce() -> Fut + Send + 'static>(
@@ -244,6 +261,35 @@ impl Runtime for TestRuntime {
     fn event_recorder(&self) -> crate::event_recorder::EventRecorder {
         self.event_recorder.clone()
     }
+}
+
+/// SpawnHandle for tasks that were deferred to the Tokio thread.
+/// Since the real task hasn't been spawned yet (it will be spawned by
+/// ThreadFuture::poll), this handle can't track the real task's lifecycle.
+/// It always reports success on join.
+struct DeferredSpawnHandle {
+    _shutdown: bool,
+}
+
+impl DeferredSpawnHandle {
+    fn new() -> Self {
+        Self { _shutdown: false }
+    }
+}
+
+impl SpawnHandle for DeferredSpawnHandle {
+    fn shutdown(&mut self) {
+        self._shutdown = true;
+    }
+
+    fn poll_join(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), super::JoinError>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn detach(self: Box<Self>) {}
 }
 
 struct TestRng {

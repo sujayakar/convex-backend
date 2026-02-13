@@ -18,6 +18,9 @@ use crate::knobs::RUNTIME_STACK_SIZE;
 thread_local! {
     static DEFERRED_WAKER_TX: RefCell<Option<crossbeam_channel::Sender<Waker>>> =
         const { RefCell::new(None) };
+    /// Channel for deferring task spawns from the OS thread.
+    static DEFERRED_SPAWN_TX: RefCell<Option<crossbeam_channel::Sender<Pin<Box<dyn Future<Output = ()> + Send>>>>> =
+        const { RefCell::new(None) };
 }
 
 /// Defer a waker fire so it happens on the Tokio runtime thread instead
@@ -39,11 +42,28 @@ pub fn is_inside_thread_future() -> bool {
     DEFERRED_WAKER_TX.with(|tx| tx.borrow().is_some())
 }
 
+/// Enqueue a future to be spawned on the Tokio thread during the next
+/// `ThreadFuture::poll`.  Returns `true` if the enqueue succeeded
+/// (inside a ThreadFuture), `false` otherwise (caller should spawn
+/// directly).
+pub fn enqueue_deferred_spawn(f: Pin<Box<dyn Future<Output = ()> + Send>>) -> bool {
+    DEFERRED_SPAWN_TX.with(|tx| {
+        let tx = tx.borrow();
+        if let Some(tx) = tx.as_ref() {
+            let _ = tx.send(f);
+            true
+        } else {
+            false
+        }
+    })
+}
+
 pub struct ThreadFuture {
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
     deferred_waker_rx: crossbeam_channel::Receiver<Waker>,
+    deferred_spawn_rx: crossbeam_channel::Receiver<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
 impl ThreadFuture {
@@ -54,12 +74,16 @@ impl ThreadFuture {
         let (poll_request_tx, poll_request_rx) = crossbeam_channel::bounded(1);
         let (poll_response_tx, poll_response_rx) = crossbeam_channel::bounded(1);
         let (deferred_waker_tx, deferred_waker_rx) = crossbeam_channel::unbounded();
+        let (deferred_spawn_tx, deferred_spawn_rx) = crossbeam_channel::unbounded();
         let std_handle = std::thread::Builder::new()
             .stack_size(*RUNTIME_STACK_SIZE)
             .spawn(move || {
                 let _guard = tokio_handle.enter();
                 DEFERRED_WAKER_TX.with(|tx| {
                     *tx.borrow_mut() = Some(deferred_waker_tx);
+                });
+                DEFERRED_SPAWN_TX.with(|tx| {
+                    *tx.borrow_mut() = Some(deferred_spawn_tx);
                 });
                 let fut = f();
                 tokio::pin!(fut);
@@ -88,6 +112,7 @@ impl ThreadFuture {
             poll_request_tx: Some(poll_request_tx),
             poll_response_rx,
             deferred_waker_rx,
+            deferred_spawn_rx,
         }
     }
 }
@@ -115,6 +140,11 @@ impl Future for ThreadFuture {
                 return Poll::Ready(());
             },
         };
+
+        // Spawn deferred tasks on the Tokio thread (local queue).
+        while let Ok(future) = this.deferred_spawn_rx.try_recv() {
+            tokio::task::spawn(future);
+        }
 
         // Fire deferred wakers on the Tokio thread (local queue).
         while let Ok(waker) = this.deferred_waker_rx.try_recv() {
