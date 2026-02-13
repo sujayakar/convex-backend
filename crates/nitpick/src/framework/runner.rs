@@ -384,7 +384,7 @@ fn check_determinism<S: Scenario>(
             determinism_failure_message(config.seed, run1, &run2, &diff)
         );
     }
-    if run1.num_polls != run2.num_polls {
+    if run1.num_polls != run2.num_polls && tracing::enabled!(tracing::Level::DEBUG) {
         tracing::debug!(
             "{}",
             poll_mismatch_debug_message(config.seed, run1.num_polls, run2.num_polls)
