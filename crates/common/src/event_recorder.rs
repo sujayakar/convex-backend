@@ -205,3 +205,78 @@ mod prod_recorder {
 }
 #[cfg(not(any(test, feature = "testing")))]
 pub use self::prod_recorder::EventRecorder;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        Event,
+        EventRecorder,
+    };
+
+    #[test]
+    fn inactive_recorder_is_noop() {
+        let recorder = EventRecorder::new();
+        assert!(!recorder.is_active());
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+
+        recorder.record(Event::TransactionCommit);
+        recorder.record_custom("label", json!({ "value": 1 }));
+
+        assert!(recorder.snapshot().is_empty());
+        assert!(recorder.drain().is_empty());
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+    }
+
+    #[test]
+    fn active_recorder_tracks_len_snapshot_and_drain() {
+        let recorder = EventRecorder::active();
+        assert!(recorder.is_active());
+        assert!(recorder.is_empty());
+
+        recorder.record(Event::TransactionBegin {
+            identity: "id1".to_string(),
+        });
+        recorder.record_custom("label", json!({ "value": 1 }));
+
+        assert_eq!(recorder.len(), 2);
+        assert!(!recorder.is_empty());
+
+        let snapshot = recorder.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].seq, 0);
+        assert_eq!(snapshot[1].seq, 1);
+        assert!(matches!(
+            snapshot[0].event,
+            Event::TransactionBegin { .. }
+        ));
+        assert!(matches!(snapshot[1].event, Event::Custom { .. }));
+
+        let drained = recorder.drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+
+        recorder.record(Event::TransactionCommit);
+        let post_drain_snapshot = recorder.snapshot();
+        assert_eq!(post_drain_snapshot.len(), 1);
+        assert_eq!(post_drain_snapshot[0].seq, 2);
+    }
+
+    #[test]
+    fn cloned_active_recorders_share_state() {
+        let recorder = EventRecorder::active();
+        let clone = recorder.clone();
+
+        clone.record(Event::TransactionCommit);
+        recorder.record(Event::TransactionConflict);
+
+        let events = recorder.snapshot();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].event, Event::TransactionCommit));
+        assert!(matches!(events[1].event, Event::TransactionConflict));
+    }
+}
