@@ -146,7 +146,13 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
 }
 
 fn signed_delta_usize(lhs: usize, rhs: usize) -> i128 {
-    lhs as i128 - rhs as i128
+    use std::cmp::Ordering;
+
+    match lhs.cmp(&rhs) {
+        Ordering::Equal => 0,
+        Ordering::Greater => i128::try_from(lhs - rhs).unwrap_or(i128::MAX),
+        Ordering::Less => i128::try_from(rhs - lhs).map_or(i128::MIN, |delta| -delta),
+    }
 }
 
 impl<T: PartialEq> PartialEq for TestResult<T> {
