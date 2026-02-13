@@ -396,6 +396,10 @@ fn check_determinism<S: Scenario>(
 
 /// Render the debug log emitted when only diagnostic poll counts differ.
 fn poll_mismatch_debug_message(seed: u64, run1_num_polls: usize, run2_num_polls: usize) -> String {
+    debug_assert_ne!(
+        run1_num_polls, run2_num_polls,
+        "poll mismatch message should only be used when values differ"
+    );
     let num_polls_delta = signed_delta_usize(run1_num_polls, run2_num_polls);
     format!(
         "[nitpick] Determinism diagnostics for seed {seed}: num_polls differed (run1: \
