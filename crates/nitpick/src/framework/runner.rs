@@ -395,6 +395,9 @@ fn check_determinism<S: Scenario>(
 }
 
 /// Render the debug log emitted when only diagnostic poll counts differ.
+///
+/// In debug builds this asserts the caller only invokes it for differing poll
+/// counts (`run1_num_polls != run2_num_polls`).
 fn poll_mismatch_debug_message(seed: u64, run1_num_polls: usize, run2_num_polls: usize) -> String {
     debug_assert_ne!(
         run1_num_polls, run2_num_polls,
@@ -1048,9 +1051,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "poll mismatch message should only be used when values differ")]
-    fn test_poll_mismatch_debug_message_panics_on_equal_counts() {
-        let _ = poll_mismatch_debug_message(7, 10, 10);
+    fn test_poll_mismatch_debug_message_equal_counts_behavior_matches_profile() {
+        let invocation = || poll_mismatch_debug_message(7, 10, 10);
+        let caught = std::panic::catch_unwind(invocation);
+
+        if cfg!(debug_assertions) {
+            assert!(caught.is_err());
+        } else {
+            let message = caught.expect(
+                "poll_mismatch_debug_message should not panic without debug assertions",
+            );
+            assert!(message.contains("delta: 0"));
+        }
     }
 
     #[test]
