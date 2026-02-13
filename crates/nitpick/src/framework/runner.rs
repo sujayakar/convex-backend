@@ -53,10 +53,13 @@ pub struct Config {
     pub seed: u64,
 }
 
-/// Result of a single simulation run, used for determinism comparison.
+/// Result of a single simulation run.
 #[derive(Debug)]
 pub struct TestResult<T> {
     /// How many times was the test runtime polled?
+    ///
+    /// This is useful diagnostic context on failures, but it is not a
+    /// deterministic equality signal (see `PartialEq` below).
     pub num_polls: usize,
 
     /// What was the next u64 sampled from the runtime's RNG?
