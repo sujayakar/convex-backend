@@ -160,7 +160,10 @@ mod test_recorder {
 
         /// Whether no events have been recorded.
         pub fn is_empty(&self) -> bool {
-            self.len() == 0
+            match &self.inner {
+                Some(inner) => inner.events.lock().is_empty(),
+                None => true,
+            }
         }
     }
 
