@@ -572,6 +572,105 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_diff_prefers_event_mismatch_over_length_boundary() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 0,
+                    elapsed: Duration::from_secs(1),
+                    event: Event::TransactionBegin {
+                        identity: "id1".to_string(),
+                    },
+                },
+                TraceEvent {
+                    seq: 1,
+                    elapsed: Duration::from_secs(2),
+                    event: Event::TransactionCommit,
+                },
+            ],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 9,
+                elapsed: Duration::from_secs(9),
+                event: Event::TransactionConflict,
+            }],
+        };
+
+        assert_eq!(
+            determinism_diff(&run1, &run2),
+            DeterminismDiff {
+                rng_mismatch: false,
+                output_mismatch: false,
+                trace_len_mismatch: true,
+                trace_len_mismatch_side: Some("run1_longer"),
+                trace_len_delta: 1,
+                paired_trace_event_count: 1,
+                trace_mismatch_kind: "event_payload_mismatch",
+                trace_event_mismatch_index: Some(0),
+                trace_event_mismatch_run1_kind: Some("TransactionBegin"),
+                trace_event_mismatch_run2_kind: Some("TransactionConflict"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_determinism_diff_reports_boundary_after_matching_prefix() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 0,
+                    elapsed: Duration::from_secs(1),
+                    event: Event::TransactionCommit,
+                },
+                TraceEvent {
+                    seq: 1,
+                    elapsed: Duration::from_secs(2),
+                    event: Event::UdfStart {
+                        udf_path: "x:y".to_string(),
+                        udf_type: "query".to_string(),
+                    },
+                },
+            ],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 9,
+                elapsed: Duration::from_secs(9),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        assert_eq!(
+            determinism_diff(&run1, &run2),
+            DeterminismDiff {
+                rng_mismatch: false,
+                output_mismatch: false,
+                trace_len_mismatch: true,
+                trace_len_mismatch_side: Some("run1_longer"),
+                trace_len_delta: 1,
+                paired_trace_event_count: 1,
+                trace_mismatch_kind: "length_boundary",
+                trace_event_mismatch_index: Some(1),
+                trace_event_mismatch_run1_kind: Some("UdfStart"),
+                trace_event_mismatch_run2_kind: None,
+            }
+        );
+    }
+
+    #[test]
     fn test_determinism_diff_is_match_when_only_num_polls_differs() {
         let run1 = TestResult {
             num_polls: 100,
