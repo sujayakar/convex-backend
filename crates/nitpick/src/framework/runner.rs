@@ -393,6 +393,7 @@ fn check_determinism<S: Scenario>(
     Ok(())
 }
 
+/// Render the debug log emitted when only diagnostic poll counts differ.
 fn poll_mismatch_debug_message(seed: u64, run1_num_polls: usize, run2_num_polls: usize) -> String {
     let num_polls_delta = signed_delta_usize(run1_num_polls, run2_num_polls);
     format!(
@@ -945,6 +946,15 @@ mod tests {
         assert!(message.contains("run1: 100"));
         assert!(message.contains("run2: 105"));
         assert!(message.contains("delta: -5"));
+    }
+
+    #[test]
+    fn test_poll_mismatch_debug_message_reports_extreme_deltas() {
+        let positive = poll_mismatch_debug_message(1, usize::MAX, 0);
+        assert!(positive.contains(&format!("delta: {}", usize::MAX as i128)));
+
+        let negative = poll_mismatch_debug_message(1, 0, usize::MAX);
+        assert!(negative.contains(&format!("delta: {}", -(usize::MAX as i128))));
     }
 
     #[test]
