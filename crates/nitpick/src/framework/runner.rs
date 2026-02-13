@@ -30,6 +30,10 @@ use runtime::testing::{
     TestDriver,
     TestRuntime,
 };
+// #region agent log
+use runtime::testing::{DST_RUN_ID, DST_TF_ID};
+use std::sync::atomic::Ordering;
+// #endregion
 
 use super::scenario::{
     Scenario,
@@ -39,6 +43,34 @@ use super::scenario::{
 const VERIFY_PROBABILITY: f64 = 0.01;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+// #region agent log
+fn log_debug_event(
+    hypothesis_id: &'static str,
+    location: &'static str,
+    message: &'static str,
+    data_json: &str,
+) {
+    if std::env::var_os("NITPICK_INJECTION_DEBUG").is_none() {
+        return;
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/opt/cursor/logs/debug.log")
+    {
+        use std::io::Write as _;
+        let _ = writeln!(
+            file,
+            "{{\"hypothesisId\":\"{hypothesis_id}\",\"location\":\"{location}\",\"message\":\"{message}\",\"data\":{data_json},\"timestamp\":{timestamp}}}"
+        );
+    }
+}
+// #endregion
 
 /// Configuration for a single simulation run.
 #[derive(Clone, Copy, Debug)]
@@ -71,18 +103,11 @@ pub struct TestResult<T> {
 
 impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
-        // Compare only the final output.
-        //
-        // `num_polls` includes infrastructure background task polls that
-        // can vary slightly.  `rng_next_u64` can diverge because
-        // background workers (search index, retention, committer) and
-        // concurrent UDF executions consume the shared test RNG from
-        // concurrent tasks in scheduling-dependent order.  The RNG
-        // divergence is "infrastructure noise" — the per-transaction RNGs
-        // are forked deterministically, so the output is unaffected.
-        //
-        // `trace` contains wall-clock timing.  All are excluded.
-        self.output == other.output
+        // Trace is excluded from equality -- it contains wall-clock timing
+        // that may differ between runs.
+        self.num_polls == other.num_polls
+            && self.rng_next_u64 == other.rng_next_u64
+            && self.output == other.output
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}
@@ -115,11 +140,7 @@ fn run_once<S: Scenario>(
         anyhow::Ok(run)
     })?;
 
-    // Fork the RNG for run_transactions so that the VERIFY_PROBABILITY
-    // check and per-transaction RNG derivation use a deterministic stream
-    // independent of background workers consuming the shared test RNG.
-    let tx_rt = td.rt().fork_rng();
-    let num_polls = td.run_until(run_transactions(tx_rt, &application, &test_run, config))?;
+    let num_polls = td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
 
     // Always run validation at the end.
     let start = Instant::now();
@@ -200,15 +221,10 @@ async fn run_transactions<TR: TestRun>(
         }
 
         // Refill transactions.
-        // Each transaction gets a forked RNG so that concurrent transactions
-        // don't share the global test RNG.  Without this, the order of
-        // `rt.rng()` calls depends on task scheduling, causing
-        // non-deterministic RNG state across replays.
         while transactions.len() < config.concurrency && next_tx_id < max_tx_attempts {
             let tx_id = next_tx_id;
             next_tx_id += 1;
-            let tx_rt = rt.fork_rng();
-            let future = test_run.run_transaction(tx_rt, application);
+            let future = test_run.run_transaction(rt.clone(), application);
             let future = async move {
                 tracing::debug!("[nitpick] tx {tx_id} starting");
                 let r = future.await;
@@ -238,13 +254,9 @@ async fn run_transactions<TR: TestRun>(
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
+// #region agent log
 const DETERMINISM_CHECK_PROBABILITY: f64 = 1.0;
-
-/// Global RwLock for batch mode: batch worker threads hold a read-lock
-/// while running simulations, and the determinism-check subprocess
-/// acquires an exclusive write-lock to ensure it has undisturbed CPU
-/// access (no concurrent batch workers competing for CPU).
-pub static BATCH_CPU_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+// #endregion
 
 /// Run a scenario with the given config on a dedicated thread with a large
 /// stack. Probabilistically checks determinism by re-running with the same seed.
@@ -252,25 +264,33 @@ pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            let should_check = {
-                // Hold read lock during the main simulation run.
-                let _cpu_guard = BATCH_CPU_LOCK.read().unwrap_or_else(|e| e.into_inner());
+            // #region agent log
+            unsafe {
+                std::env::set_var("NITPICK_INJECTION_DEBUG", "1");
+                std::env::set_var("NITPICK_RUN_ID", "1");
+            }
+            DST_RUN_ID.store(1, Ordering::Relaxed);
+            DST_TF_ID.store(0, Ordering::Relaxed);
+            log_debug_event(
+                "H3",
+                "crates/nitpick/src/framework/runner.rs:run_scenario",
+                "run1_start",
+                &format!("{{\"seed\":{},\"runId\":1}}", config.seed),
+            );
+            // #endregion
+            let (run1, should_check) = {
                 let td = TestDriver::new_with_seed(config.seed);
-                let _run1 = run_once(&scenario, &td, config)?;
-                td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY)
+                let run1 = run_once(&scenario, &td, config)?;
+                let should_check = td.rt().rng().random_bool(DETERMINISM_CHECK_PROBABILITY);
+                (run1, should_check)
             };
 
             if should_check {
                 tracing::info!(
-                    "[nitpick] Running determinism check for seed {} (subprocess)",
+                    "[nitpick] Running determinism check for seed {}",
                     config.seed
                 );
-                // Acquire exclusive lock to pause all other batch threads
-                // while the subprocess runs, ensuring deterministic CPU access.
-                let _cpu_guard = BATCH_CPU_LOCK
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner());
-                check_determinism_subprocess(scenario.name(), config)?;
+                check_determinism(&scenario, config, &run1)?;
             }
 
             anyhow::Ok(())
@@ -284,110 +304,72 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
-            check_determinism_subprocess(scenario.name(), config)?;
-            anyhow::Ok(())
-        })?;
-    thread_handle.join().expect("nitpick thread panicked")?;
-    Ok(())
-}
-
-/// Run the determinism check in the current process (called from subprocess).
-pub fn check_determinism_in_process<S: Scenario>(
-    scenario: S,
-    config: Config,
-) -> anyhow::Result<()> {
-    let thread_handle = std::thread::Builder::new()
-        .stack_size(*RUNTIME_STACK_SIZE)
-        .spawn(move || {
+            // #region agent log
+            unsafe {
+                std::env::set_var("NITPICK_INJECTION_DEBUG", "1");
+                std::env::set_var("NITPICK_RUN_ID", "1");
+            }
+            log_debug_event(
+                "H3",
+                "crates/nitpick/src/framework/runner.rs:run_scenario_deterministic",
+                "run1_start",
+                &format!("{{\"seed\":{},\"runId\":1}}", config.seed),
+            );
+            // #endregion
             let run1 = {
                 let td = TestDriver::new_with_seed(config.seed);
                 run_once(&scenario, &td, config)?
             };
-            tracing::info!(
-                "[nitpick] Running determinism check for seed {}",
-                config.seed
-            );
-            let td = TestDriver::new_with_seed(config.seed);
-            let run2 = run_once(&scenario, &td, config)?;
-            if run1 != run2 {
-                anyhow::bail!(
-                    "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
-                    config.seed,
-                    &run1,
-                    &run2
-                );
-            }
-            tracing::info!("[nitpick] Determinism check passed");
+            check_determinism(&scenario, config, &run1)?;
             anyhow::Ok(())
         })?;
     thread_handle.join().expect("nitpick thread panicked")?;
     Ok(())
 }
 
-/// Spawn a child process to run the determinism check.
-///
-/// V8's platform is initialized once per process (`Once`) and its internal
-/// state (code cache, IC type-feedback, GC thresholds, heap statistics)
-/// accumulates across isolate lifetimes.  When run1's V8 work modifies
-/// the shared platform state, run2 sees different V8 behavior — different
-/// JIT decisions, GC timing, and internal task scheduling — causing
-/// non-deterministic poll counts and, in some cases, different application
-/// behavior (e.g., different OCC retry patterns).
-///
-/// By forking a child process, both run1 and run2 start from the same
-/// fresh V8 initialization state.  The global lock serializes subprocess
-/// invocations to eliminate CPU contention between the subprocess and
-/// other batch worker threads.
-/// Maximum number of subprocess retries before reporting a failure.
-/// V8's internal state and OS thread scheduling can cause rare spurious
-/// failures (~0.05%).  Retrying eliminates these while still catching
-/// real determinism bugs (which fail consistently).
-const DETERMINISM_SUBPROCESS_RETRIES: usize = 3;
-
-fn check_determinism_subprocess(scenario_name: &str, config: Config) -> anyhow::Result<()> {
-    let exe = std::env::current_exe().expect("Failed to get current exe path");
-    let mut last_err = String::new();
-
-    for attempt in 1..=DETERMINISM_SUBPROCESS_RETRIES {
-        let output = std::process::Command::new(&exe)
-            .args([
-                "--concurrency",
-                &config.concurrency.to_string(),
-                "--transactions",
-                &config.transactions.to_string(),
-                "determinism-check",
-                scenario_name,
-                &config.seed.to_string(),
-            ])
-            .output()
-            .expect("Failed to spawn determinism-check subprocess");
-
-        if output.status.success() {
-            if attempt > 1 {
-                tracing::info!(
-                    "[nitpick] Determinism check for seed {} passed on attempt {attempt}",
-                    config.seed
-                );
-            }
-            return Ok(());
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        last_err = format!("stdout: {}\nstderr: {}", stdout, stderr);
-
-        if attempt < DETERMINISM_SUBPROCESS_RETRIES {
-            tracing::warn!(
-                "[nitpick] Determinism check for seed {} failed on attempt {attempt}, retrying...",
-                config.seed
-            );
-        }
+fn check_determinism<S: Scenario>(
+    scenario: &S,
+    config: Config,
+    run1: &TestResult<<S::TestRun as TestRun>::Output>,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        "[nitpick] Running determinism check for seed {}",
+        config.seed
+    );
+    // #region agent log
+    unsafe {
+        std::env::set_var("NITPICK_RUN_ID", "2");
     }
-
-    anyhow::bail!(
-        "Determinism check subprocess failed for seed {} after {DETERMINISM_SUBPROCESS_RETRIES} \
-         attempts:\n{}",
-        config.seed,
-        last_err
-    )
+    DST_RUN_ID.store(2, Ordering::Relaxed);
+    DST_TF_ID.store(0, Ordering::Relaxed);
+    log_debug_event(
+        "H3",
+        "crates/nitpick/src/framework/runner.rs:check_determinism",
+        "run2_start",
+        &format!("{{\"seed\":{},\"runId\":2}}", config.seed),
+    );
+    // #endregion
+    let td = TestDriver::new_with_seed(config.seed);
+    let run2 = run_once(scenario, &td, config)?;
+    // #region agent log
+    log_debug_event(
+        "H3",
+        "crates/nitpick/src/framework/runner.rs:check_determinism",
+        "run_comparison",
+        &format!(
+            "{{\"seed\":{},\"run1_polls\":{},\"run2_polls\":{},\"run1_rng\":{},\"run2_rng\":{}}}",
+            config.seed, run1.num_polls, run2.num_polls, run1.rng_next_u64, run2.rng_next_u64
+        ),
+    );
+    // #endregion
+    if *run1 != run2 {
+        anyhow::bail!(
+            "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
+            config.seed,
+            run1,
+            run2
+        );
+    }
+    tracing::info!("[nitpick] Determinism check passed");
+    Ok(())
 }
