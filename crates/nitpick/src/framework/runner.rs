@@ -291,3 +291,62 @@ fn check_determinism<S: Scenario>(
     tracing::info!("[nitpick] Determinism check passed");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TestResult;
+
+    #[test]
+    fn test_result_equality_ignores_num_polls_and_trace() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+        let run2 = TestResult {
+            num_polls: 103,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+
+        assert_eq!(run1, run2);
+    }
+
+    #[test]
+    fn test_result_equality_detects_rng_difference() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 43,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+
+        assert_ne!(run1, run2);
+    }
+
+    #[test]
+    fn test_result_equality_detects_output_difference() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "not_ok".to_string(),
+            trace: vec![],
+        };
+
+        assert_ne!(run1, run2);
+    }
+}
