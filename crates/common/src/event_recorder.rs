@@ -157,6 +157,11 @@ mod test_recorder {
                 None => 0,
             }
         }
+
+        /// Whether no events have been recorded.
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
     }
 
     impl Default for EventRecorder {
@@ -187,6 +192,14 @@ mod prod_recorder {
 
         pub fn is_active(&self) -> bool {
             false
+        }
+
+        pub fn len(&self) -> usize {
+            0
+        }
+
+        pub fn is_empty(&self) -> bool {
+            true
         }
     }
 }
