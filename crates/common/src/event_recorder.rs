@@ -178,7 +178,10 @@ pub use self::test_recorder::EventRecorder;
 
 #[cfg(not(any(test, feature = "testing")))]
 mod prod_recorder {
-    use super::Event;
+    use super::{
+        Event,
+        TraceEvent,
+    };
 
     /// A no-op recorder for production.
     #[derive(Default, Clone)]
@@ -195,6 +198,14 @@ mod prod_recorder {
 
         pub fn is_active(&self) -> bool {
             false
+        }
+
+        pub fn drain(&self) -> Vec<TraceEvent> {
+            vec![]
+        }
+
+        pub fn snapshot(&self) -> Vec<TraceEvent> {
+            vec![]
         }
 
         pub fn len(&self) -> usize {
