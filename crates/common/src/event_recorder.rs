@@ -246,6 +246,30 @@ mod tests {
     }
 
     #[test]
+    fn default_recorder_is_inactive_and_empty() {
+        let recorder = EventRecorder::default();
+        assert!(!recorder.is_active());
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+    }
+
+    #[test]
+    fn snapshot_does_not_drain_events() {
+        let recorder = EventRecorder::active();
+        recorder.record(Event::TransactionCommit);
+        recorder.record(Event::TransactionConflict);
+
+        let snapshot = recorder.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(recorder.len(), 2);
+        assert!(!recorder.is_empty());
+
+        let drained = recorder.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(recorder.is_empty());
+    }
+
+    #[test]
     fn active_recorder_tracks_len_snapshot_and_drain() {
         let recorder = EventRecorder::active();
         assert!(recorder.is_active());
