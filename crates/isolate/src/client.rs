@@ -104,6 +104,7 @@ use futures::{
         FuturesUnordered,
         StreamExt,
     },
+    FutureExt,
 };
 use keybroker::{
     FunctionRunnerKeyBroker,
@@ -400,18 +401,10 @@ pub fn response_channel<T>() -> (ResponseSender<T>, ResponseReceiver<T>) {
     }
 }
 
-pub fn response_closed<'a, T>(
+pub fn response_closed<'a, T: Send + 'a>(
     response: &'a mut ResponseSender<T>,
 ) -> futures::future::BoxFuture<'a, ()> {
-    #[cfg(any(test, feature = "testing"))]
-    {
-        let _ = response;
-        futures::future::pending::<()>().boxed()
-    }
-    #[cfg(not(any(test, feature = "testing")))]
-    {
-        response.closed().boxed()
-    }
+    response.closed().boxed()
 }
 
 pub enum RequestType<RT: Runtime> {
@@ -631,8 +624,7 @@ pub fn initialize_v8() {
         // so no background work is generated, but constraining the thread pool
         // to 1 is belt-and-suspenders against any remaining platform tasks.
         let thread_pool_size = if deterministic { 1 } else { *V8_THREADS };
-        let platform =
-            v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
+        let platform = v8::new_unprotected_default_platform(thread_pool_size, false).make_shared();
 
         // Calls into `v8::V8::InitializePlatform`, sets global platform.
         V8::initialize_platform(platform);
@@ -1098,40 +1090,7 @@ impl<RT: Runtime> IsolateClient<RT> {
     async fn receive_response<T>(rx: ResponseReceiver<T>) -> anyhow::Result<T> {
         // The only reason a oneshot response channel wil be dropped prematurely if the
         // isolate worker is shutting down.
-        #[cfg(any(test, feature = "testing"))]
-        {
-            let worker_poll_count = tokio::runtime::Handle::try_current()
-                .ok()
-                .map(|h| h.metrics().worker_poll_count(0));
-            // #region agent log
-            common::runtime::testing::dst_debug_log(
-                "H3",
-                "crates/isolate/src/client.rs:receive_response",
-                "receive_response_await_start",
-                serde_json::json!({
-                    "worker_poll_count": worker_poll_count,
-                }),
-            );
-            // #endregion
-        }
         let result = rx.await.map_err(|_| shutdown_error());
-        #[cfg(any(test, feature = "testing"))]
-        {
-            let worker_poll_count = tokio::runtime::Handle::try_current()
-                .ok()
-                .map(|h| h.metrics().worker_poll_count(0));
-            // #region agent log
-            common::runtime::testing::dst_debug_log(
-                "H3",
-                "crates/isolate/src/client.rs:receive_response",
-                "receive_response_await_end",
-                serde_json::json!({
-                    "worker_poll_count": worker_poll_count,
-                    "ok": result.is_ok(),
-                }),
-            );
-            // #endregion
-        }
         result
     }
 }
@@ -1193,7 +1152,13 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     rt: RT,
     worker: W,
     /// Vec of channels for sending work to individual workers.
-    worker_senders: Vec<mpsc::Sender<(Request<RT>, DstDoneSender<ActiveWorkerState>, ActiveWorkerState)>>,
+    worker_senders: Vec<
+        mpsc::Sender<(
+            Request<RT>,
+            DstDoneSender<ActiveWorkerState>,
+            ActiveWorkerState,
+        )>,
+    >,
     /// Map from client_id to stack of workers (implemented with a deque). The
     /// most recently used worker for a given client is at the front of the
     /// deque. These workers were previously used by this client, but may
@@ -1204,6 +1169,12 @@ pub struct SharedIsolateScheduler<RT: Runtime, W: IsolateWorker<RT>> {
     available_workers: HashMap<String, VecDeque<IdleWorkerState>>,
     /// Set of futures awaiting a response from an active worker.
     in_progress_workers: FuturesUnordered<DoneReceiver>,
+    /// Completions that arrived out-of-order keyed by dispatch sequence.
+    pending_completions: BTreeMap<u64, ActiveWorkerState>,
+    /// Monotonic sequence assigned when dispatching requests.
+    next_request_seq: u64,
+    /// Next completion sequence expected to be applied.
+    next_completion_seq: u64,
     /// Counts the number of active workers per client. Should only contain a
     /// key if the value is greater than 0.
     in_progress_count: HashMap<String, usize>,
@@ -1220,6 +1191,7 @@ struct IdleWorkerState {
 struct ActiveWorkerState {
     worker_id: usize,
     client_id: String,
+    request_seq: u64,
 }
 
 impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
@@ -1235,6 +1207,9 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             worker,
             worker_senders: Vec::new(),
             in_progress_workers: FuturesUnordered::new(),
+            pending_completions: BTreeMap::new(),
+            next_request_seq: 0,
+            next_completion_seq: 0,
             in_progress_count: HashMap::new(),
             available_workers: HashMap::new(),
             max_workers,
@@ -1283,45 +1258,6 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
         let mut report_stats = self.rt.wait(*HEAP_WORKER_REPORT_INTERVAL_SECONDS);
         loop {
             select_biased! {
-                completed_worker = self.in_progress_workers.select_next_some() => {
-                    let Ok(completed_worker): Result<ActiveWorkerState, _> = completed_worker else {
-                        tracing::warn!("Worker has shut down uncleanly. Shutting down {} scheduler.", self.worker.config().name);
-                        return;
-                    };
-                    // Drain all *currently-ready* completions and process
-                    // them in worker_id order.  `FuturesUnordered` uses an
-                    // atomic LIFO ready-list, so when two OS-thread
-                    // `done_sender.send()` wakeups land between scheduler
-                    // polls the return order is timing-dependent.  Sorting
-                    // makes the `available_workers` deque (and therefore
-                    // `get_worker` selection) deterministic across replays.
-                    let mut completions = vec![completed_worker];
-                    while let Some(result) =
-                        futures::FutureExt::now_or_never(
-                            self.in_progress_workers.next()
-                        ).flatten()
-                    {
-                        let Ok(w) = result else {
-                            tracing::warn!(
-                                "Worker has shut down uncleanly. Shutting down {} scheduler.",
-                                self.worker.config().name
-                            );
-                            return;
-                        };
-                        completions.push(w);
-                    }
-                    completions.sort_by_key(|w| w.worker_id);
-                    // #region agent log
-                    {
-                        let ids: Vec<usize> = completions.iter().map(|w| w.worker_id).collect();
-                        let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                        common::runtime::testing::dst_log(&format!("SCHED completed {:?} @{}", ids, wpc));
-                    }
-                    // #endregion
-                    for w in completions {
-                        self.handle_completed_worker(w);
-                    }
-                }
                 request = receiver.next() => {
                     let Some((request, expired)) = request else {
                         tracing::warn!("Request sender went away; {} scheduler shutting down", self.worker.config().name);
@@ -1348,6 +1284,8 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         &request.client_id,
                     );
                     let client_id = request.client_id.clone();
+                    let request_seq = self.next_request_seq;
+                    self.next_request_seq += 1;
                     if self.worker_senders[worker_id]
                         .try_send((
                             request,
@@ -1355,6 +1293,7 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                             ActiveWorkerState {
                                 client_id,
                                 worker_id,
+                                request_seq,
                             },
                         ))
                         .is_err()
@@ -1368,6 +1307,40 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         return;
                     }
                 },
+                completed_worker = self.in_progress_workers.select_next_some() => {
+                    let Ok(completed_worker): Result<ActiveWorkerState, _> = completed_worker else {
+                        tracing::warn!("Worker has shut down uncleanly. Shutting down {} scheduler.", self.worker.config().name);
+                        return;
+                    };
+                    // Drain all *currently-ready* completions and process
+                    // them in worker_id order. `FuturesUnordered` uses an
+                    // intrusive MPSC ready queue, so completions that arrive
+                    // between polls can be observed in different groups.
+                    // Sorting keeps per-poll completion handling stable.
+                    let mut completions = vec![completed_worker];
+                    while let Some(result) =
+                        futures::FutureExt::now_or_never(
+                            self.in_progress_workers.next()
+                        ).flatten()
+                    {
+                        let Ok(w) = result else {
+                            tracing::warn!(
+                                "Worker has shut down uncleanly. Shutting down {} scheduler.",
+                                self.worker.config().name
+                            );
+                            return;
+                        };
+                        completions.push(w);
+                    }
+                    completions.sort_by_key(|w| w.worker_id);
+                    for w in completions {
+                        self.pending_completions.insert(w.request_seq, w);
+                    }
+                    while let Some(w) = self.pending_completions.remove(&self.next_completion_seq) {
+                        self.next_completion_seq += 1;
+                        self.handle_completed_worker(w);
+                    }
+                }
                 _ = report_stats => {
                     let heap_stats = self.aggregate_heap_stats();
                     log_aggregated_heap_stats(&heap_stats);
@@ -1419,12 +1392,6 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                 })
                 .expect("Available worker map should never contain an empty list");
             let worker = workers.remove(idx).expect("index is valid");
-            // #region agent log
-            {
-                let wpc = tokio::runtime::Handle::current().metrics().worker_poll_count(0);
-                common::runtime::testing::dst_log(&format!("SCHED get_worker -> {} @{}", worker.worker_id, wpc));
-            }
-            // #endregion
             if !workers.is_empty() {
                 self.available_workers.insert(client_id, workers);
             }

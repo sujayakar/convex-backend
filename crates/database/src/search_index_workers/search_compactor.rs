@@ -171,7 +171,8 @@ impl<RT: Runtime, T: SearchIndex> SearchIndexCompactor<RT, T> {
                     Self::search_type()
                 );
                 // Choose segments to compact at random.
-                segments_to_compact.shuffle(&mut rand::rng());
+                let mut rng = self.database.runtime().rng();
+                segments_to_compact.shuffle(&mut *rng);
                 tracing::info!(
                     "Compacting {} segments out of {} that need compaction for reason: {:?}",
                     *MAX_COMPACTION_SEGMENTS,
