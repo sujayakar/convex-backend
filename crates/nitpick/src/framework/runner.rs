@@ -1037,6 +1037,36 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_failure_message_reports_extreme_num_polls_deltas() {
+        let run_max = TestResult {
+            num_polls: usize::MAX,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+        let run_zero = TestResult {
+            num_polls: 0,
+            rng_next_u64: 42,
+            output: "not_ok".to_string(),
+            trace: vec![],
+        };
+
+        let diff_pos = determinism_diff(&run_max, &run_zero);
+        let message_pos = determinism_failure_message(123, &run_max, &run_zero, &diff_pos);
+        assert!(message_pos.contains(&format!(
+            "num_polls_delta: {}",
+            usize::MAX as i128
+        )));
+
+        let diff_neg = determinism_diff(&run_zero, &run_max);
+        let message_neg = determinism_failure_message(123, &run_zero, &run_max, &diff_neg);
+        assert!(message_neg.contains(&format!(
+            "num_polls_delta: {}",
+            -(usize::MAX as i128)
+        )));
+    }
+
+    #[test]
     fn test_partial_eq_consistent_with_determinism_diff() {
         let base = TestResult {
             num_polls: 100,
