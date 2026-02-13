@@ -27,9 +27,7 @@ export const paginateByCategory = query({
   handler: async (ctx, args) => {
     return await ctx.db
       .query("paginatedItems")
-      .withIndex("by_category_value", (q) =>
-        q.eq("category", args.category),
-      )
+      .withIndex("by_category_value", (q) => q.eq("category", args.category))
       .paginate(args.paginationOpts);
   },
 });
@@ -42,9 +40,7 @@ export const countByCategory = query({
   handler: async (ctx, args) => {
     const items = await ctx.db
       .query("paginatedItems")
-      .withIndex("by_category_value", (q) =>
-        q.eq("category", args.category),
-      )
+      .withIndex("by_category_value", (q) => q.eq("category", args.category))
       .collect();
     return items.length;
   },
@@ -65,9 +61,7 @@ export const allByCategory = query({
   handler: async (ctx, args) => {
     return await ctx.db
       .query("paginatedItems")
-      .withIndex("by_category_value", (q) =>
-        q.eq("category", args.category),
-      )
+      .withIndex("by_category_value", (q) => q.eq("category", args.category))
       .collect();
   },
 });

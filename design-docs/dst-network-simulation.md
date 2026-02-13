@@ -8,8 +8,8 @@ Phase 1 uses the existing fault injection mechanisms:
 
 - `JsClientThread::disconnect_network()` / `reconnect_network()` for
   client-level partitions
-- `ServerThread`'s `expected_delay_duration` for geometric delay on
-  sync messages
+- `ServerThread`'s `expected_delay_duration` for geometric delay on sync
+  messages
 - `PauseClient` breakpoints for pausing at specific code points
 
 These are sufficient for basic interleaving exploration but don't support:
@@ -23,20 +23,20 @@ These are sufficient for basic interleaving exploration but don't support:
 
 ## Current State
 
-The `Runtime` trait abstracts time, spawning, RNG, and pause but has
-**no network abstraction**. Networking happens outside the trait:
+The `Runtime` trait abstracts time, spawning, RNG, and pause but has **no
+network abstraction**. Networking happens outside the trait:
 
 - `ServerThread` uses `tokio::sync::mpsc` channels
 - `JsClientThread` uses channels to `ServerThread`
-- `Application` takes trait objects for `Persistence`, `Storage`,
-  `FetchClient`, `Searcher` -- these could be wrapped for simulation
+- `Application` takes trait objects for `Persistence`, `Storage`, `FetchClient`,
+  `Searcher` -- these could be wrapped for simulation
 
 ## Approach
 
 ### Option A: Wrap Trait Boundaries (Sim-prefixed wrappers)
 
-Create simulation wrappers around the existing trait objects that
-`Application` depends on:
+Create simulation wrappers around the existing trait objects that `Application`
+depends on:
 
 ```rust
 struct SimPersistence {
@@ -55,8 +55,8 @@ impl Persistence for SimPersistence {
 
 Similarly for `Storage`, `FetchClient`, `Searcher`.
 
-Pros: No changes to `Runtime` trait. Works with existing code.
-Cons: Only intercepts at trait boundaries, not arbitrary network calls.
+Pros: No changes to `Runtime` trait. Works with existing code. Cons: Only
+intercepts at trait boundaries, not arbitrary network calls.
 
 ### Option B: Add Network to Runtime Trait
 
@@ -76,8 +76,8 @@ trait NetworkSimulator {
 }
 ```
 
-Pros: Comprehensive control. All network I/O goes through the simulator.
-Cons: Large refactor. Production `Runtime` would need a pass-through impl.
+Pros: Comprehensive control. All network I/O goes through the simulator. Cons:
+Large refactor. Production `Runtime` would need a pass-through impl.
 
 ### Option C: SimNetwork as Middleware on Channels
 
@@ -93,15 +93,14 @@ struct SimNetwork {
 }
 ```
 
-Pros: Minimal changes. Only affects the simulation crate.
-Cons: Only covers client-server communication, not persistence/storage.
+Pros: Minimal changes. Only affects the simulation crate. Cons: Only covers
+client-server communication, not persistence/storage.
 
 ### Recommendation
 
-Start with Option C (channel middleware) for client-server communication,
-then add Option A wrappers for persistence/storage as needed. Option B
-is a larger refactor best deferred until the simpler approaches are
-proven insufficient.
+Start with Option C (channel middleware) for client-server communication, then
+add Option A wrappers for persistence/storage as needed. Option B is a larger
+refactor best deferred until the simpler approaches are proven insufficient.
 
 ## SimNetwork Capabilities
 
@@ -116,8 +115,8 @@ proven insufficient.
 
 - Should network simulation be per-rollout configurable or per-action?
 - How to handle in-flight messages during partition events
-- Whether to model TCP semantics (ordered delivery within connection)
-  or UDP semantics (unordered)
+- Whether to model TCP semantics (ordered delivery within connection) or UDP
+  semantics (unordered)
 - How to make network events appear in the structured event trace
 
 ## Dependencies

@@ -25,7 +25,7 @@ pub struct TraceEvent {
 }
 
 /// Event types that can be recorded.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Event {
     /// A database transaction began.
     TransactionBegin {
@@ -90,11 +90,13 @@ mod test_recorder {
 
     impl EventRecorder {
         /// Create an inactive recorder (no-op).
+        #[must_use]
         pub fn new() -> Self {
             Self { inner: None }
         }
 
         /// Create an active recorder that collects events.
+        #[must_use]
         pub fn active() -> Self {
             Self {
                 inner: Some(Arc::new(EventRecorderInner {
@@ -127,11 +129,13 @@ mod test_recorder {
         }
 
         /// Check if this recorder is actively collecting events.
+        #[must_use]
         pub fn is_active(&self) -> bool {
             self.inner.is_some()
         }
 
         /// Drain all recorded events.
+        #[must_use]
         pub fn drain(&self) -> Vec<TraceEvent> {
             match &self.inner {
                 Some(inner) => {
@@ -143,6 +147,7 @@ mod test_recorder {
         }
 
         /// Get a snapshot of all recorded events (without draining).
+        #[must_use]
         pub fn snapshot(&self) -> Vec<TraceEvent> {
             match &self.inner {
                 Some(inner) => inner.events.lock().clone(),
@@ -151,10 +156,20 @@ mod test_recorder {
         }
 
         /// Number of events recorded so far.
+        #[must_use]
         pub fn len(&self) -> usize {
             match &self.inner {
                 Some(inner) => inner.events.lock().len(),
                 None => 0,
+            }
+        }
+
+        /// Whether no events have been recorded.
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            match &self.inner {
+                Some(inner) => inner.events.lock().is_empty(),
+                None => true,
             }
         }
     }
@@ -170,13 +185,17 @@ pub use self::test_recorder::EventRecorder;
 
 #[cfg(not(any(test, feature = "testing")))]
 mod prod_recorder {
-    use super::Event;
+    use super::{
+        Event,
+        TraceEvent,
+    };
 
     /// A no-op recorder for production.
     #[derive(Default, Clone)]
     pub struct EventRecorder;
 
     impl EventRecorder {
+        #[must_use]
         pub fn new() -> Self {
             Self
         }
@@ -185,10 +204,185 @@ mod prod_recorder {
 
         pub fn record_custom(&self, _label: impl Into<String>, _data: serde_json::Value) {}
 
+        #[must_use]
         pub fn is_active(&self) -> bool {
             false
+        }
+
+        #[must_use]
+        pub fn drain(&self) -> Vec<TraceEvent> {
+            vec![]
+        }
+
+        #[must_use]
+        pub fn snapshot(&self) -> Vec<TraceEvent> {
+            vec![]
+        }
+
+        #[must_use]
+        pub fn len(&self) -> usize {
+            0
+        }
+
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            true
         }
     }
 }
 #[cfg(not(any(test, feature = "testing")))]
 pub use self::prod_recorder::EventRecorder;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        Event,
+        EventRecorder,
+    };
+
+    #[test]
+    fn inactive_recorder_is_noop() {
+        let recorder = EventRecorder::new();
+        assert!(!recorder.is_active());
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+
+        recorder.record(Event::TransactionCommit);
+        recorder.record_custom("label", json!({ "value": 1 }));
+
+        assert!(recorder.snapshot().is_empty());
+        assert!(recorder.drain().is_empty());
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+    }
+
+    #[test]
+    fn default_recorder_is_inactive_and_empty() {
+        let recorder = EventRecorder::default();
+        assert!(!recorder.is_active());
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+    }
+
+    #[test]
+    fn snapshot_does_not_drain_events() {
+        let recorder = EventRecorder::active();
+        recorder.record(Event::TransactionCommit);
+        recorder.record(Event::TransactionConflict);
+
+        let snapshot = recorder.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(recorder.len(), 2);
+        assert!(!recorder.is_empty());
+
+        let drained = recorder.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(recorder.is_empty());
+    }
+
+    #[test]
+    fn active_recorder_tracks_len_snapshot_and_drain() {
+        let recorder = EventRecorder::active();
+        assert!(recorder.is_active());
+        assert!(recorder.is_empty());
+
+        recorder.record(Event::TransactionBegin {
+            identity: "id1".to_string(),
+        });
+        recorder.record_custom("label", json!({ "value": 1 }));
+
+        assert_eq!(recorder.len(), 2);
+        assert!(!recorder.is_empty());
+
+        let snapshot = recorder.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].seq, 0);
+        assert_eq!(snapshot[1].seq, 1);
+        assert!(snapshot[0].elapsed <= snapshot[1].elapsed);
+        assert!(matches!(
+            snapshot[0].event,
+            Event::TransactionBegin { ref identity } if identity == "id1"
+        ));
+        assert!(matches!(
+            snapshot[1].event,
+            Event::Custom { ref label, ref data } if label == "label" && *data == json!({ "value": 1 })
+        ));
+
+        let drained = recorder.drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].seq, 0);
+        assert_eq!(drained[1].seq, 1);
+        assert_eq!(recorder.len(), 0);
+        assert!(recorder.is_empty());
+
+        recorder.record(Event::TransactionCommit);
+        let post_drain_snapshot = recorder.snapshot();
+        assert_eq!(post_drain_snapshot.len(), 1);
+        assert_eq!(post_drain_snapshot[0].seq, 2);
+    }
+
+    #[test]
+    fn cloned_active_recorders_share_state() {
+        let recorder = EventRecorder::active();
+        let clone = recorder.clone();
+        assert!(recorder.is_empty());
+        assert!(clone.is_empty());
+
+        clone.record(Event::TransactionCommit);
+        recorder.record(Event::TransactionConflict);
+
+        let events = recorder.snapshot();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[1].seq, 1);
+        assert!(matches!(events[0].event, Event::TransactionCommit));
+        assert!(matches!(events[1].event, Event::TransactionConflict));
+
+        let clone_view = clone.snapshot();
+        assert_eq!(clone_view.len(), 2);
+        assert_eq!(clone_view[0].seq, 0);
+        assert_eq!(clone_view[1].seq, 1);
+        assert!(matches!(clone_view[0].event, Event::TransactionCommit));
+        assert!(matches!(clone_view[1].event, Event::TransactionConflict));
+
+        assert_eq!(clone.len(), 2);
+        assert!(!clone.is_empty());
+
+        let drained = clone.drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].seq, 0);
+        assert_eq!(drained[1].seq, 1);
+        assert!(recorder.is_empty());
+        assert!(clone.is_empty());
+    }
+
+    #[test]
+    fn interleaved_clone_recording_uses_shared_sequence_counter() {
+        let recorder = EventRecorder::active();
+        let clone1 = recorder.clone();
+        let clone2 = recorder.clone();
+
+        clone1.record(Event::TransactionBegin {
+            identity: "from_clone1".to_string(),
+        });
+        clone2.record(Event::TransactionCommit);
+        recorder.record_custom("from_root", json!({ "value": 3 }));
+
+        let snapshot = recorder.snapshot();
+        assert_eq!(snapshot.len(), 3);
+        assert_eq!(snapshot[0].seq, 0);
+        assert_eq!(snapshot[1].seq, 1);
+        assert_eq!(snapshot[2].seq, 2);
+        assert!(matches!(
+            snapshot[0].event,
+            Event::TransactionBegin { ref identity } if identity == "from_clone1"
+        ));
+        assert!(matches!(snapshot[1].event, Event::TransactionCommit));
+        assert!(matches!(
+            snapshot[2].event,
+            Event::Custom { ref label, ref data } if label == "from_root" && *data == json!({ "value": 3 })
+        ));
+    }
+}
