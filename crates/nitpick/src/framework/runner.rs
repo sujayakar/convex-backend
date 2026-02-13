@@ -1001,6 +1001,56 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_failure_message_reports_nonzero_trace_mismatch_index() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 0,
+                    elapsed: Duration::from_secs(1),
+                    event: Event::TransactionCommit,
+                },
+                TraceEvent {
+                    seq: 1,
+                    elapsed: Duration::from_secs(2),
+                    event: Event::TransactionBegin {
+                        identity: "id1".to_string(),
+                    },
+                },
+            ],
+        };
+        let run2 = TestResult {
+            num_polls: 103,
+            rng_next_u64: 43,
+            output: "not_ok".to_string(),
+            trace: vec![
+                TraceEvent {
+                    seq: 2,
+                    elapsed: Duration::from_secs(3),
+                    event: Event::TransactionCommit,
+                },
+                TraceEvent {
+                    seq: 3,
+                    elapsed: Duration::from_secs(4),
+                    event: Event::TransactionConflict,
+                },
+            ],
+        };
+
+        let diff = determinism_diff(&run1, &run2);
+        let message = determinism_failure_message(123, &run1, &run2, &diff);
+        assert!(message.contains("trace_len_mismatch: false"));
+        assert!(message.contains("trace_len_delta: 0"));
+        assert!(message.contains("paired_trace_event_count: 2"));
+        assert!(message.contains("trace_mismatch_kind: \"event_payload_mismatch\""));
+        assert!(message.contains("trace_event_mismatch_index: Some(1)"));
+        assert!(message.contains("trace_event_mismatch_run1_kind: Some(\"TransactionBegin\")"));
+        assert!(message.contains("trace_event_mismatch_run2_kind: Some(\"TransactionConflict\")"));
+    }
+
+    #[test]
     fn test_determinism_failure_message_reports_trace_length_mismatch() {
         let run1 = TestResult {
             num_polls: 100,
