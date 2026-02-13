@@ -14,15 +14,12 @@ use std::{
 };
 
 use application::{
-    deploy_config::StartPushRequest,
-    test_helpers::ApplicationTestExt,
     Application,
 };
 use async_trait::async_trait;
 use common::{
     assert_obj,
     runtime::{
-        shutdown_and_join,
         Runtime,
         SpawnHandle,
     },
@@ -105,8 +102,7 @@ impl Scenario for SubscriptionJsScenario {
             server,
             js_client,
             query_token,
-            handles,
-            mutations_committed: 0,
+            _handles: handles,
         })
     }
 }
@@ -116,8 +112,8 @@ pub struct SubscriptionJsRun {
     server: ServerThread,
     js_client: JsClientThread,
     query_token: String,
-    handles: Vec<Box<dyn SpawnHandle>>,
-    mutations_committed: usize,
+    // Keep thread handles alive for the scenario lifetime.
+    _handles: Vec<Box<dyn SpawnHandle>>,
 }
 
 #[async_trait]
@@ -127,7 +123,7 @@ impl TestRun for SubscriptionJsRun {
     fn run_transaction(
         &self,
         _rt: TestRuntime,
-        application: &Application<TestRuntime>,
+        _application: &Application<TestRuntime>,
     ) -> BoxFuture<'static, anyhow::Result<()>> {
         // Run mutations via the ServerThread (which goes through the sync
         // protocol) rather than directly through the Application API.
