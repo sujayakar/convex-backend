@@ -80,7 +80,7 @@ struct DeterminismDiff {
     output_mismatch: bool,
     trace_len_mismatch: bool,
     trace_len_mismatch_side: Option<&'static str>,
-    trace_len_delta: i64,
+    trace_len_delta: i128,
     paired_trace_event_count: usize,
     trace_mismatch_kind: &'static str,
     trace_event_mismatch_index: Option<usize>,
@@ -101,7 +101,7 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
     let rng_mismatch = run1.rng_next_u64 != run2.rng_next_u64;
     let output_mismatch = run1.output != run2.output;
     let trace_len_mismatch = run1.trace.len() != run2.trace.len();
-    let trace_len_delta = run1.trace.len() as i64 - run2.trace.len() as i64;
+    let trace_len_delta = signed_delta_usize(run1.trace.len(), run2.trace.len());
     let paired_trace_event_count = run1.trace.len().min(run2.trace.len());
     let trace_len_mismatch_side = if run1.trace.len() > run2.trace.len() {
         Some("run1_longer")
@@ -143,6 +143,10 @@ fn determinism_diff<T: PartialEq>(run1: &TestResult<T>, run2: &TestResult<T>) ->
         trace_event_mismatch_run1_kind,
         trace_event_mismatch_run2_kind,
     }
+}
+
+fn signed_delta_usize(lhs: usize, rhs: usize) -> i128 {
+    lhs as i128 - rhs as i128
 }
 
 impl<T: PartialEq> PartialEq for TestResult<T> {
@@ -388,7 +392,7 @@ fn determinism_failure_message<T: std::fmt::Debug>(
 ) -> String {
     let run1_output_debug = debug_string_preview(&run1.output, OUTPUT_DEBUG_PREVIEW_CHARS);
     let run2_output_debug = debug_string_preview(&run2.output, OUTPUT_DEBUG_PREVIEW_CHARS);
-    let num_polls_delta = run1.num_polls as i64 - run2.num_polls as i64;
+    let num_polls_delta = signed_delta_usize(run1.num_polls, run2.num_polls);
     format!(
         "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  run2: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_output_debug_len: {}, run2_output_debug_len: {}, run1_output_debug_truncated: {}, run2_output_debug_truncated: {}, output_debug_preview_chars_limit: {}, run1_num_polls: {}, run2_num_polls: {}, num_polls_delta: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_len_delta: {}, paired_trace_event_count: {}, trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
         seed,
@@ -467,6 +471,7 @@ mod tests {
     use super::{
         determinism_diff,
         determinism_failure_message,
+        signed_delta_usize,
         DeterminismDiff,
         TestResult,
     };
@@ -800,6 +805,13 @@ mod tests {
         };
 
         assert_ne!(run1, run2);
+    }
+
+    #[test]
+    fn test_signed_delta_usize_handles_extreme_values() {
+        assert_eq!(signed_delta_usize(usize::MAX, 0), usize::MAX as i128);
+        assert_eq!(signed_delta_usize(0, usize::MAX), -(usize::MAX as i128));
+        assert_eq!(signed_delta_usize(usize::MAX, usize::MAX), 0);
     }
 
     #[test]
