@@ -705,6 +705,33 @@ mod tests {
     }
 
     #[test]
+    fn test_determinism_failure_message_reports_trace_length_mismatch_other_direction() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        let diff = determinism_diff(&run1, &run2);
+        let message = determinism_failure_message(123, &run1, &run2, &diff);
+        assert!(message.contains("trace_len_mismatch: true"));
+        assert!(message.contains("trace_event_mismatch_index: Some(0)"));
+        assert!(message.contains("trace_event_mismatch_run1_kind: None"));
+        assert!(message.contains("trace_event_mismatch_run2_kind: Some(\"TransactionCommit\")"));
+    }
+
+    #[test]
     fn test_partial_eq_consistent_with_determinism_diff() {
         let base = TestResult {
             num_polls: 100,
