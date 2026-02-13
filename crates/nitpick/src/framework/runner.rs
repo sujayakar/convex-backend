@@ -220,6 +220,9 @@ async fn run_transactions<TR: TestRun>(
         }
     }
 
+    // Diagnostic only: Tokio's poll-count metric can drift under host CPU
+    // contention even for logically deterministic runs, so it is not used for
+    // determinism equality.
     let num_polls = tokio::runtime::Handle::current()
         .metrics()
         .worker_poll_count(0);

@@ -87,6 +87,11 @@ comparing the deterministic `TestResult` fields (`rng_next_u64`, `output`).
 When a determinism mismatch occurs, nitpick reports compact diagnostics
 including each run's poll count and trace length.
 
+Why not include `num_polls` in equality? Tokio's `worker_poll_count` is a
+scheduler metric that is flushed at scheduler submit points, and can vary
+slightly under host CPU contention even when the logical test execution is
+identical.
+
 ## Code Coverage
 
 ```bash
