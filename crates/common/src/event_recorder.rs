@@ -322,13 +322,25 @@ mod tests {
 
         let events = recorder.snapshot();
         assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[1].seq, 1);
         assert!(matches!(events[0].event, Event::TransactionCommit));
         assert!(matches!(events[1].event, Event::TransactionConflict));
+
+        let clone_view = clone.snapshot();
+        assert_eq!(clone_view.len(), 2);
+        assert_eq!(clone_view[0].seq, 0);
+        assert_eq!(clone_view[1].seq, 1);
+        assert!(matches!(clone_view[0].event, Event::TransactionCommit));
+        assert!(matches!(clone_view[1].event, Event::TransactionConflict));
+
         assert_eq!(clone.len(), 2);
         assert!(!clone.is_empty());
 
         let drained = clone.drain();
         assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].seq, 0);
+        assert_eq!(drained[1].seq, 1);
         assert!(recorder.is_empty());
         assert!(clone.is_empty());
     }
