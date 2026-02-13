@@ -79,8 +79,17 @@ impl<T: Eq> PartialEq for TestResult<T> {
         // and is only flushed at scheduler submit points, so it can differ under
         // host CPU contention even when logical execution is identical.
         //
-        // Trace is excluded as well since it includes wall-clock timing.
-        self.rng_next_u64 == other.rng_next_u64 && self.output == other.output
+        // We still compare trace *event payloads* (excluding seq/elapsed wall
+        // clock fields) to avoid weakening determinism checks after removing
+        // `num_polls` from equality.
+        self.rng_next_u64 == other.rng_next_u64
+            && self.output == other.output
+            && self.trace.len() == other.trace.len()
+            && self
+                .trace
+                .iter()
+                .zip(other.trace.iter())
+                .all(|(a, b)| a.event == b.event)
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}
@@ -373,11 +382,41 @@ mod tests {
             trace: vec![TraceEvent {
                 seq: 1,
                 elapsed: Duration::from_secs(2),
-                event: Event::TransactionCommit,
+                event: Event::TransactionBegin {
+                    identity: "id1".to_string(),
+                },
             }],
         };
 
         assert_eq!(run1, run2);
+    }
+
+    #[test]
+    fn test_result_equality_detects_trace_event_difference() {
+        let run1 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 0,
+                elapsed: Duration::from_secs(1),
+                event: Event::TransactionBegin {
+                    identity: "id1".to_string(),
+                },
+            }],
+        };
+        let run2 = TestResult {
+            num_polls: 100,
+            rng_next_u64: 42,
+            output: "ok".to_string(),
+            trace: vec![TraceEvent {
+                seq: 1,
+                elapsed: Duration::from_secs(2),
+                event: Event::TransactionCommit,
+            }],
+        };
+
+        assert_ne!(run1, run2);
     }
 
     #[test]

@@ -82,7 +82,11 @@ All simulations are deterministic given a seed. The `TestRuntime` provides:
 - Single-threaded Tokio with paused timer
 
 Determinism is verified by running the same (scenario, seed) twice and
-comparing the deterministic `TestResult` fields (`rng_next_u64`, `output`).
+comparing deterministic `TestResult` fields:
+- `rng_next_u64`
+- `output`
+- trace event payload sequence (ignoring sequence numbers and elapsed wall-clock timing)
+
 `num_polls` is still captured for diagnostics but is not used for equality.
 When a determinism mismatch occurs, nitpick reports compact diagnostics
 including each run's poll count and trace length.

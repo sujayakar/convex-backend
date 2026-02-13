@@ -25,7 +25,7 @@ pub struct TraceEvent {
 }
 
 /// Event types that can be recorded.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Event {
     /// A database transaction began.
     TransactionBegin {
