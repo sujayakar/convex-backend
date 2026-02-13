@@ -2,10 +2,22 @@ mod thread_future;
 pub use thread_future::defer_waker_to_tokio_thread;
 
 mod dst_oneshot;
+pub use dst_oneshot::{
+    dst_oneshot_channel,
+    DstOneshotReceiver,
+    DstOneshotSender,
+};
+
 use std::{
+    env,
     self,
     pin::Pin,
     sync::{
+        atomic::{
+            AtomicU32,
+            AtomicU64,
+            Ordering,
+        },
         Arc,
         LazyLock,
         Weak,
@@ -13,14 +25,78 @@ use std::{
     time::{
         Duration,
         SystemTime,
+        UNIX_EPOCH,
     },
 };
 
-pub use dst_oneshot::{
-    dst_oneshot_channel,
-    DstOneshotReceiver,
-    DstOneshotSender,
-};
+// #region agent log
+pub static DST_RUN_ID: AtomicU32 = AtomicU32::new(0);
+pub static DST_TF_ID: AtomicU32 = AtomicU32::new(0);
+pub static DST_SEED: AtomicU64 = AtomicU64::new(0);
+static DST_LOG_SEQ: AtomicU64 = AtomicU64::new(0);
+static DST_LOG_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
+
+pub fn dst_debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let run_id = DST_RUN_ID.load(Ordering::Relaxed);
+    if run_id == 0 {
+        return;
+    }
+    let seed = DST_SEED.load(Ordering::Relaxed);
+    if let Some(debug_seed) = env::var("NITPICK_DEBUG_SEED")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        && seed != debug_seed
+    {
+        return;
+    }
+
+    let seq = DST_LOG_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut data = match data {
+        serde_json::Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("value".to_string(), other);
+            map
+        },
+    };
+    data.insert("seq".to_string(), serde_json::json!(seq));
+    data.insert("run_id".to_string(), serde_json::json!(run_id));
+    data.insert("seed".to_string(), serde_json::json!(seed));
+
+    let payload = serde_json::json!({
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default(),
+    });
+    if let Ok(_guard) = DST_LOG_LOCK.lock()
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/opt/cursor/logs/debug.log")
+    {
+        use std::io::Write;
+        let line = format!("{payload}\n");
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+pub fn dst_log(msg: &str) {
+    use std::io::Write;
+    let r = DST_RUN_ID.load(Ordering::Relaxed);
+    if r == 0 { return; }
+    let p = format!("/tmp/nitpick_{}_run{}.log", std::process::id(), r);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
+// #endregion
+
 use futures::{
     future::FusedFuture,
     Future,
@@ -122,6 +198,16 @@ impl TestDriver {
 
 impl Drop for TestDriver {
     fn drop(&mut self) {
+        // #region agent log
+        dst_debug_log(
+            "H4",
+            "crates/common/src/runtime/testing/mod.rs:TestDriver::drop",
+            "test_driver_drop_start",
+            serde_json::json!({
+                "state_strong_count": Arc::strong_count(&self.state),
+            }),
+        );
+        // #endregion
         assert_eq!(Arc::strong_count(&self.state), 1);
         // Use a blocking shutdown so all spawned tasks (including
         // `ThreadFuture` OS threads hosting V8 isolates) are fully
@@ -134,6 +220,14 @@ impl Drop for TestDriver {
             .take()
             .expect("tokio_runtime disappeared?")
             .shutdown_timeout(std::time::Duration::from_secs(5));
+        // #region agent log
+        dst_debug_log(
+            "H4",
+            "crates/common/src/runtime/testing/mod.rs:TestDriver::drop",
+            "test_driver_drop_done",
+            serde_json::json!({}),
+        );
+        // #endregion
     }
 }
 

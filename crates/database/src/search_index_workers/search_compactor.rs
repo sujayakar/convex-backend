@@ -170,9 +170,29 @@ impl<RT: Runtime, T: SearchIndex> SearchIndexCompactor<RT, T> {
                      {compaction_reason:?}",
                     Self::search_type()
                 );
+                #[cfg(any(test, feature = "testing"))]
+                {
+                    // #region agent log
+                    common::runtime::testing::dst_debug_log(
+                        "H3",
+                        "crates/database/src/search_index_workers/search_compactor.rs:needs_compaction",
+                        "segments_shuffle_rng",
+                        serde_json::json!({
+                            "index_name": format!("{name:?}"),
+                            "reason": format!("{compaction_reason:?}"),
+                            "segment_count": segments_to_compact.len(),
+                            "segment_ids_before": segments_to_compact
+                                .iter()
+                                .map(|segment| format!("{:?}", segment.id()))
+                                .take(8)
+                                .collect::<Vec<_>>(),
+                            "rng_source": "rand::rng",
+                        }),
+                    );
+                    // #endregion
+                }
                 // Choose segments to compact at random.
-                let mut rng = self.database.runtime().rng();
-                segments_to_compact.shuffle(&mut *rng);
+                segments_to_compact.shuffle(&mut rand::rng());
                 tracing::info!(
                     "Compacting {} segments out of {} that need compaction for reason: {:?}",
                     *MAX_COMPACTION_SEGMENTS,

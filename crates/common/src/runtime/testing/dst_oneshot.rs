@@ -10,10 +10,6 @@
 use std::{
     pin::Pin,
     sync::{
-        atomic::{
-            AtomicBool,
-            Ordering,
-        },
         Arc,
         Mutex,
     },
@@ -30,10 +26,7 @@ use super::defer_waker_to_tokio_thread;
 
 struct Shared<T> {
     value: Mutex<Option<T>>,
-    recv_waker: Mutex<Option<Waker>>,
-    sender_closed_waker: Mutex<Option<Waker>>,
-    sender_dropped: AtomicBool,
-    receiver_dropped: AtomicBool,
+    waker: Mutex<Option<Waker>>,
 }
 
 pub struct DstOneshotSender<T> {
@@ -47,10 +40,7 @@ pub struct DstOneshotReceiver<T> {
 pub fn dst_oneshot_channel<T>() -> (DstOneshotSender<T>, DstOneshotReceiver<T>) {
     let shared = Arc::new(Shared {
         value: Mutex::new(None),
-        recv_waker: Mutex::new(None),
-        sender_closed_waker: Mutex::new(None),
-        sender_dropped: AtomicBool::new(false),
-        receiver_dropped: AtomicBool::new(false),
+        waker: Mutex::new(None),
     });
     (
         DstOneshotSender {
@@ -62,32 +52,14 @@ pub fn dst_oneshot_channel<T>() -> (DstOneshotSender<T>, DstOneshotReceiver<T>) 
 
 impl<T> DstOneshotSender<T> {
     pub fn send(self, value: T) -> Result<(), T> {
-        if self.shared.receiver_dropped.load(Ordering::SeqCst) {
-            return Err(value);
-        }
         {
             let mut slot = self.shared.value.lock().unwrap();
             *slot = Some(value);
         }
-        if let Some(waker) = self.shared.recv_waker.lock().unwrap().take() {
+        if let Some(waker) = self.shared.waker.lock().unwrap().take() {
             defer_waker_to_tokio_thread(waker);
         }
         Ok(())
-    }
-
-    pub fn closed(&mut self) -> DstSenderClosed<T> {
-        DstSenderClosed {
-            shared: self.shared.clone(),
-        }
-    }
-}
-
-impl<T> Drop for DstOneshotSender<T> {
-    fn drop(&mut self) {
-        self.shared.sender_dropped.store(true, Ordering::SeqCst);
-        if let Some(waker) = self.shared.recv_waker.lock().unwrap().take() {
-            defer_waker_to_tokio_thread(waker);
-        }
     }
 }
 
@@ -99,45 +71,11 @@ impl<T> Future for DstOneshotReceiver<T> {
         if let Some(value) = self.shared.value.lock().unwrap().take() {
             return Poll::Ready(Ok(value));
         }
-        if self.shared.sender_dropped.load(Ordering::SeqCst) {
-            return Poll::Ready(Err(DstRecvError));
-        }
         // Store the waker for the sender to fire later.
-        *self.shared.recv_waker.lock().unwrap() = Some(cx.waker().clone());
+        *self.shared.waker.lock().unwrap() = Some(cx.waker().clone());
         // Double-check after storing the waker (avoids lost-wakeup race).
         if let Some(value) = self.shared.value.lock().unwrap().take() {
             return Poll::Ready(Ok(value));
-        }
-        if self.shared.sender_dropped.load(Ordering::SeqCst) {
-            return Poll::Ready(Err(DstRecvError));
-        }
-        Poll::Pending
-    }
-}
-
-impl<T> Drop for DstOneshotReceiver<T> {
-    fn drop(&mut self) {
-        self.shared.receiver_dropped.store(true, Ordering::SeqCst);
-        if let Some(waker) = self.shared.sender_closed_waker.lock().unwrap().take() {
-            defer_waker_to_tokio_thread(waker);
-        }
-    }
-}
-
-pub struct DstSenderClosed<T> {
-    shared: Arc<Shared<T>>,
-}
-
-impl<T> Future for DstSenderClosed<T> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.shared.receiver_dropped.load(Ordering::SeqCst) {
-            return Poll::Ready(());
-        }
-        *self.shared.sender_closed_waker.lock().unwrap() = Some(cx.waker().clone());
-        if self.shared.receiver_dropped.load(Ordering::SeqCst) {
-            return Poll::Ready(());
         }
         Poll::Pending
     }

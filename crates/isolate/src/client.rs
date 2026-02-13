@@ -401,10 +401,18 @@ pub fn response_channel<T>() -> (ResponseSender<T>, ResponseReceiver<T>) {
     }
 }
 
-pub fn response_closed<'a, T: Send + 'a>(
+pub fn response_closed<'a, T>(
     response: &'a mut ResponseSender<T>,
 ) -> futures::future::BoxFuture<'a, ()> {
-    response.closed().boxed()
+    #[cfg(any(test, feature = "testing"))]
+    {
+        let _ = response;
+        futures::future::pending::<()>().boxed()
+    }
+    #[cfg(not(any(test, feature = "testing")))]
+    {
+        response.closed().boxed()
+    }
 }
 
 pub enum RequestType<RT: Runtime> {
@@ -1333,6 +1341,24 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
                         completions.push(w);
                     }
                     completions.sort_by_key(|w| w.worker_id);
+                    #[cfg(any(test, feature = "testing"))]
+                    {
+                        // #region agent log
+                        common::runtime::testing::dst_debug_log(
+                            "H2",
+                            "crates/isolate/src/client.rs:SharedIsolateScheduler::run",
+                            "completion_batch",
+                            serde_json::json!({
+                                "batch_len": completions.len(),
+                                "next_completion_seq": self.next_completion_seq,
+                                "order": completions
+                                    .iter()
+                                    .map(|w| format!("{}:{}", w.request_seq, w.worker_id))
+                                    .collect::<Vec<_>>(),
+                            }),
+                        );
+                        // #endregion
+                    }
                     for w in completions {
                         self.pending_completions.insert(w.request_seq, w);
                     }
@@ -1426,16 +1452,16 @@ impl<RT: Runtime, W: IsolateWorker<RT>> SharedIsolateScheduler<RT, W> {
             self.available_workers
                 .iter_mut()
                 .min_by(|(_, workers1), (_, workers2)| {
-                    workers1
+                    let idle1 = workers1
                         .back()
-                        .expect("Available worker map should never contain an empty list")
+                        .expect("Available worker map should never contain an empty list");
+                    let idle2 = workers2
+                        .back()
+                        .expect("Available worker map should never contain an empty list");
+                    idle1
                         .last_used_ts
-                        .cmp(
-                            &workers2
-                                .back()
-                                .expect("Available worker map should never contain an empty list")
-                                .last_used_ts,
-                        )
+                        .cmp(&idle2.last_used_ts)
+                        .then_with(|| idle1.worker_id.cmp(&idle2.worker_id))
                 })
         else {
             // No available workers.

@@ -33,15 +33,36 @@ pub fn defer_waker_to_tokio_thread(waker: Waker) {
     DEFERRED_WAKER_TX.with(|tx| {
         let tx = tx.borrow();
         if let Some(tx) = tx.as_ref() {
+            // #region agent log
+            super::dst_debug_log(
+                "H1",
+                "crates/common/src/runtime/testing/thread_future.rs:defer_waker_to_tokio_thread",
+                "wake_path",
+                serde_json::json!({
+                    "path": "deferred_to_tokio_thread",
+                }),
+            );
+            // #endregion
             let _ = tx.send(waker);
         } else {
             // Not inside a ThreadFuture — fire immediately.
+            // #region agent log
+            super::dst_debug_log(
+                "H1",
+                "crates/common/src/runtime/testing/thread_future.rs:defer_waker_to_tokio_thread",
+                "wake_path",
+                serde_json::json!({
+                    "path": "immediate_wake",
+                }),
+            );
+            // #endregion
             waker.wake();
         }
     });
 }
 
 pub struct ThreadFuture {
+    debug_id: u32,
     std_handle: Option<std::thread::JoinHandle<()>>,
     poll_request_tx: Option<crossbeam_channel::Sender<Waker>>,
     poll_response_rx: crossbeam_channel::Receiver<Poll<bool>>,
@@ -56,6 +77,18 @@ impl ThreadFuture {
         tokio_handle: tokio::runtime::Handle,
         f: F,
     ) -> Self {
+        let debug_id =
+            super::DST_TF_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // #region agent log
+        super::dst_debug_log(
+            "H4",
+            "crates/common/src/runtime/testing/thread_future.rs:ThreadFuture::new",
+            "thread_future_created",
+            serde_json::json!({
+                "thread_future_id": debug_id,
+            }),
+        );
+        // #endregion
         let (poll_request_tx, poll_request_rx) = crossbeam_channel::bounded(1);
         let (poll_response_tx, poll_response_rx) = crossbeam_channel::bounded(1);
         let (deferred_waker_tx, deferred_waker_rx) = crossbeam_channel::unbounded();
@@ -90,6 +123,7 @@ impl ThreadFuture {
             })
             .expect("Failed to start new thread");
         Self {
+            debug_id,
             std_handle: Some(std_handle),
             poll_request_tx: Some(poll_request_tx),
             poll_response_rx,
@@ -146,6 +180,16 @@ impl Future for ThreadFuture {
 
 impl Drop for ThreadFuture {
     fn drop(&mut self) {
+        // #region agent log
+        super::dst_debug_log(
+            "H4",
+            "crates/common/src/runtime/testing/thread_future.rs:ThreadFuture::drop",
+            "thread_future_drop_enter",
+            serde_json::json!({
+                "thread_future_id": self.debug_id,
+            }),
+        );
+        // #endregion
         let Some(std_handle) = self.std_handle.take() else {
             return;
         };

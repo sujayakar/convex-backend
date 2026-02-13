@@ -4,6 +4,7 @@ use common::{
     types::UdfType,
 };
 use deno_core::v8;
+use futures::FutureExt;
 use sync_types::CanonicalizedUdfPath;
 use tracing::Instrument;
 use udf::HttpActionResult;
@@ -105,6 +106,21 @@ impl<RT: Runtime> FunctionRunnerIsolateWorker<RT> {
                     Err(_) => RequestStatus::SystemError,
                 };
                 finish_service_request_timer(timer, status);
+                #[cfg(any(test, feature = "testing"))]
+                {
+                    // #region agent log
+                    common::runtime::testing::dst_debug_log(
+                        "H3",
+                        "crates/isolate/src/isolate_worker.rs:handle_request_inner",
+                        "udf_response_send",
+                        serde_json::json!({
+                            "client_id": client_id,
+                            "udf_path": format!("{udf_path:?}"),
+                            "ok": r.is_ok(),
+                        }),
+                    );
+                    // #endregion
+                }
                 let _ = response.send(r);
                 format!("UDF: {udf_path:?}")
             },

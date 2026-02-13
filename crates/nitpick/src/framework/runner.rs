@@ -1,9 +1,6 @@
-use std::{
-    task::Poll,
-    time::{
-        Duration,
-        Instant,
-    },
+use std::time::{
+    Duration,
+    Instant,
 };
 
 use application::{
@@ -25,15 +22,15 @@ use futures::{
     FutureExt,
     StreamExt,
 };
-use rand::{
-    Rng,
-    SeedableRng,
-};
-use rand_chacha::ChaCha12Rng;
+use rand::Rng;
 use runtime::testing::{
     TestDriver,
     TestRuntime,
 };
+// #region agent log
+use runtime::testing::{dst_debug_log, DST_RUN_ID, DST_SEED, DST_TF_ID};
+use std::sync::atomic::Ordering;
+// #endregion
 
 use super::scenario::{
     Scenario,
@@ -89,6 +86,18 @@ fn run_once<S: Scenario>(
     config: Config,
 ) -> anyhow::Result<TestResult<<S::TestRun as TestRun>::Output>> {
     let test_start = Instant::now();
+    // #region agent log
+    dst_debug_log(
+        "H5",
+        "crates/nitpick/src/framework/runner.rs:run_once",
+        "run_once_enter",
+        serde_json::json!({
+            "scenario": scenario.name(),
+            "transactions": config.transactions,
+            "concurrency": config.concurrency,
+        }),
+    );
+    // #endregion
 
     let recorder = EventRecorder::active();
     let rt = td.rt_with_event_recorder(recorder.clone());
@@ -130,6 +139,19 @@ fn run_once<S: Scenario>(
         output,
         trace,
     };
+    // #region agent log
+    dst_debug_log(
+        "H5",
+        "crates/nitpick/src/framework/runner.rs:run_once",
+        "run_once_exit",
+        serde_json::json!({
+            "num_polls": result.num_polls,
+            "rng_next_u64": result.rng_next_u64,
+            "trace_len": result.trace.len(),
+            "output": format!("{:?}", result.output),
+        }),
+    );
+    // #endregion
     tracing::info!(
         "[nitpick] Scenario {:?} completed in {:?} ({} polls, {} trace events, output: {:?})",
         scenario.name(),
@@ -152,10 +174,6 @@ async fn run_transactions<TR: TestRun>(
     let mut transactions = FuturesUnordered::<LocalBoxFuture<anyhow::Result<()>>>::new();
     let mut next_tx_id: usize = 0;
     let mut num_completed: usize = 0;
-    // Keep probabilistic mid-run validation independent from the runtime RNG.
-    // Otherwise loop-structure drift (e.g. different batching of ready futures)
-    // perturbs the shared RNG stream and can change scenario decisions.
-    let mut verify_rng = ChaCha12Rng::seed_from_u64(config.seed ^ 0xA53E_5EED_u64);
     // Allow extra transaction attempts to account for OCC retries.
     let max_tx_attempts = config.transactions * 10;
 
@@ -173,13 +191,6 @@ async fn run_transactions<TR: TestRun>(
         if !transactions.is_empty() && transactions.len() >= config.concurrency {
             let r = transactions.select_next_some().await;
             results.push(r);
-        }
-        while !transactions.is_empty() {
-            if let Poll::Ready(r) = futures::poll!(transactions.select_next_some()) {
-                results.push(r);
-            } else {
-                break;
-            }
         }
         for r in results {
             if let Err(e) = r {
@@ -217,7 +228,7 @@ async fn run_transactions<TR: TestRun>(
         }
 
         // Probabilistically validate.
-        if verify_rng.random_bool(VERIFY_PROBABILITY) {
+        if rt.rng().random_bool(VERIFY_PROBABILITY) {
             test_run.validate(application).await?;
         }
     }
@@ -229,7 +240,9 @@ async fn run_transactions<TR: TestRun>(
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
-const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1;
+// #region agent log
+const DETERMINISM_CHECK_PROBABILITY: f64 = 0.1; // was 0.1
+// #endregion
 
 fn determinism_check_probability() -> f64 {
     if std::env::var("NITPICK_FORCE_DETERMINISM_CHECK")
@@ -243,16 +256,23 @@ fn determinism_check_probability() -> f64 {
 }
 
 /// Run a scenario with the given config on a dedicated thread with a large
-/// stack. Probabilistically checks determinism by re-running with the same
-/// seed.
+/// stack. Probabilistically checks determinism by re-running with the same seed.
 pub fn run_scenario<S: Scenario>(scenario: S, config: Config) -> anyhow::Result<()> {
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
+            // #region agent log
+            DST_RUN_ID.store(1, Ordering::Relaxed);
+            DST_TF_ID.store(0, Ordering::Relaxed);
+            DST_SEED.store(config.seed, Ordering::Relaxed);
+            // #endregion
             let (run1, should_check) = {
                 let td = TestDriver::new_with_seed(config.seed);
                 let run1 = run_once(&scenario, &td, config)?;
-                let should_check = td.rt().rng().random_bool(determinism_check_probability());
+                let should_check = td
+                    .rt()
+                    .rng()
+                    .random_bool(determinism_check_probability());
                 (run1, should_check)
             };
 
@@ -275,6 +295,11 @@ pub fn run_scenario_deterministic<S: Scenario>(scenario: S, config: Config) -> a
     let thread_handle = std::thread::Builder::new()
         .stack_size(*RUNTIME_STACK_SIZE)
         .spawn(move || {
+            // #region agent log
+            DST_RUN_ID.store(1, Ordering::Relaxed);
+            DST_TF_ID.store(0, Ordering::Relaxed);
+            DST_SEED.store(config.seed, Ordering::Relaxed);
+            // #endregion
             let run1 = {
                 let td = TestDriver::new_with_seed(config.seed);
                 run_once(&scenario, &td, config)?
@@ -295,7 +320,28 @@ fn check_determinism<S: Scenario>(
         "[nitpick] Running determinism check for seed {}",
         config.seed
     );
+    // #region agent log
+    DST_RUN_ID.store(2, Ordering::Relaxed);
+    DST_TF_ID.store(0, Ordering::Relaxed);
+    DST_SEED.store(config.seed, Ordering::Relaxed);
+    // #endregion
+    // #region agent log
+    dst_debug_log(
+        "H5",
+        "crates/nitpick/src/framework/runner.rs:check_determinism",
+        "run2_driver_create_start",
+        serde_json::json!({}),
+    );
+    // #endregion
     let td = TestDriver::new_with_seed(config.seed);
+    // #region agent log
+    dst_debug_log(
+        "H5",
+        "crates/nitpick/src/framework/runner.rs:check_determinism",
+        "run2_driver_create_done",
+        serde_json::json!({}),
+    );
+    // #endregion
     let run2 = run_once(scenario, &td, config)?;
     let mut first_trace_divergence: Option<(usize, String, String)> = None;
     for (idx, (left, right)) in run1.trace.iter().zip(run2.trace.iter()).enumerate() {
@@ -306,11 +352,30 @@ fn check_determinism<S: Scenario>(
             break;
         }
     }
-    let semantic_mismatch = run1.rng_next_u64 != run2.rng_next_u64
-        || run1.output != run2.output
-        || run1.trace.len() != run2.trace.len()
-        || first_trace_divergence.is_some();
+    let semantic_mismatch =
+        run1.rng_next_u64 != run2.rng_next_u64
+            || run1.output != run2.output
+            || run1.trace.len() != run2.trace.len()
+            || first_trace_divergence.is_some();
     if semantic_mismatch {
+        // #region agent log
+        dst_debug_log(
+            "H5",
+            "crates/nitpick/src/framework/runner.rs:check_determinism",
+            "determinism_mismatch",
+            serde_json::json!({
+                "run1_num_polls": run1.num_polls,
+                "run2_num_polls": run2.num_polls,
+                "run1_rng_next_u64": run1.rng_next_u64,
+                "run2_rng_next_u64": run2.rng_next_u64,
+                "run1_output": format!("{:?}", run1.output),
+                "run2_output": format!("{:?}", run2.output),
+                "run1_trace_len": run1.trace.len(),
+                "run2_trace_len": run2.trace.len(),
+                "first_trace_divergence": first_trace_divergence,
+            }),
+        );
+        // #endregion
         anyhow::bail!(
             "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
             config.seed,
@@ -320,12 +385,29 @@ fn check_determinism<S: Scenario>(
     }
     if run1.num_polls != run2.num_polls {
         tracing::warn!(
-            "[nitpick] Poll-count drift for seed {} (run1={}, run2={}) with identical \
-             output/rng/trace",
+            "[nitpick] Poll-count drift for seed {} (run1={}, run2={}) with identical output/rng/trace",
             config.seed,
             run1.num_polls,
             run2.num_polls
         );
+        // #region agent log
+        dst_debug_log(
+            "H5",
+            "crates/nitpick/src/framework/runner.rs:check_determinism",
+            "poll_count_drift_only",
+            serde_json::json!({
+                "run1_num_polls": run1.num_polls,
+                "run2_num_polls": run2.num_polls,
+                "run1_rng_next_u64": run1.rng_next_u64,
+                "run2_rng_next_u64": run2.rng_next_u64,
+                "run1_output": format!("{:?}", run1.output),
+                "run2_output": format!("{:?}", run2.output),
+                "run1_trace_len": run1.trace.len(),
+                "run2_trace_len": run2.trace.len(),
+                "first_trace_divergence": first_trace_divergence,
+            }),
+        );
+        // #endregion
     }
     tracing::info!("[nitpick] Determinism check passed");
     Ok(())
