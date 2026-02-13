@@ -384,11 +384,13 @@ fn check_determinism<S: Scenario>(
         );
     }
     if run1.num_polls != run2.num_polls {
+        let num_polls_delta = signed_delta_usize(run1.num_polls, run2.num_polls);
         tracing::debug!(
-            "[nitpick] Determinism diagnostics for seed {}: num_polls differed (run1: {}, run2: {}), but deterministic fields matched",
+            "[nitpick] Determinism diagnostics for seed {}: num_polls differed (run1: {}, run2: {}, delta: {}), but deterministic fields matched",
             config.seed,
             run1.num_polls,
-            run2.num_polls
+            run2.num_polls,
+            num_polls_delta
         );
     }
     tracing::info!("[nitpick] Determinism check passed");
