@@ -1,4 +1,9 @@
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{
+        Hash,
+        Hasher,
+    },
     task::Poll,
     time::{
         Duration,
@@ -12,6 +17,7 @@ use application::{
 };
 use common::{
     event_recorder::{
+        Event,
         EventRecorder,
         TraceEvent,
     },
@@ -56,8 +62,18 @@ pub struct Config {
 /// Result of a single simulation run, used for determinism comparison.
 #[derive(Debug)]
 pub struct TestResult<T> {
-    /// How many times was the test runtime polled?
-    pub num_polls: usize,
+    /// Deterministic hash of the structured execution trace.
+    ///
+    /// We hash only the *event payloads* (transaction types, UDF paths, etc.),
+    /// deliberately excluding wall-clock elapsed times and the Tokio
+    /// `worker_poll_count` metric.  The poll count is an internal scheduler
+    /// detail that can vary by ±1 under CPU contention because cross-thread
+    /// wakes from V8 isolate `ThreadFuture` OS threads land in Tokio's inject
+    /// queue at non-deterministic times.  That scheduling jitter does not
+    /// affect the logical simulation — the seeded-RNG state (`rng_next_u64`)
+    /// and scenario `output` already guarantee the same operations executed in
+    /// the same order.
+    pub trace_hash: u64,
 
     /// What was the next u64 sampled from the runtime's RNG?
     pub rng_next_u64: u64,
@@ -71,14 +87,58 @@ pub struct TestResult<T> {
 
 impl<T: Eq> PartialEq for TestResult<T> {
     fn eq(&self, other: &Self) -> bool {
-        // Trace is excluded from equality -- it contains wall-clock timing
-        // that may differ between runs.
-        self.num_polls == other.num_polls
+        // Trace vector is excluded from equality — it contains wall-clock
+        // timing that may differ between runs.  The deterministic content of
+        // the trace is captured by `trace_hash`.
+        self.trace_hash == other.trace_hash
             && self.rng_next_u64 == other.rng_next_u64
             && self.output == other.output
     }
 }
 impl<T: Eq> Eq for TestResult<T> {}
+
+/// Compute a deterministic hash of trace events, considering only the event
+/// payloads (not wall-clock elapsed times).  This gives us a strong
+/// determinism signal tied to actual application behaviour rather than Tokio
+/// scheduler internals.
+fn hash_trace(trace: &[TraceEvent]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    trace.len().hash(&mut hasher);
+    for event in trace {
+        // Hash only the deterministic event payload, not the wall-clock
+        // elapsed time or the atomic sequence number.
+        match &event.event {
+            Event::TransactionBegin { identity } => {
+                0u8.hash(&mut hasher);
+                identity.hash(&mut hasher);
+            },
+            Event::TransactionCommit => 1u8.hash(&mut hasher),
+            Event::TransactionConflict => 2u8.hash(&mut hasher),
+            Event::UdfStart { udf_path, udf_type } => {
+                3u8.hash(&mut hasher);
+                udf_path.hash(&mut hasher);
+                udf_type.hash(&mut hasher);
+            },
+            Event::UdfEnd { udf_path, success } => {
+                4u8.hash(&mut hasher);
+                udf_path.hash(&mut hasher);
+                success.hash(&mut hasher);
+            },
+            Event::PausePointHit { label } => {
+                5u8.hash(&mut hasher);
+                label.hash(&mut hasher);
+            },
+            Event::Custom { label, data } => {
+                6u8.hash(&mut hasher);
+                label.hash(&mut hasher);
+                // serde_json::Value doesn't impl Hash, so hash its
+                // serialised form.
+                data.to_string().hash(&mut hasher);
+            },
+        }
+    }
+    hasher.finish()
+}
 
 fn run_once<S: Scenario>(
     scenario: &S,
@@ -108,7 +168,7 @@ fn run_once<S: Scenario>(
         anyhow::Ok(run)
     })?;
 
-    let num_polls = td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
+    td.run_until(run_transactions(td.rt(), &application, &test_run, config))?;
 
     // Always run validation at the end.
     let start = Instant::now();
@@ -121,17 +181,19 @@ fn run_once<S: Scenario>(
     let output = td.run_until(test_run.finalize(&application))?;
 
     let trace = recorder.drain();
+    let trace_hash = hash_trace(&trace);
     let result = TestResult {
-        num_polls,
+        trace_hash,
         rng_next_u64: td.rt().rng().random(),
         output,
         trace,
     };
     tracing::info!(
-        "[nitpick] Scenario {:?} completed in {:?} ({} polls, {} trace events, output: {:?})",
+        "[nitpick] Scenario {:?} completed in {:?} (trace_hash: {:016x}, {} trace events, \
+         output: {:?})",
         scenario.name(),
         test_start.elapsed(),
-        result.num_polls,
+        result.trace_hash,
         result.trace.len(),
         result.output,
     );
@@ -144,7 +206,7 @@ async fn run_transactions<TR: TestRun>(
     application: &Application<TestRuntime>,
     test_run: &TR,
     config: Config,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<()> {
     let test_start = Instant::now();
     let mut transactions = FuturesUnordered::<LocalBoxFuture<anyhow::Result<()>>>::new();
     let mut next_tx_id: usize = 0;
@@ -215,10 +277,7 @@ async fn run_transactions<TR: TestRun>(
         }
     }
 
-    let num_polls = tokio::runtime::Handle::current()
-        .metrics()
-        .worker_poll_count(0);
-    Ok(num_polls as usize)
+    Ok(())
 }
 
 /// How likely we are to run a determinism check (re-run with same seed).
