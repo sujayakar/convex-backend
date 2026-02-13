@@ -91,8 +91,9 @@ comparing deterministic `TestResult` fields:
 When a determinism mismatch occurs, nitpick reports compact diagnostics
 including each run's poll count and trace length.
 The diagnostics also include mismatch flags (`rng_mismatch`,
-`output_mismatch`, `trace_len_mismatch`) and first differing trace event index
-when available (or the shorter trace boundary when only lengths differ).
+`output_mismatch`, `trace_len_mismatch`), which trace is longer when lengths
+diverge, and first differing trace event index when available (or the shorter
+trace boundary when only lengths differ).
 
 Why not include `num_polls` in equality? Tokio's `worker_poll_count` is a
 scheduler metric that is flushed at scheduler submit points, and can vary
