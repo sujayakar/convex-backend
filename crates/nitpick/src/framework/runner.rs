@@ -282,10 +282,16 @@ fn check_determinism<S: Scenario>(
     let run2 = run_once(scenario, &td, config)?;
     if *run1 != run2 {
         anyhow::bail!(
-            "Determinism failure for seed {}:\n  run1: {:?}\n  run2: {:?}",
+            "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output: {:?} }}\n  run2: {{ rng_next_u64: {}, output: {:?} }}\n  diagnostics: {{ run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {} }}",
             config.seed,
-            run1,
-            run2
+            run1.rng_next_u64,
+            run1.output,
+            run2.rng_next_u64,
+            run2.output,
+            run1.num_polls,
+            run2.num_polls,
+            run1.trace.len(),
+            run2.trace.len(),
         );
     }
     tracing::info!("[nitpick] Determinism check passed");
