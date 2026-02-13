@@ -821,6 +821,13 @@ mod tests {
     }
 
     #[test]
+    fn test_signed_delta_usize_sign_and_symmetry() {
+        assert_eq!(signed_delta_usize(7, 3), 4);
+        assert_eq!(signed_delta_usize(3, 7), -4);
+        assert_eq!(signed_delta_usize(7, 3), -signed_delta_usize(3, 7));
+    }
+
+    #[test]
     fn test_determinism_failure_message_is_compact_and_diagnostic() {
         let run1 = TestResult {
             num_polls: 100,
