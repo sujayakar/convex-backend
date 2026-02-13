@@ -97,8 +97,10 @@ trace boundary when only lengths differ). `trace_mismatch_kind` indicates
 whether the trace mismatch comes from differing event payloads or a length
 boundary. `trace_len_delta` and `paired_trace_event_count` provide quick
 context for how far the traces diverge. Output values are shown as debug
-previews and truncated when large (with full debug lengths included) to keep
-failure logs readable.
+previews and truncated when large (with full debug lengths included), and
+diagnostics explicitly report whether previews were truncated and the preview
+character limit. Poll counts remain diagnostic-only, and `num_polls_delta`
+gives a quick signed difference between runs.
 
 Why not include `num_polls` in equality? Tokio's `worker_poll_count` is a
 scheduler metric that is flushed at scheduler submit points, and can vary

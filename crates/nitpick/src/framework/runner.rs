@@ -386,23 +386,26 @@ fn determinism_failure_message<T: std::fmt::Debug>(
     run2: &TestResult<T>,
     diff: &DeterminismDiff,
 ) -> String {
-    let (run1_output_debug_len, run1_output_debug_preview) =
-        debug_string_preview(&run1.output, OUTPUT_DEBUG_PREVIEW_CHARS);
-    let (run2_output_debug_len, run2_output_debug_preview) =
-        debug_string_preview(&run2.output, OUTPUT_DEBUG_PREVIEW_CHARS);
+    let run1_output_debug = debug_string_preview(&run1.output, OUTPUT_DEBUG_PREVIEW_CHARS);
+    let run2_output_debug = debug_string_preview(&run2.output, OUTPUT_DEBUG_PREVIEW_CHARS);
+    let num_polls_delta = run1.num_polls as i64 - run2.num_polls as i64;
     format!(
-        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  run2: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_output_debug_len: {}, run2_output_debug_len: {}, run1_num_polls: {}, run2_num_polls: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_len_delta: {}, paired_trace_event_count: {}, trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
+        "Determinism failure for seed {}:\n  run1: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  run2: {{ rng_next_u64: {}, output_debug_preview: {} }}\n  diagnostics: {{ rng_mismatch: {}, output_mismatch: {}, run1_output_debug_len: {}, run2_output_debug_len: {}, run1_output_debug_truncated: {}, run2_output_debug_truncated: {}, output_debug_preview_chars_limit: {}, run1_num_polls: {}, run2_num_polls: {}, num_polls_delta: {}, run1_trace_len: {}, run2_trace_len: {}, trace_len_mismatch: {}, trace_len_mismatch_side: {:?}, trace_len_delta: {}, paired_trace_event_count: {}, trace_mismatch_kind: {:?}, trace_event_mismatch_index: {:?}, trace_event_mismatch_run1_kind: {:?}, trace_event_mismatch_run2_kind: {:?} }}",
         seed,
         run1.rng_next_u64,
-        run1_output_debug_preview,
+        run1_output_debug.preview,
         run2.rng_next_u64,
-        run2_output_debug_preview,
+        run2_output_debug.preview,
         diff.rng_mismatch,
         diff.output_mismatch,
-        run1_output_debug_len,
-        run2_output_debug_len,
+        run1_output_debug.full_len,
+        run2_output_debug.full_len,
+        run1_output_debug.truncated,
+        run2_output_debug.truncated,
+        OUTPUT_DEBUG_PREVIEW_CHARS,
         run1.num_polls,
         run2.num_polls,
+        num_polls_delta,
         run1.trace.len(),
         run2.trace.len(),
         diff.trace_len_mismatch,
@@ -416,14 +419,28 @@ fn determinism_failure_message<T: std::fmt::Debug>(
     )
 }
 
-fn debug_string_preview<T: std::fmt::Debug>(value: &T, max_chars: usize) -> (usize, String) {
+struct DebugStringPreview {
+    full_len: usize,
+    preview: String,
+    truncated: bool,
+}
+
+fn debug_string_preview<T: std::fmt::Debug>(value: &T, max_chars: usize) -> DebugStringPreview {
     let debug_string = format!("{value:?}");
     let debug_char_count = debug_string.chars().count();
     if debug_char_count <= max_chars {
-        return (debug_char_count, debug_string);
+        return DebugStringPreview {
+            full_len: debug_char_count,
+            preview: debug_string,
+            truncated: false,
+        };
     }
     let preview = debug_string.chars().take(max_chars).collect::<String>();
-    (debug_char_count, format!("{preview}…<truncated>"))
+    DebugStringPreview {
+        full_len: debug_char_count,
+        preview: format!("{preview}…<truncated>"),
+        truncated: true,
+    }
 }
 
 fn event_kind(event: &Event) -> &'static str {
@@ -816,8 +833,12 @@ mod tests {
         assert!(message.contains("output_mismatch: true"));
         assert!(message.contains("run1_output_debug_len: 4"));
         assert!(message.contains("run2_output_debug_len: 8"));
+        assert!(message.contains("run1_output_debug_truncated: false"));
+        assert!(message.contains("run2_output_debug_truncated: false"));
+        assert!(message.contains("output_debug_preview_chars_limit: 256"));
         assert!(message.contains("run1_num_polls: 100"));
         assert!(message.contains("run2_num_polls: 103"));
+        assert!(message.contains("num_polls_delta: -3"));
         assert!(message.contains("run1_trace_len: 1"));
         assert!(message.contains("run2_trace_len: 1"));
         assert!(message.contains("trace_len_mismatch: false"));
@@ -867,6 +888,7 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2, &diff);
         assert!(message.contains("trace_len_mismatch: false"));
         assert!(message.contains("trace_len_mismatch_side: None"));
+        assert!(message.contains("num_polls_delta: -3"));
         assert!(message.contains("trace_len_delta: 0"));
         assert!(message.contains("paired_trace_event_count: 1"));
         assert!(message.contains("trace_mismatch_kind: \"event_payload_mismatch\""));
@@ -898,6 +920,7 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2, &diff);
         assert!(message.contains("trace_len_mismatch: true"));
         assert!(message.contains("trace_len_mismatch_side: Some(\"run1_longer\")"));
+        assert!(message.contains("num_polls_delta: 0"));
         assert!(message.contains("trace_len_delta: 1"));
         assert!(message.contains("paired_trace_event_count: 0"));
         assert!(message.contains("trace_mismatch_kind: \"length_boundary\""));
@@ -929,6 +952,7 @@ mod tests {
         let message = determinism_failure_message(123, &run1, &run2, &diff);
         assert!(message.contains("trace_len_mismatch: true"));
         assert!(message.contains("trace_len_mismatch_side: Some(\"run2_longer\")"));
+        assert!(message.contains("num_polls_delta: 0"));
         assert!(message.contains("trace_len_delta: -1"));
         assert!(message.contains("paired_trace_event_count: 0"));
         assert!(message.contains("trace_mismatch_kind: \"length_boundary\""));
@@ -956,6 +980,9 @@ mod tests {
 
         assert!(message.contains("run1_output_debug_len: 602"));
         assert!(message.contains("run2_output_debug_len: 602"));
+        assert!(message.contains("run1_output_debug_truncated: true"));
+        assert!(message.contains("run2_output_debug_truncated: true"));
+        assert!(message.contains("output_debug_preview_chars_limit: 256"));
         assert!(message.contains("…<truncated>"));
     }
 
